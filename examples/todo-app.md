@@ -15,13 +15,14 @@ const todo = valueScope(
     completed: value<boolean>(false),
     createdAt: value<number>(0),
 
-    label: (get) => (get("completed") ? `[x] ${get("text")}` : `[ ] ${get("text")}`),
+    label: (get) =>
+      get("completed") ? `[x] ${get("text")}` : `[ ] ${get("text")}`,
   },
   {
-    onInit: (set) => {
+    onInit: ({ set }) => {
       set("createdAt", Date.now());
     },
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       localStorage.setItem(`todo:${get("id")}`, JSON.stringify(getSnapshot()));
     },
   },
@@ -31,7 +32,8 @@ const todo = valueScope(
 const todos = todo.createMap();
 ```
 
-That's it. Each todo has typed fields, a derived label, auto-timestamping on create, and a hook point for persistence. No reducers, no actions, no selectors.
+That's it. Each todo has typed fields, a derived label, auto-timestamping on
+create, and a hook point for persistence. No reducers, no actions, no selectors.
 
 ## Adding todos
 
@@ -40,7 +42,8 @@ todos.set("todo-1", { id: "todo-1", text: "Buy milk" });
 todos.set("todo-2", { id: "todo-2", text: "Write docs", completed: true });
 ```
 
-`set` on a collection creates a new instance if the key doesn't exist, or updates the existing one if it does. No `addTodo` action needed.
+`set` on a collection creates a new instance if the key doesn't exist, or
+updates the existing one if it does. No `addTodo` action needed.
 
 ## React components
 
@@ -84,7 +87,9 @@ function TodoItem({ id }: { id: string }) {
         checked={get("completed")}
         onChange={() => set("completed", (prev) => !prev)}
       />
-      <span style={{ textDecoration: get("completed") ? "line-through" : "none" }}>
+      <span
+        style={{ textDecoration: get("completed") ? "line-through" : "none" }}
+      >
         {get("text")}
       </span>
     </li>
@@ -115,7 +120,9 @@ function Footer() {
   const keys = todos.useKeys();
   const [currentFilter, setFilter] = filter.use();
 
-  const activeCount = keys.filter((id) => !todos.get(id)!.get("completed")).length;
+  const activeCount = keys.filter(
+    (id) => !todos.get(id)!.get("completed"),
+  ).length;
 
   return (
     <footer>
@@ -148,7 +155,8 @@ for (const [id, todo] of todos.entries()) {
 
 ## Persistence with onChange
 
-The `onChange` in the model above persists per-todo via `getSnapshot()`. For bulk save/load of the whole collection:
+The `onChange` in the model above persists per-todo via `getSnapshot()`. For
+bulk save/load of the whole collection:
 
 ```ts
 function saveTodos() {
@@ -188,7 +196,10 @@ const useTodoStore = create((set, get) => ({
 }));
 ```
 
-Every mutation spreads the entire `todos` object. Selectors are required to avoid re-rendering every row on every change. There's no per-item lifecycle, no derived state without manual memoization, and no structure beyond "it's in the store."
+Every mutation spreads the entire `todos` object. Selectors are required to
+avoid re-rendering every row on every change. There's no per-item lifecycle, no
+derived state without manual memoization, and no structure beyond "it's in the
+store."
 
 ## Why not Jotai?
 
@@ -196,15 +207,23 @@ Jotai scatters atoms without structure:
 
 ```ts
 // Jotai
-const todosAtom = atom<Record<string, { text: string; completed: boolean }>>({});
+const todosAtom = atom<Record<string, { text: string; completed: boolean }>>(
+  {},
+);
 const todoIdsAtom = atom((get) => Object.keys(get(todosAtom)));
 const todoAtom = atomFamily((id: string) =>
   atom(
     (get) => get(todosAtom)[id],
     (get, set, update: Partial<Todo>) =>
-      set(todosAtom, { ...get(todosAtom), [id]: { ...get(todosAtom)[id], ...update } }),
+      set(todosAtom, {
+        ...get(todosAtom),
+        [id]: { ...get(todosAtom)[id], ...update },
+      }),
   ),
 );
 ```
 
-Each field access requires deriving a new atom or using `selectAtom`. There's no concept of "a todo" as a unit — it's atoms all the way down. Adding lifecycle (auto-persist, timestamps) means wrapping atoms in custom hooks with `useEffect`.
+Each field access requires deriving a new atom or using `selectAtom`. There's no
+concept of "a todo" as a unit — it's atoms all the way down. Adding lifecycle
+(auto-persist, timestamps) means wrapping atoms in custom hooks with
+`useEffect`.

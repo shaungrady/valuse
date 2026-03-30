@@ -6,7 +6,8 @@ schema-driven step. This showcases `extend()`, `onChange`, and
 
 ## The model
 
-Start with a base field scope. Every field tracks its value, touched state, and validation:
+Start with a base field scope. Every field tracks its value, touched state, and
+validation:
 
 ```ts
 import { value, valueScope } from "valuse";
@@ -22,10 +23,10 @@ const field = <T>(initial: T, validate: (v: T) => string | null) =>
       isDirty: (get) => get("value") !== get("initialValue"),
     },
     {
-      onInit: (set, get) => {
+      onInit: ({ set, get }) => {
         set("initialValue", get("value"));
       },
-      onChange: (changes, set, get, getSnapshot) => {
+      onChange: ({ changes, set, get, getSnapshot }) => {
         const valueChanged = changes.some((c) => c.key === "value");
         if (!valueChanged) return;
 
@@ -51,7 +52,9 @@ const accountStep = valueScope({
 const personalStep = valueScope({
   firstName: field("", (v) => (!v.trim() ? "Required" : null)),
   lastName: field("", (v) => (!v.trim() ? "Required" : null)),
-  phone: field("", (v) => (v && !/^\+?\d{10,}$/.test(v) ? "Invalid phone" : null)),
+  phone: field("", (v) =>
+    v && !/^\+?\d{10,}$/.test(v) ? "Invalid phone" : null,
+  ),
 });
 
 // Step 3: Preferences — schema-driven, dynamic fields
@@ -84,9 +87,10 @@ const wizard = valueScope(
 
     // Aggregate validation across all steps
     isValid: (get) => {
-      const [account, personal, prefs] = get(["account", "personal", "prefs"]);
+      const steps = [get("account"), get("personal"), get("prefs")];
+
       // Each step is a ScopeInstance — check its fields for errors
-      return [account, personal, prefs].every((step) =>
+      return steps.every((step) =>
         Object.keys(step.getSnapshot()).every((key) => {
           const field = step.get(key);
           return !field?.get?.("error");
@@ -95,7 +99,7 @@ const wizard = valueScope(
     },
   },
   {
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       // Auto-save draft on step change
       if (changes.some((c) => c.key === "currentStep")) {
         saveDraft();
@@ -107,54 +111,85 @@ const wizard = valueScope(
 
 ## React components
 
+### Wizard.tsx
+
 ```tsx
-import { useMemo } from "react";
-import { value, valueScope, type ScopeInstance } from "valuse/react";
+import { useEffect } from "react";
+import { value } from "valuse/react";
 
 // Infer the instance type from the field factory
 type WizardForm = ReturnType<typeof wizard.create>;
 type FieldInstance = ReturnType<ReturnType<typeof field>["create"]>;
 
-function Wizard() {
-  // Create once — useMemo ensures the instance survives re-renders
-  const form = useMemo(() => wizard.create(), []);
+// Shared reactive reference to the form instance.
+// Other components import this instead of receiving it as a prop.
+export const wizardForm = value<WizardForm>();
+
+export function Wizard() {
+  useEffect(() => {
+    wizardForm.set(wizard.create());
+    return () => wizardForm.set(undefined);
+  }, []);
+
+  const [form] = wizardForm.use();
+  if (!form) return null;
+
   const [currentStep] = form.use("currentStep");
 
   return (
     <div>
-      {currentStep === 0 && <AccountStep form={form} />}
-      {currentStep === 1 && <PersonalStep form={form} />}
-      {currentStep === 2 && <PrefsStep form={form} />}
-      <WizardNav form={form} />
+      {currentStep === 0 && <AccountStep />}
+      {currentStep === 1 && <PersonalStep />}
+      {currentStep === 2 && <PrefsStep />}
+      <WizardNav />
     </div>
   );
 }
+```
 
-function AccountStep({ form }: { form: WizardForm }) {
-  // These are plain reads, not subscriptions — this component doesn't re-render.
-  // It just resolves the refs and passes field instances to FormField,
-  // which subscribes via field.use().
+### AccountStep.tsx
+
+```tsx
+import { wizardForm, type WizardForm, type FieldInstance } from "./Wizard";
+
+function AccountStep() {
+  // Plain read, not a subscription — this component doesn't re-render
+  // on form changes. It just resolves the refs and passes field instances
+  // to FormField, which subscribes via field.use().
+  const form = wizardForm.get()!;
   const account = form.get("account");
-  const emailField = account.get("email");
-  const passwordField = account.get("password");
 
   return (
     <div>
       <h2>Account</h2>
-      <FormField field={emailField} label="Email" type="email" />
-      <FormField field={passwordField} label="Password" type="password" />
+      <FormField field={account.get("email")} label="Email" type="email" />
+      <FormField
+        field={account.get("password")}
+        label="Password"
+        type="password"
+      />
     </div>
   );
 }
+```
 
-function WizardNav({ form }: { form: WizardForm }) {
+### WizardNav.tsx
+
+```tsx
+import { wizardForm } from "./Wizard";
+
+function WizardNav() {
+  const form = wizardForm.get()!;
+
   // Per-field use() — only re-renders when these specific fields change,
   // not when unrelated fields (like account.email) change.
-  // Derived fields return [value], value fields return [value, setter].
-  const [canGoBack] = form.use("canGoBack"); // [boolean] — derived, read-only
-  const [canGoForward] = form.use("canGoForward"); // [boolean] — derived, read-only
+  // Derived fields return [value]
+  const [canGoBack] = form.use("canGoBack"); // [boolean] — derived
+  const [canGoForward] = form.use("canGoForward"); // [boolean] — derived
+  const [stepCount] = form.use("stepCount"); // [number] — derived
+
+  // Value fields return [value, setter].
   const [currentStep, setStep] = form.use("currentStep"); // [number, setter]
-  const [stepCount] = form.use("stepCount"); // [number] — derived, read-only
 
   return (
     <div>
@@ -170,6 +205,12 @@ function WizardNav({ form }: { form: WizardForm }) {
     </div>
   );
 }
+```
+
+### FormField.tsx
+
+```tsx
+import type { FieldInstance } from "./Wizard";
 
 function FormField({
   field,
@@ -193,7 +234,9 @@ function FormField({
         onChange={(e) => set("value", e.target.value)}
         onBlur={() => set("isTouched", true)}
       />
-      {get("isTouched") && get("error") && <span className="error">{get("error")}</span>}
+      {get("isTouched") && get("error") && (
+        <span className="error">{get("error")}</span>
+      )}
     </div>
   );
 }
@@ -201,7 +244,8 @@ function FormField({
 
 ## extend() for step variants
 
-Say some users see an "Organization" step between Account and Personal. Use `extend()` to add fields without duplicating the base:
+Say some users see an "Organization" step between Account and Personal. Use
+`extend()` to add fields without duplicating the base:
 
 ```ts
 const orgStep = personalStep.extend(
@@ -211,18 +255,21 @@ const orgStep = personalStep.extend(
     taxId: field("", (v) => (v && v.length < 9 ? "Invalid tax ID" : null)),
   },
   {
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       // When org size changes, maybe adjust required fields
     },
   },
 );
 ```
 
-`orgStep` has all of `personalStep`'s fields (firstName, lastName, phone) plus the org-specific ones. Lifecycle hooks from both are merged — `personalStep`'s onChange runs first, then `orgStep`'s.
+`orgStep` has all of `personalStep`'s fields (firstName, lastName, phone) plus
+the org-specific ones. Lifecycle hooks from both are merged — `personalStep`'s
+onChange runs first, then `orgStep`'s.
 
 ## allowUndeclaredProperties for dynamic forms
 
-The preferences step has a fixed set of known fields, but a CMS might add more at runtime:
+The preferences step has a fixed set of known fields, but a CMS might add more
+at runtime:
 
 ```ts
 // API returns extra preference fields
@@ -241,33 +288,32 @@ prefsInstance.get("newsletter"); // true
 prefsInstance.get("language"); // "en"
 ```
 
-The known fields (`theme`, `notifications`) are reactive — changing them triggers `onChange` and re-renders. The dynamic fields are preserved and accessible but non-reactive. This is the sweet spot for forms where the schema comes from an external source.
+The known fields (`theme`, `notifications`) are reactive — changing them
+triggers `onChange` and re-renders. The dynamic fields are preserved and
+accessible but non-reactive. This is the sweet spot for forms where the schema
+comes from an external source.
 
 ## Submission
 
 ```ts
-async function submit(form: ReturnType<typeof wizard.create>) {
-  // getSnapshot() captures everything — values, derivations, passthrough data
-  const [account, personal, prefs] = form.get(["account", "personal", "prefs"]);
-
-  const payload = {
-    account: account.getSnapshot(),
-    personal: personal.getSnapshot(),
-    prefs: prefs.getSnapshot(),
-  };
-
+async function submit() {
   await fetch("/api/register", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(wizardForm.get()!.getSnapshot()),
   });
 }
 ```
 
 ## Why this is hard in other libraries
 
-**Zustand**: A multi-step form either lives in one giant store (every field in a flat namespace) or multiple stores that can't easily share validation state. No `extend()` — adding an org step means duplicating the personal step's logic.
+**Zustand**: A multi-step form either lives in one giant store (every field in a
+flat namespace) or multiple stores that can't easily share validation state. No
+`extend()` — adding an org step means duplicating the personal step's logic.
 
-**Jotai**: Each field is an atom. Cross-field validation (password === confirmPassword) requires derived atoms that watch multiple sources. There's no "step" as a unit — it's atoms all the way down. Dynamic fields from an API? You'd need `atomFamily` with dynamic keys and manual cleanup.
+**Jotai**: Each field is an atom. Cross-field validation (password ===
+confirmPassword) requires derived atoms that watch multiple sources. There's no
+"step" as a unit — it's atoms all the way down. Dynamic fields from an API?
+You'd need `atomFamily` with dynamic keys and manual cleanup.
 
 **ValUse**: Each field is a scope. Each step is a scope of field-scopes. The
 wizard is a scope of step-refs. Validation lives in `onChange`. Dynamic fields

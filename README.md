@@ -1,6 +1,9 @@
 # ValUse
 
-State libraries make you choose: one big store (Zustand) or scattered atoms (Jotai). ValUse gives you **scopes** — structured, reactive models with typed fields, derived state, and lifecycle hooks built in, so your state mirrors how your data actually works instead of how your framework wants it.
+State libraries make you choose: one big store (Zustand) or scattered atoms
+(Jotai). ValUse gives you **scopes** — structured, reactive models with typed
+fields, derived state, and lifecycle hooks built in, so your state mirrors how
+your data actually works instead of how your framework wants it.
 
 ## Values
 
@@ -23,15 +26,19 @@ const [name, setName] = name.use();
 
 ### Custom comparison
 
-By default, values re-render on identity change. Override with `.compareUsing()`:
+By default, values re-render on identity change. Override with
+`.compareUsing()`:
 
 ```ts
-const user = value<User>({ id: 1, name: "Alice" }).compareUsing((a, b) => a.id === b.id);
+const user = value<User>({ id: 1, name: "Alice" }).compareUsing(
+  (a, b) => a.id === b.id,
+);
 ```
 
 ### Transforms
 
-Chain `.pipe()` to normalize values on every `set`. Transforms run in order before the value is stored:
+Chain `.pipe()` to normalize values on every `set`. Transforms run in order
+before the value is stored:
 
 ```ts
 const email = value<string>("")
@@ -45,7 +52,8 @@ Since pipes are just functions, extract and reuse them:
 ```ts
 const trim = (v: string) => v.trim();
 const lower = (v: string) => v.toLowerCase();
-const clamp = (min: number, max: number) => (v: number) => Math.max(min, Math.min(max, v));
+const clamp = (min: number, max: number) => (v: number) =>
+  Math.max(min, Math.min(max, v));
 
 const email = value<string>("").pipe(trim).pipe(lower);
 const age = value<number>(0).pipe(clamp(0, 150));
@@ -88,13 +96,14 @@ set((s) => s.delete("bob"));
 Per-key reactivity:
 
 ```ts
-const aliceScore = scores.use("alice"); // only re-renders when alice's score changes
+const [aliceScore, setAliceScore] = scores.use("alice"); // only re-renders when alice's score changes
 const keys = scores.useKeys(); // only re-renders when keys change
 ```
 
 ## Scopes
 
-A `valueScope` is a template that bundles related state and derivations together.
+A `valueScope` is a template that bundles related state and derivations
+together.
 
 ```ts
 import { value, valueScope } from "valuse";
@@ -107,7 +116,8 @@ const address = valueScope({
 });
 ```
 
-Values called without an argument start as `undefined`. Values called with an argument start with that default:
+Values called without an argument start as `undefined`. Values called with an
+argument start with that default:
 
 ```ts
 const person = valueScope({
@@ -169,11 +179,14 @@ set("count", (prev) => prev + 1);
 set({ firstName: "Robert", lastName: "Smith", role: "admin" });
 ```
 
-Bulk `set` sets each provided value key. Derivation, ref, and unrecognized keys are silently ignored. It does not replace the entire state — omitted fields keep their current values.
+Bulk `set` sets each provided value key. Derivation, ref, and unrecognized keys
+are silently ignored. It does not replace the entire state — omitted fields keep
+their current values.
 
 ### Snapshots
 
-`getSnapshot()` returns a plain object of the full scope state — all values, derivations, refs, and passthrough data:
+`getSnapshot()` returns a plain object of the full scope state — all values,
+derivations, refs, and passthrough data:
 
 ```ts
 const bob = person.create({ firstName: "Bob", lastName: "Jones" });
@@ -181,20 +194,29 @@ bob.getSnapshot();
 // { firstName: 'Bob', lastName: 'Jones', role: 'viewer', fullName: 'Bob Jones' }
 ```
 
-This is a one-time read, not reactive. Useful for serialization, debugging, or passing to non-reactive code.
+This is a one-time read, not reactive. Useful for serialization, debugging, or
+passing to non-reactive code.
 
-`setSnapshot()` is the inverse — "make the data structure exactly this":
+`setSnapshot()` is the inverse — "make the data structure exactly this". Omitted
+keys reset to `undefined`, not left as-is. It's a full replacement, not a merge:
 
 ```ts
 bob.setSnapshot({ firstName: "Alice", lastName: "Smith", role: "admin" });
 bob.get("firstName"); // "Alice"
+
+bob.setSnapshot({ firstName: "Charlie" });
+bob.get("firstName"); // "Charlie"
+bob.get("lastName"); // undefined — not "Smith"
+bob.get("role"); // undefined — not "admin"
 ```
 
-Omitted keys are left as-is. Use `setSnapshot(data, { rerunInit: true })` to re-fire the `onInit` hook after restoring.
+Use `setSnapshot(data, { rerunInit: true })` to re-fire the `onInit` hook after
+restoring.
 
 ### Referencing external state
 
-Use `valueRef()` to bring external reactive state into a scope. Refs are shared across all instances — they point to the same source, not a copy:
+Use `valueRef()` to bring external reactive state into a scope. Refs are shared
+across all instances — they point to the same source, not a copy:
 
 ```ts
 import { value, valueRef, valueScope, valueSet } from "valuse";
@@ -230,11 +252,13 @@ bob.get("address").get("full"); // '123 Main, NYC'
 bob.get("address").set("street", "456 Oak"); // mutates the shared instance
 ```
 
-Signal tracking flows transitively — derivations that read through a ref automatically react to changes in the referenced scope.
+Signal tracking flows transitively — derivations that read through a ref
+automatically react to changes in the referenced scope.
 
 ## Keyed collections of scopes
 
-When you need many instances of the same scope — rows in a table, items in a list, entries in a form — use `.createMap()` on a scope:
+When you need many instances of the same scope — rows in a table, items in a
+list, entries in a form — use `.createMap()` on a scope:
 
 ```ts
 const person = valueScope({
@@ -270,7 +294,8 @@ people.set("bob", { firstName: "Bob", lastName: "Jones", role: "admin" });
 people.delete("alice");
 ```
 
-In React, each row is its own reactive boundary. Pass the collection as a prop, or provide it through context — your call:
+In React, each row is its own reactive boundary. Pass the collection as a prop,
+or provide it through context — your call:
 
 ```tsx
 type People = ReturnType<typeof person.createMap>;
@@ -279,7 +304,12 @@ const PersonRow = ({ id, people }: { id: string; people: People }) => {
   const [get, set] = people.use(id);
   // Only re-renders when this person's data changes
 
-  return <input value={get("firstName")} onChange={(e) => set("firstName", e.target.value)} />;
+  return (
+    <input
+      value={get("firstName")}
+      onChange={(e) => set("firstName", e.target.value)}
+    />
+  );
 };
 
 const PeopleTable = ({ people }: { people: People }) => {
@@ -288,11 +318,12 @@ const PeopleTable = ({ people }: { people: People }) => {
 };
 ```
 
-Subscribe to a single field for even finer granularity:
+Subscribe to a single field for finer granularity — only re-renders when that
+specific field changes, not on any change to the instance:
 
 ```ts
-const firstName = people.use("bob", "firstName");
-const { firstName, fullName } = people.use("bob", ["firstName", "fullName"]);
+const [firstName, setFirstName] = people.use("bob", "firstName");
+const [fullName] = people.use("bob", "fullName"); // derivation, read-only
 ```
 
 ## Lifecycle
@@ -301,7 +332,8 @@ Scopes support lifecycle hooks via a config object as the second argument.
 
 ### onInit
 
-Runs once when an instance is created. Receives `set`, `get`, and `input` — the raw value passed to `create()` or `map.set()`:
+Runs once when an instance is created. Receives `{ set, get, input }` — the raw
+value passed to `create()` or `map.set()`:
 
 ```ts
 const formField = valueScope(
@@ -313,7 +345,7 @@ const formField = valueScope(
     isDirty: (get) => get("value") !== get("initialValue"),
   },
   {
-    onInit: (set, get, input) => {
+    onInit: ({ set, get, input }) => {
       set("initialValue", get("value"));
       set("isTouched", false);
     },
@@ -323,7 +355,9 @@ const formField = valueScope(
 
 ### onChange
 
-Fires after any mutation to owned state. **Batched by default** — if multiple values are set synchronously, you get one `onChange` call with all changes on the next microtask. Sets inside `onChange` do not re-trigger the hook.
+Fires after any mutation to owned state. **Batched by default** — if multiple
+values are set synchronously, you get one `onChange` call with all changes on
+the next microtask. Sets inside `onChange` do not re-trigger the hook.
 
 ```ts
 const person = valueScope(
@@ -334,7 +368,7 @@ const person = valueScope(
     changeCount: value<number>(0),
   },
   {
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       // changes = [{ key: 'firstName', from: 'Bob', to: 'Robert' },
       //            { key: 'lastName', from: 'Jones', to: 'Smith' }]
       set("lastUpdated", Date.now());
@@ -346,7 +380,9 @@ const person = valueScope(
 
 ### onUsed / onUnused
 
-`onUsed` fires when the first subscriber starts watching the scope. `onUnused` fires when the last subscriber stops. Useful for lazy resources — don't poll unless someone's looking:
+`onUsed` fires when the first subscriber starts watching the scope. `onUnused`
+fires when the last subscriber stops. Useful for lazy resources — don't poll
+unless someone's looking:
 
 ```ts
 const stockPrice = valueScope(
@@ -356,14 +392,14 @@ const stockPrice = valueScope(
     interval: value<number | null>(null),
   },
   {
-    onUsed: (set, get) => {
+    onUsed: ({ set, get }) => {
       const id = setInterval(async () => {
         const p = await fetchPrice(get("symbol"));
         set("price", p);
       }, 1000);
       set("interval", id);
     },
-    onUnused: (get) => {
+    onUnused: ({ get }) => {
       clearInterval(get("interval"));
     },
   },
@@ -372,7 +408,8 @@ const stockPrice = valueScope(
 
 ### onDestroy
 
-Runs when an instance is removed from a `.createMap()` collection, or when manually destroyed. Use for cleanup:
+Runs when an instance is removed from a `.createMap()` collection, or when
+manually destroyed. Use for cleanup:
 
 ```ts
 const chatRoom = valueScope(
@@ -381,10 +418,10 @@ const chatRoom = valueScope(
     ws: value<WebSocket | null>(null),
   },
   {
-    onInit: (set, get, input) => {
+    onInit: ({ set, get, input }) => {
       set("ws", new WebSocket(`/rooms/${get("roomId")}`));
     },
-    onDestroy: (get) => {
+    onDestroy: ({ get }) => {
       get("ws")?.close();
     },
   },
@@ -396,7 +433,10 @@ rooms.delete("room-42"); // onDestroy fires, websocket closes
 
 ### allowUndeclaredProperties
 
-By default, properties not declared in the scope are silently ignored on `create()` and `set()`. Set `allowUndeclaredProperties: true` to preserve them as plain, non-reactive data. Useful when your scope manages a subset of a larger object — like a Slate editor node:
+By default, properties not declared in the scope are silently ignored on
+`create()` and `set()`. Set `allowUndeclaredProperties: true` to preserve them
+as plain, non-reactive data. Useful when your scope manages a subset of a larger
+object — like a Slate editor node:
 
 ```ts
 const baseNode = valueScope(
@@ -436,7 +476,8 @@ const imageNode = baseNode.extend({
 
 ## Extending scopes
 
-`.extend()` returns a new scope that includes everything from the original plus new state and derivations. The original scope is untouched.
+`.extend()` returns a new scope that includes everything from the original plus
+new state and derivations. The original scope is untouched.
 
 ```ts
 const person = valueScope({
@@ -451,7 +492,7 @@ const trackedPerson = person.extend(
     changeCount: value<number>(0),
   },
   {
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       set("lastUpdated", Date.now());
       set("changeCount", (prev) => prev + changes.length);
     },
@@ -461,7 +502,8 @@ const trackedPerson = person.extend(
 
 ### Reusable middleware
 
-Since `.extend()` takes a scope and returns a scope, middleware is just a function:
+Since `.extend()` takes a scope and returns a scope, middleware is just a
+function:
 
 ```ts
 const withTracking = (scope) =>
@@ -471,7 +513,7 @@ const withTracking = (scope) =>
       changeCount: value<number>(0),
     },
     {
-      onChange: (changes, set, get, getSnapshot) => {
+      onChange: ({ changes, set, get, getSnapshot }) => {
         set("lastUpdated", Date.now());
         set("changeCount", (prev) => prev + changes.length);
       },
@@ -506,10 +548,11 @@ const formField = (initialValue, schema) =>
       isDirty: (get) => get("value") !== get("initialValue"),
       isValid: (get) => schema.allows(get("value")),
       errors: (get) => schema(get("value")).errors ?? [],
-      error: (get) => (get("isTouched") && !get("isValid") ? get("errors")[0]?.message : null),
+      error: (get) =>
+        get("isTouched") && !get("isValid") ? get("errors")[0]?.message : null,
     },
     {
-      onInit: (set, get, input) => {
+      onInit: ({ set, get, input }) => {
         set("initialValue", get("value"));
         set("isTouched", false);
       },
@@ -521,8 +564,10 @@ const contactForm = valueScope({
   email: formField("", type("string.email")),
   age: formField(18, type("number.integer >= 18")),
 
-  isValid: (get) => get("name").isValid && get("email").isValid && get("age").isValid,
-  firstError: (get) => get("name").error ?? get("email").error ?? get("age").error,
+  isValid: (get) =>
+    get("name").isValid && get("email").isValid && get("age").isValid,
+  firstError: (get) =>
+    get("name").error ?? get("email").error ?? get("age").error,
 });
 
 const form = contactForm.create({
@@ -536,11 +581,15 @@ const form = contactForm.create({
 
 ### Reactive primitive
 
-ValUse is built on signals. Under the hood, `value()` creates a signal, derivations create computed signals, and `.use()` bridges into React via `useSyncExternalStore`. This means ValUse works with any framework — React hooks are a convenience layer, not a requirement.
+ValUse is built on signals. Under the hood, `value()` creates a signal,
+derivations create computed signals, and `.use()` bridges into React via
+`useSyncExternalStore`. This means ValUse works with any framework — React hooks
+are a convenience layer, not a requirement.
 
 ### Non-React usage
 
-Every reactive thing exposes `.get()`, `.set()`, and `.subscribe()` for use outside React:
+Every reactive thing exposes `.get()`, `.set()`, and `.subscribe()` for use
+outside React:
 
 ```ts
 // value
@@ -575,7 +624,8 @@ unsub(); // stop listening
 
 ### Destroying instances
 
-Standalone scope instances can be destroyed manually. This fires `onDestroy` and cleans up all subscriptions:
+Standalone scope instances can be destroyed manually. This fires `onDestroy` and
+cleans up all subscriptions:
 
 ```ts
 const bob = person.create({ firstName: "Bob" });
@@ -590,22 +640,29 @@ people.delete("bob"); // onDestroy fires for bob's scope
 
 ### Settability rules
 
-Only `value()`, `valueSet()`, and `valueMap()` fields are settable. Derivations and refs are read-only. Attempting to `set` a derivation or ref is a TypeScript error. At runtime, derivations, refs, and unrecognized keys are silently ignored — no errors thrown. To preserve unrecognized keys as non-reactive data, use `allowUndeclaredProperties: true` in the scope config.
+Only `value()`, `valueSet()`, and `valueMap()` fields are settable. Derivations
+and refs are read-only. Attempting to `set` a derivation or ref is a TypeScript
+error. At runtime, derivations, refs, and unrecognized keys are silently ignored
+— no errors thrown. To preserve unrecognized keys as non-reactive data, use
+`allowUndeclaredProperties: true` in the scope config.
 
 ### Callback setters
 
-The `set` function accepts a callback that receives the previous value. Use this for updates that depend on current state:
+The `set` function accepts a callback that receives the previous value. Use this
+for updates that depend on current state:
 
 ```ts
 set("count", (prev) => prev + 1);
 set("tags", (prev) => new Set([...prev, "new-tag"]));
 ```
 
-This works everywhere — standalone values, scope fields, and inside lifecycle hooks.
+This works everywhere — standalone values, scope fields, and inside lifecycle
+hooks.
 
 ### Mutation callbacks for collections
 
-`valueSet` and `valueMap` mutation callbacks receive an Immer-style draft. You write mutations, the library produces a new immutable value:
+`valueSet` and `valueMap` mutation callbacks receive an Immer-style draft. You
+write mutations, the library produces a new immutable value:
 
 ```ts
 const tags = valueSet<string>(["admin"]);
@@ -619,7 +676,8 @@ This also applies to `valueSet` and `valueMap` fields inside scopes.
 
 ### Async derivations
 
-Derivations can be async. An async derivation returns a `Promise` that resolves to the derived value:
+Derivations can be async. An async derivation returns a `Promise` that resolves
+to the derived value:
 
 ```ts
 const person = valueScope({
@@ -631,7 +689,9 @@ const person = valueScope({
 });
 ```
 
-Async derivations start as `undefined` while loading. When the promise resolves, subscribers are notified. If a dependency changes while a previous promise is in flight, the stale result is discarded.
+Async derivations start as `undefined` while loading. When the promise resolves,
+subscribers are notified. If a dependency changes while a previous promise is in
+flight, the stale result is discarded.
 
 ### Pipes and comparison on collections
 
@@ -689,11 +749,10 @@ people.clear(); // remove all (fires onDestroy for each)
 | Method               | Description                                                         |
 | -------------------- | ------------------------------------------------------------------- |
 | `.get(key)`          | Read a single value, derivation, or ref                             |
-| `.get([keys])`       | Read multiple keys, returns an array                                |
 | `.set(key, value)`   | Set a single value field                                            |
 | `.set({ ... })`      | Merge — sets each provided key, leaves others untouched             |
 | `.getSnapshot()`     | Plain object of full state (values, derivations, refs, passthrough) |
-| `.setSnapshot(data)` | Full restore — sets every value key from the provided object        |
+| `.setSnapshot(data)` | Full replace — omitted value keys reset to `undefined`              |
 | `.subscribe(fn)`     | Listen for changes, returns unsubscribe function                    |
 | `.destroy()`         | Tear down instance, fire `onDestroy`, detach all subscribers        |
 
@@ -701,8 +760,8 @@ people.clear(); // remove all (fires onDestroy for each)
 
 | Option                      | Description                                                                               |
 | --------------------------- | ----------------------------------------------------------------------------------------- |
-| `onInit`                    | Once, when an instance is created. Receives `set`, `get`, and `input`                     |
-| `onChange`                  | After mutations, batched per microtask. Receives `changes`, `set`, `get`, `getSnapshot`   |
+| `onInit`                    | Once, when an instance is created. Receives `{ set, get, input }`                         |
+| `onChange`                  | After mutations, batched per microtask. Receives `{ changes, set, get, getSnapshot }`     |
 | `onUsed`                    | When the first subscriber starts watching                                                 |
 | `onUnused`                  | When the last subscriber stops watching                                                   |
 | `onDestroy`                 | When an instance is removed or destroyed                                                  |
@@ -712,19 +771,18 @@ people.clear(); // remove all (fires onDestroy for each)
 
 Import from `valuse/react` to enable `.use()` hooks.
 
-| Hook                          | Returns                                        |
-| ----------------------------- | ---------------------------------------------- |
-| `value.use()`                 | `[value, setValue]`                            |
-| `valueSet.use()`              | `[Set<T>, setter]`                             |
-| `valueMap.use()`              | `[Map<K,V>, setter]`                           |
-| `valueMap.use(key)`           | Single value                                   |
-| `valueMap.useKeys()`          | Array of keys                                  |
-| `instance.use()`              | `[get, set]` — all fields, coarse subscription |
-| `instance.use(field)`         | `[value, setter]` or `[value]` for derivations |
-| `scopeMap.use(key)`           | `[get, set]` for that instance                 |
-| `scopeMap.use(key, field)`    | Single field value                             |
-| `scopeMap.use(key, [fields])` | Object with selected fields                    |
-| `scopeMap.useKeys()`          | Array of keys                                  |
+| Hook                       | Returns                                        |
+| -------------------------- | ---------------------------------------------- |
+| `value.use()`              | `[value, setValue]`                            |
+| `valueSet.use()`           | `[Set<T>, setter]`                             |
+| `valueMap.use()`           | `[Map<K,V>, setter]`                           |
+| `valueMap.use(key)`        | `[value, setter]` for that key                 |
+| `valueMap.useKeys()`       | Array of keys                                  |
+| `instance.use()`           | `[get, set]` — all fields, coarse subscription |
+| `instance.use(field)`      | `[value, setter]` or `[value]` for derivations |
+| `scopeMap.use(key)`        | `[get, set]` for that instance                 |
+| `scopeMap.use(key, field)` | `[value, setter]` or `[value]` for derivations |
+| `scopeMap.useKeys()`       | Array of keys                                  |
 
 ### Core methods (framework-agnostic)
 

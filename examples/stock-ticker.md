@@ -6,7 +6,10 @@ don't have.
 
 ## The problem
 
-You have a watchlist of stock symbols. Each one needs a WebSocket subscription for live prices. But you don't want to subscribe to all of them at once — only the ones currently rendered. When a user scrolls a row out of view, or navigates away, the subscription should stop. When they come back, it should resume.
+You have a watchlist of stock symbols. Each one needs a WebSocket subscription
+for live prices. But you don't want to subscribe to all of them at once — only
+the ones currently rendered. When a user scrolls a row out of view, or navigates
+away, the subscription should stop. When they come back, it should resume.
 
 In Zustand or Jotai, you'd wire this up with `useEffect` in each component. The
 subscription logic lives in the view layer, tangled with React lifecycle. In
@@ -43,7 +46,7 @@ const stock = valueScope(
     isTrading: (get) => get("marketOpen") && get("price") > 0,
   },
   {
-    onUsed: (set, get) => {
+    onUsed: ({ set, get }) => {
       // First React component subscribed — open the WebSocket
       const symbol = get("symbol");
       const ws = new WebSocket(`wss://feed.example.com/stocks/${symbol}`);
@@ -52,14 +55,16 @@ const stock = valueScope(
         const data = JSON.parse(event.data);
         set("price", data.price);
         set("high", (prev) => Math.max(prev, data.price));
-        set("low", (prev) => (prev === 0 ? data.price : Math.min(prev, data.price)));
+        set("low", (prev) =>
+          prev === 0 ? data.price : Math.min(prev, data.price),
+        );
         set("volume", data.volume);
       };
 
       set("ws", ws);
     },
 
-    onUnused: (get) => {
+    onUnused: ({ get }) => {
       // Last subscriber gone — close the connection
       const ws = get("ws");
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -67,7 +72,7 @@ const stock = valueScope(
       }
     },
 
-    onDestroy: (get) => {
+    onDestroy: ({ get }) => {
       // Removed from watchlist entirely — ensure cleanup
       const ws = get("ws");
       if (ws && ws.readyState !== WebSocket.CLOSED) {
@@ -91,7 +96,8 @@ const watchlist = stock.createMap();
 | Last component unmounts                                      | `onUnused` fires, WebSocket closes                              |
 | User removes AAPL from watchlist: `watchlist.delete("AAPL")` | `onDestroy` fires, WebSocket closes                             |
 
-This is **lazy resource management at the model level**. The view doesn't know about WebSockets. The model doesn't know about React.
+This is **lazy resource management at the model level**. The view doesn't know
+about WebSockets. The model doesn't know about React.
 
 ## React components
 
@@ -157,7 +163,11 @@ function AddSymbol() {
 
   return (
     <div>
-      <input value={text} onChange={(e) => setText(e.target.value)} placeholder="AAPL" />
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="AAPL"
+      />
       <button onClick={add}>Add</button>
     </div>
   );
@@ -171,13 +181,16 @@ function MarketStatus() {
 
 ### Re-render boundaries
 
-- `StockRow` re-renders only when its own stock data changes. AAPL's price ticking doesn't re-render the GOOGL row.
-- `WatchlistTable` re-renders only when the key list changes (add/remove symbol), not on price updates.
+- `StockRow` re-renders only when its own stock data changes. AAPL's price
+  ticking doesn't re-render the GOOGL row.
+- `WatchlistTable` re-renders only when the key list changes (add/remove
+  symbol), not on price updates.
 - `MarketStatus` re-renders only when the market open/close status changes.
 
 ## Virtualized list
 
-For large watchlists, combine with a virtualizer. Only visible rows mount, which means only visible stocks have active WebSocket subscriptions:
+For large watchlists, combine with a virtualizer. Only visible rows mount, which
+means only visible stocks have active WebSocket subscriptions:
 
 ```tsx
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -204,7 +217,9 @@ function VirtualWatchlist() {
 }
 ```
 
-Scroll down — `onUsed` fires and the WebSocket opens. Scroll past — `onUnused` fires and it closes. No `useEffect`, no cleanup logic in the component. The model handles it.
+Scroll down — `onUsed` fires and the WebSocket opens. Scroll past — `onUnused`
+fires and it closes. No `useEffect`, no cleanup logic in the component. The
+model handles it.
 
 ## How this looks in Zustand
 
@@ -236,7 +251,9 @@ what ValUse gives you out of the box.
 
 ```ts
 // Jotai — atomFamily + useEffect for each subscription
-const stockAtom = atomFamily((symbol: string) => atom({ price: 0, prevClose: 0, volume: 0 }));
+const stockAtom = atomFamily((symbol: string) =>
+  atom({ price: 0, prevClose: 0, volume: 0 }),
+);
 
 function StockRow({ symbol }: { symbol: string }) {
   const [stock, setStock] = useAtom(stockAtom(symbol));
@@ -254,4 +271,6 @@ function StockRow({ symbol }: { symbol: string }) {
 }
 ```
 
-Same problem: subscription logic in the view. No concept of "this atom is being watched by N subscribers" at the model level. No `onUsed`/`onUnused`. Every component manages its own cleanup.
+Same problem: subscription logic in the view. No concept of "this atom is being
+watched by N subscribers" at the model level. No `onUsed`/`onUnused`. Every
+component manages its own cleanup.

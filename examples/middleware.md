@@ -1,9 +1,8 @@
 # Example: Middleware
 
-ValUse scopes compose via `extend()`. Since `extend()` takes a scope and
-returns a scope, middleware is just a function that adds state and behavior.
-This example shows two middleware patterns applied to the
-[todo app](./todo-app.md).
+ValUse scopes compose via `extend()`. Since `extend()` takes a scope and returns
+a scope, middleware is just a function that adds state and behavior. This
+example shows two middleware patterns applied to the [todo app](./todo-app.md).
 
 ## Soft delete
 
@@ -76,10 +75,10 @@ function TodoList() {
 
 ## Undo/redo history
 
-This one is more interesting. The history itself shouldn't live inside the
-scope — if it did, `getSnapshot()` would capture the history array, and
-restoring a snapshot would overwrite the history. Instead, history wraps the
-instance from the outside:
+This one is more interesting. The history itself shouldn't live inside the scope
+— if it did, `getSnapshot()` would capture the history array, and restoring a
+snapshot would overwrite the history. Instead, history wraps the instance from
+the outside:
 
 ```ts
 interface History<T> {
@@ -170,7 +169,10 @@ function TodoEditor({ id }: { id: string }) {
 
   return (
     <div>
-      <input value={get("text")} onChange={(e) => set("text", e.target.value)} />
+      <input
+        value={get("text")}
+        onChange={(e) => set("text", e.target.value)}
+      />
       <button disabled={!history.canUndo()} onClick={history.undo}>
         Undo
       </button>
@@ -185,8 +187,8 @@ function TodoEditor({ id }: { id: string }) {
 ### Why history is a wrapper, not extend()
 
 `extend()` is great when the new state is part of the model — soft delete,
-timestamps, flags. History is different: it's _about_ the model, not _in_ it.
-If history lived inside the scope:
+timestamps, flags. History is different: it's _about_ the model, not _in_ it. If
+history lived inside the scope:
 
 - `getSnapshot()` would include the history array — snapshots containing
   snapshots
@@ -233,5 +235,5 @@ function undoTodo(id: string) {
 ```
 
 This is intentionally explicit. Undo/redo is a UI concern — not every instance
-needs it, and the granularity (per-field? per-instance? per-collection?)
-depends on the product. ValUse gives you the primitives; you choose the scope.
+needs it, and the granularity (per-field? per-instance? per-collection?) depends
+on the product. ValUse gives you the primitives; you choose the scope.

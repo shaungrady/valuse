@@ -39,7 +39,7 @@ const user = valueScope(
   },
   {
     // Fires on any field change. get/set are typed to this scope's fields.
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       set("lastUpdated", Date.now());
     },
   },
@@ -52,7 +52,6 @@ const users = user.createMap();
 
 ```tsx
 // valuse/react re-exports everything from valuse, plus React hooks
-import { value, valueScope } from "valuse/react";
 
 function UserTable() {
   // useKeys() subscribes to the key list only —
@@ -80,7 +79,10 @@ function UserRow({ id }: { id: string }) {
       {/* Derived fields are read the same way as value fields */}
       <td>{get("displayName")}</td>
       <td>
-        <input value={get("email")} onChange={(e) => set("email", e.target.value)} />
+        <input
+          value={get("email")}
+          onChange={(e) => set("email", e.target.value)}
+        />
       </td>
       <td>{get("role")}</td>
     </tr>
@@ -88,9 +90,9 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-Each user is a self-contained model with typed fields, derived state, and
-change tracking. The collection manages add/remove/lookup. Per-row
-subscriptions are automatic.
+Each user is a self-contained model with typed fields, derived state, and change
+tracking. The collection manages add/remove/lookup. Per-row subscriptions are
+automatic.
 
 ---
 
@@ -100,7 +102,7 @@ Context is the "no library" approach. Read through and notice how much
 scaffolding is needed just to avoid re-rendering every row on every keystroke.
 
 ```tsx
-import { createContext, useContext, useReducer, useCallback, memo } from "react";
+import { createContext, useContext, useReducer, memo } from "react";
 
 type User = {
   firstName: string;
@@ -191,12 +193,12 @@ const UserRow = memo(function UserRow({ id }: { id: string }) {
 });
 ```
 
-Even with two contexts and `memo`, editing one row still passes
-the entire state object through context; React diffs the memo props to skip
-re-renders, but the context value changes on every keystroke. There are no
-derived fields, no lifecycle hooks, no type-safe field setters. The reducer
-is boilerplate that grows linearly with the number of actions. And none of this
-state logic is usable outside React.
+Even with two contexts and `memo`, editing one row still passes the entire state
+object through context; React diffs the memo props to skip re-renders, but the
+context value changes on every keystroke. There are no derived fields, no
+lifecycle hooks, no type-safe field setters. The reducer is boilerplate that
+grows linearly with the number of actions. And none of this state logic is
+usable outside React.
 
 ---
 
@@ -272,7 +274,10 @@ function UserRow({ id }: { id: string }) {
     <tr>
       <td>{displayName}</td>
       <td>
-        <input value={email} onChange={(e) => setField(id, "email", e.target.value)} />
+        <input
+          value={email}
+          onChange={(e) => setField(id, "email", e.target.value)}
+        />
       </td>
       <td>{role}</td>
     </tr>
@@ -280,12 +285,12 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-Every mutation spreads the entire `users` map.
-Per-field selectors are required; skip one and unrelated edits re-render the
-row. Derived state (`displayName`) is computed in the component, not the model.
-Change tracking (`lastUpdated`) is manually duplicated wherever you write a
-setter. Adding a new action means touching the store interface, the
-implementation, and every component that calls it.
+Every mutation spreads the entire `users` map. Per-field selectors are required;
+skip one and unrelated edits re-render the row. Derived state (`displayName`) is
+computed in the component, not the model. Change tracking (`lastUpdated`) is
+manually duplicated wherever you write a setter. Adding a new action means
+touching the store interface, the implementation, and every component that calls
+it.
 
 ---
 
@@ -412,12 +417,12 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-Each user is its own atom (good for isolation),
-but the key list is a separate atom that must be manually synchronized on every
-add/remove; forget and the UI desyncs. `atomFamily` entries leak unless you
-explicitly call `.remove(id)`. Derived state is computed in the component.
-Change tracking requires a writable atom wrapper around every mutation.
-`Provider` is required for isolation across component trees.
+Each user is its own atom (good for isolation), but the key list is a separate
+atom that must be manually synchronized on every add/remove; forget and the UI
+desyncs. `atomFamily` entries leak unless you explicitly call `.remove(id)`.
+Derived state is computed in the component. Change tracking requires a writable
+atom wrapper around every mutation. `Provider` is required for isolation across
+component trees.
 
 ---
 

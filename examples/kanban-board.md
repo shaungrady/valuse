@@ -27,7 +27,7 @@ const card = valueScope(
     isSelected: value<boolean>(false),
   },
   {
-    onInit: (set) => {
+    onInit: ({ set }) => {
       set("createdAt", Date.now());
     },
     // Boards can attach arbitrary fields (priority, story points, due date, etc.)
@@ -98,7 +98,12 @@ Moving a card between columns is two field updates — remove from source, add t
 destination. No store-wide spread, no reducer, no action:
 
 ```ts
-function moveCard(cardId: string, fromColumnId: string, toColumnId: string, toIndex: number) {
+function moveCard(
+  cardId: string,
+  fromColumnId: string,
+  toColumnId: string,
+  toIndex: number,
+) {
   const fromCol = columns.get(fromColumnId);
   const toCol = columns.get(toColumnId);
   if (!fromCol || !toCol) return;
@@ -227,7 +232,8 @@ function FilteredCard({ id }: { id: string }) {
   const filterAssignee = boardInstance.use("filterAssignee");
   // Returns [value] since filterAssignee is a value, not derived
 
-  const dimmed = filterAssignee[0] !== null && get("assignee") !== filterAssignee[0];
+  const dimmed =
+    filterAssignee[0] !== null && get("assignee") !== filterAssignee[0];
 
   return (
     <div style={{ opacity: dimmed ? 0.3 : 1 }}>
@@ -265,7 +271,7 @@ const card = valueScope(
     createdAt: value<number>(0),
   },
   {
-    onChange: (changes, set, get, getSnapshot) => {
+    onChange: ({ changes, set, get, getSnapshot }) => {
       // One-liner persistence — getSnapshot() captures everything
       debounce(() => saveCard(get("id"), getSnapshot()), 500);
     },
