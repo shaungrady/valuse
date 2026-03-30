@@ -5,11 +5,67 @@
 > fields, derived state, and lifecycle hooks built in, so your state mirrors how
 > your data actually works instead of how your framework wants it.
 
-The same feature — a **user table** with editable rows, derived display names,
-change tracking, and per-row React subscriptions — built four ways. The
-multi-instance problem is where state libraries diverge most.
+This page compares ValUse to React Context, Zustand, and Jotai across three
+dimensions: how many concepts you need to learn, how common concerns map to each
+library, and what real code looks like when you build the same feature in all
+four.
 
-## The feature
+---
+
+## Concept count
+
+How many things do you need to learn before you can be productive?
+
+**ValUse:** `value`, `valueScope`, `.use()`. That's it. Derivations are plain
+functions. Collections are `.createMap()`. Lifecycle is an options object.
+Everything composes the same way — scopes of scopes, collections of scopes, refs
+between scopes. One mental model, applied recursively.
+
+**Zustand:** stores, selectors, `set`/`get` inside stores, shallow comparison,
+middleware (`persist`, `immer`, `devtools`), slices pattern for splitting
+stores,`useStore` with selector functions, `getState`/`setState` for outside
+React. Each pattern has its own conventions.
+
+**Jotai:** atoms, derived atoms, writable atoms, `atomFamily`,
+`atomWithStorage`,`selectAtom`, `splitAtom`, `focusAtom`, `Provider`/`Store` for
+isolation, `useAtom`/`useAtomValue`/`useSetAtom`. The number of atom utilities
+grows with every problem you solve, and combining them requires understanding
+how Jotai's dependency graph resolves.
+
+The real cost isn't learning these once — it's re-learning them three months
+later when you come back to code that uses `splitAtom` inside an `atomFamily`
+with a custom `selectAtom` comparator, and you have to reconstruct what that
+combination was supposed to do.
+
+---
+
+## Side-by-side summary
+
+| Concern             | ValUse                                | React Context                         | Zustand                                     | Jotai                             |
+| ------------------- | ------------------------------------- | ------------------------------------- | ------------------------------------------- | --------------------------------- |
+| Define a user model | `valueScope({ ... })`                 | Type alias + reducer                  | Interface + store factory                   | `atomFamily` per entity           |
+| Collection of users | `user.createMap()`                    | `Record<string, User>` in state       | Map-in-store + spreads                      | `atomFamily` + separate key atom  |
+| Add/remove users    | `users.set(id, data)` / `.delete(id)` | Dispatch action                       | Store action                                | Update family + key atom          |
+| Derived state       | Inline `(get) => ...` in scope        | Compute in component                  | Compute in component or write selector      | `atom((get) => ...)` or component |
+| Change tracking     | `onChange` hook, one place            | Manual in reducer                     | Manual in every setter                      | Manual in writable atoms          |
+| Per-row isolation   | Automatic                             | Requires `memo` + split contexts      | Requires per-field selectors                | One atom per entity (leaks)       |
+| Lifecycle hooks     | `onUsed` / `onUnused` / `onDestroy`   | `useEffect` in component              | `useEffect` in component                    | `useEffect` in component          |
+| Works outside React | `.get()` / `.set()` / `.subscribe()`  | No                                    | `getState()` / `setState()` / `subscribe()` | Requires `Store` instance         |
+| Type safety on set  | `set("email", value)`, key is typed   | `dispatch({ field: "email" })`, loose | `setField(id, "email", value)`, loose       | `set(atom, value)`, per atom      |
+| Multi-instance      | `createMap()`, call anywhere          | Tied to component tree                | Singleton store                             | Requires `Provider`/`Store`       |
+
+The core difference: **ValUse treats "a user" as a structured, reactive model —
+then gives you a typed collection of them.** The others require you to build
+that structure yourself out of primitives (atoms, store slices, reducer cases),
+and the scaffolding grows with every field and every action.
+
+---
+
+## Code comparison
+
+The same feature, a **user table** with editable rows, derived display names,
+change tracking, and per-row React subscriptions, built four ways. The
+multi-instance problem is where state libraries diverge most.
 
 - A table of users, each with `firstName`, `lastName`, `email`, and `role`
 - `displayName` is derived per user: `"firstName lastName"`
@@ -19,7 +75,7 @@ multi-instance problem is where state libraries diverge most.
 
 ---
 
-## ValUse
+### ValUse
 
 ```ts
 import { value, valueScope } from "valuse";
@@ -44,16 +100,16 @@ const user = valueScope(
     },
   },
 );
-
-// createMap() gives you a keyed collection of scope instances.
-// Each entry is a fully independent reactive model.
-const users = user.createMap();
 ```
 
 ```tsx
 // valuse/react re-exports everything from valuse, plus React hooks
 
 function UserTable() {
+  // createMap() gives you a keyed collection of scope instances.
+  // Each entry is a fully independent reactive model.
+  const users = useMemo(() => user.createMap(), []);
+
   // useKeys() subscribes to the key list only —
   // re-renders on add/remove, not on field changes
   const keys = users.useKeys();
@@ -92,7 +148,9 @@ function UserRow({ id }: { id: string }) {
 
 Each user is a self-contained model with typed fields, derived state, and change
 tracking. The collection manages add/remove/lookup. Per-row subscriptions are
-automatic.
+automatic. And because `user` is a template, you can call `user.createMap()`
+again anywhere — multiple independent tables, a test harness, a server route —
+without rewiring providers or creating new store definitions.
 
 **"But there are strings everywhere?"** — They're fully type-checked.
 `get("emal")` is a TypeScript error. `set("displayName", ...)` is a type error
@@ -105,7 +163,7 @@ They also sidestep the naming problem: no `userStore`, `userAtom`,
 
 ---
 
-## React Context
+### React Context
 
 Context is the "no library" approach. Read through and notice how much
 scaffolding is needed just to avoid re-rendering every row on every keystroke.
@@ -211,7 +269,7 @@ usable outside React.
 
 ---
 
-## Zustand
+### Zustand
 
 Notice that per-row isolation requires manual selectors, and the store has to
 define a setter for every mutation. Derived state like `displayName` either
@@ -299,11 +357,50 @@ skip one and unrelated edits re-render the row. Derived state (`displayName`) is
 computed in the component, not the model. Change tracking (`lastUpdated`) is
 manually duplicated wherever you write a setter. Adding a new action means
 touching the store interface, the implementation, and every component that calls
-it.
+it. And the store is a singleton; if you need two independent user tables, you
+need a factory wrapper:
+
+```ts
+// Zustand: factory wrapper to create independent instances
+function createUserStore() {
+  return create<UserStore>((set) => ({
+    users: {},
+    addUser: (id, user) =>
+      set((s) => ({ users: { ...s.users, [id]: user } })),
+    removeUser: (id) =>
+      set((s) => {
+        const { [id]: _, ...rest } = s.users;
+        return { users: rest };
+      }),
+    setField: (id, field, value) =>
+      set((s) => ({
+        users: {
+          ...s.users,
+          [id]: { ...s.users[id], [field]: value, lastUpdated: Date.now() },
+        },
+      })),
+  }));
+}
+
+// Every component that needs its own table creates a store
+// and threads it through context or props
+const StoreContext = createContext<ReturnType<typeof createUserStore>>(null!);
+
+function IndependentUserTable() {
+  const [store] = useState(() => createUserStore());
+  return (
+    <StoreContext.Provider value={store}>
+      <UserTable />
+    </StoreContext.Provider>
+  );
+}
+```
+
+Compare that to ValUse: `const users = useMemo(() => user.createMap(), [])`.
 
 ---
 
-## Jotai
+### Jotai
 
 Notice that each user is a separate atom family entry, and keeping the key list
 in sync requires a second atom plus manual coordination on add/remove.
@@ -430,26 +527,26 @@ Each user is its own atom (good for isolation), but the key list is a separate
 atom that must be manually synchronized on every add/remove; forget and the UI
 desyncs. `atomFamily` entries leak unless you explicitly call `.remove(id)`.
 Derived state is computed in the component. Change tracking requires a writable
-atom wrapper around every mutation. `Provider` is required for isolation across
-component trees.
+atom wrapper around every mutation. And if you need two independent user tables,
+you need a separate `Provider` and `Store` for each; without that, they share
+the same atom state:
 
----
+```tsx
+import { Provider, createStore } from "jotai";
 
-## Side-by-side summary
+function IndependentUserTable() {
+  // Each table needs its own store to isolate atom state
+  const [store] = useState(() => createStore());
+  return (
+    <Provider store={store}>
+      <UserTable />
+    </Provider>
+  );
+}
+```
 
-| Concern             | ValUse                                | Context                               | Zustand                                     | Jotai                             |
-| ------------------- | ------------------------------------- | ------------------------------------- | ------------------------------------------- | --------------------------------- |
-| Define a user model | `valueScope({ ... })`                 | Type alias + reducer                  | Interface + store factory                   | `atomFamily` per entity           |
-| Collection of users | `user.createMap()`                    | `Record<string, User>` in state       | Map-in-store + spreads                      | `atomFamily` + separate key atom  |
-| Add/remove users    | `users.set(id, data)` / `.delete(id)` | Dispatch action                       | Store action                                | Update family + key atom          |
-| Derived state       | Inline `(get) => ...` in scope        | Compute in component                  | Compute in component or write selector      | `atom((get) => ...)` or component |
-| Change tracking     | `onChange` hook, one place            | Manual in reducer                     | Manual in every setter                      | Manual in writable atoms          |
-| Per-row isolation   | Automatic                             | Requires `memo` + split contexts      | Requires per-field selectors                | One atom per entity (leaks)       |
-| Lifecycle hooks     | `onUsed` / `onUnused` / `onDestroy`   | `useEffect` in component              | `useEffect` in component                    | `useEffect` in component          |
-| Works outside React | `.get()` / `.set()` / `.subscribe()`  | No                                    | `getState()` / `setState()` / `subscribe()` | Requires `Store` instance         |
-| Type safety on set  | `set("email", value)`, key is typed   | `dispatch({ field: "email" })`, loose | `setField(id, "email", value)`, loose       | `set(atom, value)`, per atom      |
-
-The core difference: **ValUse treats "a user" as a structured, reactive model —
-then gives you a typed collection of them.** The others require you to build
-that structure yourself out of primitives (atoms, store slices, reducer cases),
-and the scaffolding grows with every field and every action.
+Every component that renders `<IndependentUserTable />` gets isolated state, but
+now every `useAtom` call inside must be aware it's reading from a scoped
+provider. Atoms defined at module level still share state unless every consumer
+is wrapped. Compare that to ValUse:
+`const users = useMemo(() => user.createMap(), [])`.

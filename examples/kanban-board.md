@@ -132,12 +132,13 @@ and card is untouched.
 import { value, valueScope } from "valuse/react";
 
 function Board() {
-  // Only re-renders when columns are added/removed/reordered
-  const [get] = boardInstance.use();
+  // Per-field subscription — only re-renders when columnOrder changes,
+  // not when the board name or filter changes
+  const [columnOrder] = boardInstance.use("columnOrder");
 
   return (
     <div className="board">
-      {get("columnOrder").map((colId) => (
+      {columnOrder.map((colId) => (
         <Column key={colId} id={colId} />
       ))}
     </div>
@@ -228,12 +229,10 @@ board's scope:
 function FilteredCard({ id }: { id: string }) {
   const [get] = cards.use(id);
 
-  // Access the board's filter through its scope instance
-  const filterAssignee = boardInstance.use("filterAssignee");
-  // Returns [value] since filterAssignee is a value, not derived
+  // Per-field subscription to the board's filter
+  const [filterAssignee] = boardInstance.use("filterAssignee");
 
-  const dimmed =
-    filterAssignee[0] !== null && get("assignee") !== filterAssignee[0];
+  const dimmed = filterAssignee !== null && get("assignee") !== filterAssignee;
 
   return (
     <div style={{ opacity: dimmed ? 0.3 : 1 }}>
@@ -243,16 +242,16 @@ function FilteredCard({ id }: { id: string }) {
 }
 ```
 
-Or use `valueRef` to bake the filter into the card scope itself:
+Or use `valueRef` to bake the board into the card scope itself, so the
+derivation can access the filter without an external import:
 
 ```ts
 const card = valueScope({
   // ... other fields ...
-  filterAssignee: valueRef(boardInstance), // ref to the board scope
+  board: valueRef(boardInstance), // ref to the board scope instance
 
   isFiltered: (get) => {
-    const board = get("filterAssignee");
-    const filter = board.get("filterAssignee");
+    const filter = get("board").get("filterAssignee");
     return filter !== null && get("assignee") !== filter;
   },
 });
@@ -281,14 +280,14 @@ const card = valueScope(
 
 ## Why scopes fit this model
 
-| Kanban concept            | ValUse equivalent                                                |
-| ------------------------- | ---------------------------------------------------------------- |
-| Card with typed fields    | `valueScope({ title: value<string>(), ... })`                    |
-| Card type (bug, feature)  | `card.extend({ severity: value<string>() })`                     |
-| Custom fields per board   | `allowUndeclaredProperties: true`                                |
-| Column with ordered cards | `valueScope({ cardIds: value<string[]>([]) })`                   |
-| All cards / all columns   | `card.createMap()` / `column.createMap()`                        |
-| Drag-and-drop             | Two `set("cardIds", ...)` calls on the affected columns          |
-| Board-level filter        | `valueRef(boardInstance)` or direct `boardInstance.use("field")` |
-| Per-card persistence      | `onChange` + `getSnapshot()`                                     |
-| Per-card re-renders       | `cards.use(id)` — automatic isolation                            |
+| Kanban concept            | ValUse equivalent                                                  |
+| ------------------------- | ------------------------------------------------------------------ |
+| Card with typed fields    | `valueScope({ title: value<string>(), ... })`                      |
+| Card type (bug, feature)  | `card.extend({ severity: value<string>() })`                       |
+| Custom fields per board   | `allowUndeclaredProperties: true`                                  |
+| Column with ordered cards | `valueScope({ cardIds: value<string[]>([]) })`                     |
+| All cards / all columns   | `card.createMap()` / `column.createMap()`                          |
+| Drag-and-drop             | Two `set("cardIds", ...)` calls on the affected columns            |
+| Board-level filter        | `boardInstance.use("filterAssignee")` or `valueRef(boardInstance)` |
+| Per-card persistence      | `onChange` + `getSnapshot()`                                       |
+| Per-card re-renders       | `cards.use(id)` — automatic isolation                              |

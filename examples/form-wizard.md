@@ -156,7 +156,9 @@ function AccountStep() {
   // Plain read, not a subscription — this component doesn't re-render
   // on form changes. It just resolves the refs and passes field instances
   // to FormField, which subscribes via field.use().
-  const form = wizardForm.get()!;
+  const form = wizardForm.get();
+  if (!form) return null;
+
   const account = form.get("account");
 
   return (
@@ -179,7 +181,8 @@ function AccountStep() {
 import { wizardForm } from "./Wizard";
 
 function WizardNav() {
-  const form = wizardForm.get()!;
+  const form = wizardForm.get();
+  if (!form) return null;
 
   // Per-field use() — only re-renders when these specific fields change,
   // not when unrelated fields (like account.email) change.

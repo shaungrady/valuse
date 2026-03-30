@@ -1,9 +1,23 @@
 # ValUse
 
-State libraries make you choose: one big store (Zustand) or scattered atoms
-(Jotai). ValUse gives you **scopes** — structured, reactive models with typed
-fields, derived state, and lifecycle hooks built in, so your state mirrors how
-your data actually works instead of how your framework wants it.
+_Another_ state library? Yes, but a different kind. State libraries make you
+choose: one big store (Zustand) or scattered atoms (Jotai). ValUse gives you
+**scopes** — structured, reactive models with typed fields, derived state, and
+lifecycle hooks built in, so your state mirrors how your data actually works
+instead of how your framework wants it. And creating independent instances
+doesn't require factory wrappers or providers.
+
+[**Let's compare.**](examples/comparison.md)
+
+So what kind of stuff does ValUse make easy?
+
+- [Another todo list](examples/todo-app.md), because the world needed one more
+- A [form wizard](examples/form-wizard.md) with validation, dynamic fields, and
+  cross-step state
+- A [real-time stock ticker](examples/stock-ticker.md) with WebSocket feeds (GME
+  to the moon)
+- A [kanban board](examples/kanban-board.md) with drag-and-drop between columns
+- [Middleware](examples/middleware.md) for logging, persistence, undo/redo
 
 ## Values
 
@@ -150,33 +164,78 @@ get("fullName"); // 'Bob Jones'
 set("role", "admin");
 ```
 
+### Getting values
+
+`get` reads the current value outside of React. In React, `use` subscribes and
+re-renders on change.
+
+Value:
+
+```ts
+name.get(); // "Alice" — plain read, no subscription
+const [currentName, setName] = name.use(); // React subscription
+```
+
+ValueSet:
+
+```ts
+tags.get(); // Set { "a", "b" }
+const [currentTags, setTags] = tags.use();
+```
+
+ValueMap:
+
+```ts
+scores.get(); // Map { "alice" => 90 }
+const [currentScores, setScores] = scores.use();
+```
+
+Scope instance:
+
+```ts
+bob.get("firstName"); // "Bob" — plain read of one field
+bob.get("fullName"); // "Bob Jones" — derivations work too
+
+const [get, set] = bob.use(); // React subscription to all fields
+get("firstName"); // "Bob"
+
+const [firstName, setFirstName] = bob.use("firstName"); // subscribe to one field
+const [fullName] = bob.use("fullName"); // derived — no setter
+```
+
 ### Setting values
 
 `set` works consistently across all types:
 
+Value:
+
 ```ts
-// value — replace it
-const [name, setName] = name.use();
+const [currentName, setName] = name.use();
 setName("Bob");
+```
 
-// valueSet — replace or mutate
-const [current, set] = tags.use();
-set(new Set(["a", "b"])); // replace the whole set
-set((t) => t.add("c")); // mutate callback
+ValueSet:
 
-// valueMap — replace or mutate
-const [current, set] = scores.use();
-set((s) => s.set("alice", 95));
+```ts
+const [currentTags, setTags] = tags.use();
+setTags(new Set(["a", "b"])); // replace the whole set
+setTags((t) => t.add("c")); // mutate callback
+```
 
-// valueScope — single field
+ValueMap:
+
+```ts
+const [currentScores, setScores] = scores.use();
+setScores((s) => s.set("alice", 95));
+```
+
+Scope instance:
+
+```ts
 const [get, set] = bob.use();
 set("firstName", "Robert");
-
-// callback form — receives previous value
-set("count", (prev) => prev + 1);
-
-// bulk set — multiple fields at once
-set({ firstName: "Robert", lastName: "Smith", role: "admin" });
+set("count", (prev) => prev + 1); // callback form
+set({ firstName: "Robert", lastName: "Smith", role: "admin" }); // bulk
 ```
 
 Bulk `set` sets each provided value key. Derivation, ref, and unrecognized keys
