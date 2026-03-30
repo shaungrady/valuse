@@ -1,4 +1,4 @@
-# Comparison: ValUse vs Zustand vs Jotai vs Context
+# Comparison: ValUse vs Context vs Zustand vs Jotai
 
 > State libraries make you choose: one big store (Zustand) or scattered atoms
 > (Jotai). ValUse gives you **scopes** — structured, reactive models with typed
@@ -93,6 +93,15 @@ function UserRow({ id }: { id: string }) {
 Each user is a self-contained model with typed fields, derived state, and change
 tracking. The collection manages add/remove/lookup. Per-row subscriptions are
 automatic.
+
+**"But there are strings everywhere?"** — They're fully type-checked.
+`get("emal")` is a TypeScript error. `set("displayName", ...)` is a type error
+(it's derived). Autocomplete works on every key. The return type of
+`get("role")` is `string`, `get("displayName")` is `string` — all inferred from
+the scope definition. String keys are what let ValUse avoid the tangle of
+references, atom imports, and selector functions that the alternatives require.
+They also sidestep the naming problem: no `userStore`, `userAtom`,
+`emailSignal`, `setEmail`. You just have `user` and call `get("email")` on it.
 
 ---
 
