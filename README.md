@@ -19,6 +19,22 @@ So what kind of stuff does ValUse make easy?
 - A [kanban board](examples/kanban-board.md) with drag-and-drop between columns
 - [Middleware](examples/middleware.md) for logging, persistence, undo/redo
 
+Just want to see code? **[Quickstart](QUICKSTART.md)**
+
+## Table of contents
+
+- [Values](#values) — reactive primitives with transforms and custom comparison
+- [Collections](#collections) — reactive Set and Map
+- [Scopes](#scopes) — structured models with typed fields and derivations
+- [Refs](#refs) — share reactive state across scopes
+- [Keyed collections of scopes](#keyed-collections-of-scopes) — many instances
+  of the same scope
+- [Lifecycle](#lifecycle) — onInit, onChange, onUsed/onUnused, onDestroy
+- [Extending scopes](#extending-scopes) — derive new scopes, reusable middleware
+- [Factories](#factories) — parameterized scope templates
+- [Batching](#batching)
+- [API reference](#api-reference)
+
 ## Values
 
 The building block. A `value` is a single piece of reactive state.
@@ -30,23 +46,29 @@ const name = value<string>("Alice");
 const count = value<number>(0);
 ```
 
-In React:
-
-```tsx
-const [name, setName] = name.use();
-// name = 'Alice'
-// setName('Bob') — updates and re-renders
-```
-
-### Custom comparison
-
-By default, values re-render on identity change. Override with
-`.compareUsing()`:
+Read, write, and subscribe — no framework required:
 
 ```ts
-const user = value<User>({ id: 1, name: "Alice" }).compareUsing(
-  (a, b) => a.id === b.id,
-);
+name.get(); // 'Alice'
+name.set("Bob");
+name.set((prev) => prev.toUpperCase()); // callback form
+name.subscribe((v) => console.log(v)); // logs on every change
+```
+
+In React, `.use()` returns a `[value, setter]` tuple that subscribes and
+re-renders on change:
+
+```tsx
+const [currentName, setName] = name.use();
+```
+
+All `.subscribe()` calls return an unsubscribe function. `.destroy()` tears down
+all active subscriptions at once:
+
+```ts
+const unsub = name.subscribe((v) => console.log(v));
+unsub(); // stop this listener
+name.destroy(); // stop all listeners
 ```
 
 ### Transforms
@@ -57,8 +79,7 @@ before the value is stored:
 ```ts
 const email = value<string>("")
   .pipe((v) => v.trim())
-  .pipe((v) => v.toLowerCase())
-  .compareUsing((a, b) => a === b);
+  .pipe((v) => v.toLowerCase());
 ```
 
 Since pipes are just functions, extract and reuse them:
@@ -71,12 +92,27 @@ const clamp = (min: number, max: number) => (v: number) =>
 
 const email = value<string>("").pipe(trim).pipe(lower);
 const age = value<number>(0).pipe(clamp(0, 150));
-const name = value<string>("").pipe(trim);
 ```
+
+### Custom comparison
+
+By default, values notify subscribers on identity change (`===`). Override with
+`.compareUsing()`:
+
+```ts
+const user = value<User>({ id: 1, name: "Alice" }).compareUsing(
+  (a, b) => a.id === b.id,
+);
+```
+
+`.pipe()` and `.compareUsing()` work on all value types — `value`, `valueSet`,
+and `valueMap`.
 
 ## Collections
 
-Reactive versions of the JS data structures you already know.
+Reactive versions of the JS data structures you already know. Same interface as
+`value` — `.get()`, `.set()`, `.subscribe()`, `.use()`, `.pipe()`,
+`.compareUsing()`, `.destroy()`.
 
 ### valueSet
 
@@ -84,12 +120,26 @@ Reactive versions of the JS data structures you already know.
 import { valueSet } from "valuse";
 
 const tags = valueSet<string>(["admin", "active"]);
-// Also accepts: valueSet(new Set(["admin", "active"]))
 
+tags.get(); // Set { 'admin', 'active' }
+tags.has("admin"); // true
+tags.size; // 2
+
+// Mutation callbacks receive a draft — write mutations, get a new immutable Set
+tags.set((draft) => draft.add("editor"));
+tags.set((draft) => draft.delete("admin"));
+
+// Convenience methods
+tags.add("editor");
+tags.delete("admin");
+tags.clear();
+```
+
+In React:
+
+```tsx
 const [current, set] = tags.use();
-current; // Set { 'admin', 'active' }
 set((t) => t.add("editor"));
-set((t) => t.delete("admin"));
 ```
 
 ### valueMap
@@ -97,182 +147,118 @@ set((t) => t.delete("admin"));
 ```ts
 import { valueMap } from "valuse";
 
-const scores = valueMap<string, number>();
-// Also accepts: valueMap(new Map([["alice", 95]]))
-// Or entries:   valueMap([["alice", 95], ["bob", 82]])
+const scores = valueMap<string, number>([
+  ["alice", 95],
+  ["bob", 82],
+]);
 
-const [current, set] = scores.use();
-set((s) => s.set("alice", 95));
-set((s) => s.set("bob", 82));
-set((s) => s.delete("bob"));
+scores.get(); // Map { 'alice' => 95, 'bob' => 82 }
+scores.get("alice"); // 95
+scores.has("alice"); // true
+scores.size; // 2
+scores.keys(); // ['alice', 'bob']
+
+scores.set((draft) => draft.set("charlie", 90));
+scores.delete("bob");
 ```
 
-Per-key reactivity:
+In React, subscribe to the whole map or a single key:
 
-```ts
-const [aliceScore, setAliceScore] = scores.use("alice"); // only re-renders when alice's score changes
+```tsx
+const [all, setAll] = scores.use(); // whole map
+const [aliceScore, setAlice] = scores.use("alice"); // only re-renders when alice changes
 const keys = scores.useKeys(); // only re-renders when keys change
 ```
 
 ## Scopes
 
-A `valueScope` is a template that bundles related state and derivations
-together.
+A `valueScope` bundles related state and derivations into a reusable template.
 
 ```ts
 import { value, valueScope } from "valuse";
 
-const address = valueScope({
-  street: value<string>(),
-  city: value<string>(),
-  state: value<string>(),
-  full: (get) => `${get("street")}, ${get("city")}, ${get("state")}`,
-});
-```
-
-Values called without an argument start as `undefined`. Values called with an
-argument start with that default:
-
-```ts
 const person = valueScope({
-  firstName: value<string>(), // starts as undefined
-  lastName: value<string>(), // starts as undefined
-  role: value<string>("viewer"), // starts as 'viewer'
+  firstName: value<string>(),
+  lastName: value<string>(),
+  role: value<string>("viewer"),
 
   fullName: (get) => `${get("firstName")} ${get("lastName")}`,
 });
 ```
 
+Values called without an argument start as `undefined`. Values called with an
+argument start with that default.
+
 ### Creating instances
 
 ```ts
-// Provide everything
 const bob = person.create({
   firstName: "Bob",
   lastName: "Jones",
   // role defaults to 'viewer'
 });
 
-// Provide some — firstName and lastName start as undefined
-const partial = person.create({ role: "admin" });
+const partial = person.create({ role: "admin" }); // firstName, lastName are undefined
+const empty = person.create(); // all undefined or defaults
+```
 
-// Provide nothing — everything is undefined or defaults
-const empty = person.create();
+### Reading and writing
 
+```ts
+bob.get("firstName"); // 'Bob'
+bob.get("fullName"); // 'Bob Jones' — derivations work like any other field
+
+bob.set("role", "admin");
+bob.set("role", (prev) => prev.toUpperCase()); // callback form
+bob.set({ firstName: "Robert", lastName: "Smith" }); // bulk — omitted fields untouched
+```
+
+Only `value()` fields are settable. Derivations and refs are read-only — a
+TypeScript error to `set`, silently ignored at runtime.
+
+### Using in React
+
+```tsx
+// All fields — re-renders on any change
 const [get, set] = bob.use();
 get("fullName"); // 'Bob Jones'
 set("role", "admin");
+
+// Single field — only re-renders when that field changes
+const [firstName, setFirstName] = bob.use("firstName");
+const [fullName] = bob.use("fullName"); // derivation — no setter
 ```
-
-### Getting values
-
-`get` reads the current value outside of React. In React, `use` subscribes and
-re-renders on change.
-
-Value:
-
-```ts
-name.get(); // "Alice" — plain read, no subscription
-const [currentName, setName] = name.use(); // React subscription
-```
-
-ValueSet:
-
-```ts
-tags.get(); // Set { "a", "b" }
-const [currentTags, setTags] = tags.use();
-```
-
-ValueMap:
-
-```ts
-scores.get(); // Map { "alice" => 90 }
-const [currentScores, setScores] = scores.use();
-```
-
-Scope instance:
-
-```ts
-bob.get("firstName"); // "Bob" — plain read of one field
-bob.get("fullName"); // "Bob Jones" — derivations work too
-
-const [get, set] = bob.use(); // React subscription to all fields
-get("firstName"); // "Bob"
-
-const [firstName, setFirstName] = bob.use("firstName"); // subscribe to one field
-const [fullName] = bob.use("fullName"); // derived — no setter
-```
-
-### Setting values
-
-`set` works consistently across all types:
-
-Value:
-
-```ts
-const [currentName, setName] = name.use();
-setName("Bob");
-```
-
-ValueSet:
-
-```ts
-const [currentTags, setTags] = tags.use();
-setTags(new Set(["a", "b"])); // replace the whole set
-setTags((t) => t.add("c")); // mutate callback
-```
-
-ValueMap:
-
-```ts
-const [currentScores, setScores] = scores.use();
-setScores((s) => s.set("alice", 95));
-```
-
-Scope instance:
-
-```ts
-const [get, set] = bob.use();
-set("firstName", "Robert");
-set("count", (prev) => prev + 1); // callback form
-set({ firstName: "Robert", lastName: "Smith", role: "admin" }); // bulk
-```
-
-Bulk `set` sets each provided value key. Derivation, ref, and unrecognized keys
-are silently ignored. It does not replace the entire state — omitted fields keep
-their current values.
 
 ### Snapshots
 
-`getSnapshot()` returns a plain object of the full scope state — all values,
-derivations, refs, and passthrough data:
+`getSnapshot()` returns a plain object of the entire scope state — values,
+derivations, refs, and passthrough data. One-time read, not reactive:
 
 ```ts
-const bob = person.create({ firstName: "Bob", lastName: "Jones" });
 bob.getSnapshot();
 // { firstName: 'Bob', lastName: 'Jones', role: 'viewer', fullName: 'Bob Jones' }
 ```
 
-This is a one-time read, not reactive. Useful for serialization, debugging, or
-passing to non-reactive code.
-
-`setSnapshot()` is the inverse — "make the data structure exactly this". Omitted
-keys reset to `undefined`, not left as-is. It's a full replacement, not a merge:
+`setSnapshot()` is a full replacement. Omitted keys reset to `undefined`:
 
 ```ts
 bob.setSnapshot({ firstName: "Alice", lastName: "Smith", role: "admin" });
-bob.get("firstName"); // "Alice"
-
 bob.setSnapshot({ firstName: "Charlie" });
-bob.get("firstName"); // "Charlie"
-bob.get("lastName"); // undefined — not "Smith"
-bob.get("role"); // undefined — not "admin"
+bob.get("lastName"); // undefined — not 'Smith'
 ```
 
-Use `setSnapshot(data, { rerunInit: true })` to re-fire the `onInit` hook after
+Use `setSnapshot(data, { rerunInit: true })` to re-fire `onInit` after
 restoring.
 
-### Referencing external state
+### Subscribing outside React
+
+```ts
+bob.subscribe((get) => {
+  console.log(get("fullName"));
+});
+```
+
+## Refs
 
 Use `valueRef()` to bring external reactive state into a scope. Refs are shared
 across all instances — they point to the same source, not a copy:
@@ -285,7 +271,7 @@ const globalSpecialTags = valueSet<string>(["admin", "root"]);
 const person = valueScope({
   firstName: value<string>(),
   tags: valueSet<string>(),
-  specialTags: valueRef(globalSpecialTags), // shared, not copied
+  specialTags: valueRef(globalSpecialTags),
 
   hasSpecialTag: (get) => get("tags").some((t) => get("specialTags").has(t)),
 });
@@ -317,26 +303,19 @@ automatically react to changes in the referenced scope.
 ## Keyed collections of scopes
 
 When you need many instances of the same scope — rows in a table, items in a
-list, entries in a form — use `.createMap()` on a scope:
+list, entries in a form — use `.createMap()`:
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  role: value<string>("viewer"),
-  fullName: (get) => `${get("firstName")} ${get("lastName")}`,
-});
-
 // Empty collection
 const people = person.createMap();
 
-// Initialize from an array — string shorthand for the key field
+// From an array — string shorthand for the key field
 const people = person.createMap(apiResponse, "id");
 
-// Initialize from an array — callback for computed keys
+// From an array — callback for computed keys
 const people = person.createMap(apiResponse, (item) => item.id);
 
-// Initialize from a Map
+// From a Map
 const people = person.createMap(
   new Map([
     ["alice", { firstName: "Alice", lastName: "Smith" }],
@@ -349,19 +328,20 @@ Add, update, and remove entries:
 
 ```ts
 people.set("alice", { firstName: "Alice", lastName: "Smith" });
-people.set("bob", { firstName: "Bob", lastName: "Jones", role: "admin" });
-people.delete("alice");
+people.delete("alice"); // fires onDestroy for that instance
+people.size; // number of entries
+people.keys(); // string[]
+people.has("alice"); // boolean
+people.clear(); // remove all, fires onDestroy for each
 ```
 
-In React, each row is its own reactive boundary. Pass the collection as a prop,
-or provide it through context — your call:
+In React, each row is its own reactive boundary:
 
 ```tsx
 type People = ReturnType<typeof person.createMap>;
 
-const PersonRow = ({ id, people }: { id: string; people: People }) => {
+function PersonRow({ id, people }: { id: string; people: People }) {
   const [get, set] = people.use(id);
-  // Only re-renders when this person's data changes
 
   return (
     <input
@@ -369,16 +349,15 @@ const PersonRow = ({ id, people }: { id: string; people: People }) => {
       onChange={(e) => set("firstName", e.target.value)}
     />
   );
-};
+}
 
-const PeopleTable = ({ people }: { people: People }) => {
+function PeopleTable({ people }: { people: People }) {
   const keys = people.useKeys();
   return keys.map((id) => <PersonRow key={id} id={id} people={people} />);
-};
+}
 ```
 
-Subscribe to a single field for finer granularity — only re-renders when that
-specific field changes, not on any change to the instance:
+Per-field subscriptions work here too:
 
 ```ts
 const [firstName, setFirstName] = people.use("bob", "firstName");
@@ -400,11 +379,10 @@ const formField = valueScope(
     value: value<string>(),
     initialValue: value<string>(),
     isTouched: value<boolean>(),
-
     isDirty: (get) => get("value") !== get("initialValue"),
   },
   {
-    onInit: ({ set, get, input }) => {
+    onInit: ({ set, get }) => {
       set("initialValue", get("value"));
       set("isTouched", false);
     },
@@ -414,9 +392,9 @@ const formField = valueScope(
 
 ### onChange
 
-Fires after any mutation to owned state. **Batched by default** — if multiple
-values are set synchronously, you get one `onChange` call with all changes on
-the next microtask. Sets inside `onChange` do not re-trigger the hook.
+Fires after mutations. **Batched by default** — multiple synchronous sets
+produce one `onChange` call on the next microtask. Sets inside `onChange` do not
+re-trigger the hook:
 
 ```ts
 const person = valueScope(
@@ -424,14 +402,11 @@ const person = valueScope(
     firstName: value<string>(),
     lastName: value<string>(),
     lastUpdated: value<number>(0),
-    changeCount: value<number>(0),
   },
   {
     onChange: ({ changes, set, get, getSnapshot }) => {
-      // changes = [{ key: 'firstName', from: 'Bob', to: 'Robert' },
-      //            { key: 'lastName', from: 'Jones', to: 'Smith' }]
+      // changes = [{ key: 'firstName', from: 'Bob', to: 'Robert' }]
       set("lastUpdated", Date.now());
-      set("changeCount", (prev) => prev + changes.length);
     },
   },
 );
@@ -439,9 +414,8 @@ const person = valueScope(
 
 ### onUsed / onUnused
 
-`onUsed` fires when the first subscriber starts watching the scope. `onUnused`
-fires when the last subscriber stops. Useful for lazy resources — don't poll
-unless someone's looking:
+`onUsed` fires when the first subscriber starts watching. `onUnused` fires when
+the last subscriber stops. Useful for lazy resources:
 
 ```ts
 const stockPrice = valueScope(
@@ -467,8 +441,7 @@ const stockPrice = valueScope(
 
 ### onDestroy
 
-Runs when an instance is removed from a `.createMap()` collection, or when
-manually destroyed. Use for cleanup:
+Runs when an instance is removed from a collection or manually destroyed:
 
 ```ts
 const chatRoom = valueScope(
@@ -477,7 +450,7 @@ const chatRoom = valueScope(
     ws: value<WebSocket | null>(null),
   },
   {
-    onInit: ({ set, get, input }) => {
+    onInit: ({ set, get }) => {
       set("ws", new WebSocket(`/rooms/${get("roomId")}`));
     },
     onDestroy: ({ get }) => {
@@ -492,10 +465,8 @@ rooms.delete("room-42"); // onDestroy fires, websocket closes
 
 ### allowUndeclaredProperties
 
-By default, properties not declared in the scope are silently ignored on
-`create()` and `set()`. Set `allowUndeclaredProperties: true` to preserve them
-as plain, non-reactive data. Useful when your scope manages a subset of a larger
-object — like a Slate editor node:
+By default, properties not declared in the scope are silently dropped. Set
+`allowUndeclaredProperties: true` to preserve them as plain, non-reactive data:
 
 ```ts
 const baseNode = valueScope(
@@ -504,21 +475,37 @@ const baseNode = valueScope(
     type: value<string>(),
     isHighlighted: value<boolean>(false),
   },
-  {
-    allowUndeclaredProperties: true,
-  },
+  { allowUndeclaredProperties: true },
 );
 
-const nodes = baseNode.createMap();
-
 // Slate node has { id, type, text, children, bold, italic, ... }
+const nodes = baseNode.createMap();
 nodes.set("node-1", slateNode);
-
-// id, type, isHighlighted — reactive, managed by the scope
-// text, children, bold, italic — preserved, accessible, but not reactive
+// id, type, isHighlighted — reactive
+// text, children, bold, italic — preserved but not reactive
 ```
 
-Extended scopes can then promote passthrough properties into reactive values:
+## Extending scopes
+
+`.extend()` returns a new scope that includes everything from the original plus
+new state, derivations, and lifecycle hooks. The original is untouched:
+
+```ts
+const trackedPerson = person.extend(
+  {
+    lastUpdated: value<number>(Date.now()),
+    changeCount: value<number>(0),
+  },
+  {
+    onChange: ({ changes, set }) => {
+      set("lastUpdated", Date.now());
+      set("changeCount", (prev) => prev + changes.length);
+    },
+  },
+);
+```
+
+Extended scopes can promote passthrough properties into reactive values:
 
 ```ts
 const paragraphNode = baseNode.extend({
@@ -531,32 +518,6 @@ const imageNode = baseNode.extend({
   alt: value<string>(""),
   isLoading: value<boolean>(false),
 });
-```
-
-## Extending scopes
-
-`.extend()` returns a new scope that includes everything from the original plus
-new state and derivations. The original scope is untouched.
-
-```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  fullName: (get) => `${get("firstName")} ${get("lastName")}`,
-});
-
-const trackedPerson = person.extend(
-  {
-    lastUpdated: value<number>(Date.now()),
-    changeCount: value<number>(0),
-  },
-  {
-    onChange: ({ changes, set, get, getSnapshot }) => {
-      set("lastUpdated", Date.now());
-      set("changeCount", (prev) => prev + changes.length);
-    },
-  },
-);
 ```
 
 ### Reusable middleware
@@ -572,7 +533,7 @@ const withTracking = (scope) =>
       changeCount: value<number>(0),
     },
     {
-      onChange: ({ changes, set, get, getSnapshot }) => {
+      onChange: ({ changes, set }) => {
         set("lastUpdated", Date.now());
         set("changeCount", (prev) => prev + changes.length);
       },
@@ -587,7 +548,6 @@ const withSoftDelete = (scope) =>
 
 // Compose
 const fullPerson = withSoftDelete(withTracking(person));
-const people = fullPerson.createMap();
 ```
 
 ## Factories
@@ -611,7 +571,7 @@ const formField = (initialValue, schema) =>
         get("isTouched") && !get("isValid") ? get("errors")[0]?.message : null,
     },
     {
-      onInit: ({ set, get, input }) => {
+      onInit: ({ set, get }) => {
         set("initialValue", get("value"));
         set("isTouched", false);
       },
@@ -628,156 +588,23 @@ const contactForm = valueScope({
   firstError: (get) =>
     get("name").error ?? get("email").error ?? get("age").error,
 });
+```
 
-const form = contactForm.create({
-  name: { value: "Alice" },
-  email: { value: "alice@foo.com" },
-  age: { value: 25 },
+## Batching
+
+Use `batch()` to group multiple writes so subscribers fire once:
+
+```ts
+import { batch } from "valuse";
+
+batch(() => {
+  name.set("Bob");
+  count.set(42);
 });
+// Subscribers notified once, not twice
 ```
 
-## Implementation notes
-
-### Reactive primitive
-
-ValUse is built on signals. Under the hood, `value()` creates a signal,
-derivations create computed signals, and `.use()` bridges into React via
-`useSyncExternalStore`. This means ValUse works with any framework — React hooks
-are a convenience layer, not a requirement.
-
-### Non-React usage
-
-Every reactive thing exposes `.get()`, `.set()`, and `.subscribe()` for use
-outside React:
-
-```ts
-// value
-const name = value<string>("Alice");
-name.get(); // 'Alice'
-name.set("Bob");
-name.subscribe((v) => console.log(v)); // logs on every change
-
-// scope instance
-const bob = person.create({ firstName: "Bob", lastName: "Jones" });
-bob.get("fullName"); // 'Bob Jones'
-bob.set("firstName", "Robert");
-bob.set({ firstName: "Robert", lastName: "Smith" }); // bulk set
-bob.getSnapshot(); // { firstName: 'Robert', lastName: 'Smith', role: 'viewer', fullName: 'Robert Smith' }
-bob.subscribe((get) => {
-  console.log(get("fullName"));
-});
-
-// scope map — whole collection
-const people = person.createMap();
-people.subscribe((keys) => {
-  console.log("keys changed:", keys);
-});
-```
-
-All `.subscribe()` calls return an unsubscribe function:
-
-```ts
-const unsub = name.subscribe((v) => console.log(v));
-unsub(); // stop listening
-```
-
-### Destroying instances
-
-Standalone scope instances can be destroyed manually. This fires `onDestroy` and
-cleans up all subscriptions:
-
-```ts
-const bob = person.create({ firstName: "Bob" });
-bob.destroy(); // onDestroy fires, all subscribers detached
-```
-
-For map collections, `.delete()` destroys the instance:
-
-```ts
-people.delete("bob"); // onDestroy fires for bob's scope
-```
-
-### Settability rules
-
-Only `value()`, `valueSet()`, and `valueMap()` fields are settable. Derivations
-and refs are read-only. Attempting to `set` a derivation or ref is a TypeScript
-error. At runtime, derivations, refs, and unrecognized keys are silently ignored
-— no errors thrown. To preserve unrecognized keys as non-reactive data, use
-`allowUndeclaredProperties: true` in the scope config.
-
-### Callback setters
-
-The `set` function accepts a callback that receives the previous value. Use this
-for updates that depend on current state:
-
-```ts
-set("count", (prev) => prev + 1);
-set("tags", (prev) => new Set([...prev, "new-tag"]));
-```
-
-This works everywhere — standalone values, scope fields, and inside lifecycle
-hooks.
-
-### Mutation callbacks for collections
-
-`valueSet` and `valueMap` mutation callbacks receive an Immer-style draft. You
-write mutations, the library produces a new immutable value:
-
-```ts
-const tags = valueSet<string>(["admin"]);
-
-// The callback receives a draft — mutations are recorded, not applied directly
-tags.set((draft) => draft.add("editor"));
-// Under the hood: new Set with 'editor' added
-```
-
-This also applies to `valueSet` and `valueMap` fields inside scopes.
-
-### Async derivations
-
-Derivations can be async. An async derivation returns a `Promise` that resolves
-to the derived value:
-
-```ts
-const person = valueScope({
-  userId: value<string>(),
-  profile: async (get) => {
-    const res = await fetch(`/api/users/${get("userId")}`);
-    return res.json();
-  },
-});
-```
-
-Async derivations start as `undefined` while loading. When the promise resolves,
-subscribers are notified. If a dependency changes while a previous promise is in
-flight, the stale result is discarded.
-
-### Pipes and comparison on collections
-
-`.pipe()` and `.compareUsing()` work on `valueSet` and `valueMap` too:
-
-```ts
-const tags = valueSet<string>()
-  .pipe((s) => new Set([...s].map((t) => t.toLowerCase())))
-  .compareUsing((a, b) => a.size === b.size);
-```
-
-### Map collection methods
-
-`scope.createMap()` and `valueMap()` expose standard Map-like methods:
-
-```ts
-const people = person.createMap();
-
-people.size; // number of entries
-people.has("alice"); // boolean
-people.keys(); // string[]
-people.values(); // array of scope instances
-people.entries(); // [key, instance][]
-people.clear(); // remove all (fires onDestroy for each)
-```
-
-## API summary
+## API reference
 
 ### Primitives
 
@@ -790,6 +617,7 @@ people.clear(); // remove all (fires onDestroy for each)
 | `value().compareUsing(fn)` | Custom equality check for re-renders                      |
 | `valueSet<T>()`            | Reactive Set (accepts `T[]` or `Set<T>`)                  |
 | `valueMap<K, V>()`         | Reactive Map (accepts `[K, V][]` or `Map<K, V>`)          |
+| `batch(fn)`                | Group writes — subscribers fire once                      |
 
 ### Scopes
 
@@ -803,13 +631,13 @@ people.clear(); // remove all (fires onDestroy for each)
 | `scope.createMap(mapData)`      | Create a collection from a `Map<string, data>`                     |
 | `scope.extend({ ... })`         | Derive a new scope with additional state and derivations           |
 
-### Scope instance methods
+### Instance methods
 
 | Method               | Description                                                         |
 | -------------------- | ------------------------------------------------------------------- |
 | `.get(key)`          | Read a single value, derivation, or ref                             |
-| `.set(key, value)`   | Set a single value field                                            |
-| `.set({ ... })`      | Merge — sets each provided key, leaves others untouched             |
+| `.set(key, value)`   | Set a single value field (callback form: `prev => next`)            |
+| `.set({ ... })`      | Bulk set — each provided key is set, others untouched               |
 | `.getSnapshot()`     | Plain object of full state (values, derivations, refs, passthrough) |
 | `.setSnapshot(data)` | Full replace — omitted value keys reset to `undefined`              |
 | `.subscribe(fn)`     | Listen for changes, returns unsubscribe function                    |
@@ -817,14 +645,14 @@ people.clear(); // remove all (fires onDestroy for each)
 
 ### Scope config
 
-| Option                      | Description                                                                               |
-| --------------------------- | ----------------------------------------------------------------------------------------- |
-| `onInit`                    | Once, when an instance is created. Receives `{ set, get, input }`                         |
-| `onChange`                  | After mutations, batched per microtask. Receives `{ changes, set, get, getSnapshot }`     |
-| `onUsed`                    | When the first subscriber starts watching                                                 |
-| `onUnused`                  | When the last subscriber stops watching                                                   |
-| `onDestroy`                 | When an instance is removed or destroyed                                                  |
-| `allowUndeclaredProperties` | If `true`, preserve unrecognized properties as plain non-reactive data (default: `false`) |
+| Option                      | Description                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `onInit`                    | Once, when created. Receives `{ set, get, input }`                                    |
+| `onChange`                  | After mutations, batched per microtask. Receives `{ changes, set, get, getSnapshot }` |
+| `onUsed`                    | When the first subscriber starts watching                                             |
+| `onUnused`                  | When the last subscriber stops watching                                               |
+| `onDestroy`                 | When an instance is removed or destroyed                                              |
+| `allowUndeclaredProperties` | Preserve unrecognized properties as plain non-reactive data (default: `false`)        |
 
 ### React hooks
 
@@ -837,17 +665,8 @@ Import from `valuse/react` to enable `.use()` hooks.
 | `valueMap.use()`           | `[Map<K,V>, setter]`                           |
 | `valueMap.use(key)`        | `[value, setter]` for that key                 |
 | `valueMap.useKeys()`       | Array of keys                                  |
-| `instance.use()`           | `[get, set]` — all fields, coarse subscription |
+| `instance.use()`           | `[get, set]` — all fields                      |
 | `instance.use(field)`      | `[value, setter]` or `[value]` for derivations |
 | `scopeMap.use(key)`        | `[get, set]` for that instance                 |
 | `scopeMap.use(key, field)` | `[value, setter]` or `[value]` for derivations |
 | `scopeMap.useKeys()`       | Array of keys                                  |
-
-### Core methods (framework-agnostic)
-
-| Method           | Description                                                  |
-| ---------------- | ------------------------------------------------------------ |
-| `.get()`         | Read current value (value, set, map) or `.get(key)` (scope)  |
-| `.set()`         | Write value, accepts direct value or `prev => next` callback |
-| `.subscribe(fn)` | Listen for changes, returns unsubscribe function             |
-| `.destroy()`     | Tear down instance, fire `onDestroy`, detach all subscribers |

@@ -20,7 +20,8 @@ const todo = valueScope(
   },
   {
     onInit: ({ set }) => {
-      set("createdAt", Date.now());
+      // Only set if not already provided (e.g., hydrated from localStorage)
+      if (!get("createdAt")) set("createdAt", Date.now());
     },
     onChange: ({ changes, set, get, getSnapshot }) => {
       localStorage.setItem(`todo:${get("id")}`, JSON.stringify(getSnapshot()));

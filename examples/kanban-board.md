@@ -27,15 +27,14 @@ const card = valueScope(
     isSelected: value<boolean>(false),
   },
   {
-    onInit: ({ set }) => {
-      set("createdAt", Date.now());
+    onInit: ({ set, get }) => {
+      // Only set if not already provided (e.g., hydrated from API)
+      if (!get("createdAt")) set("createdAt", Date.now());
     },
     // Boards can attach arbitrary fields (priority, story points, due date, etc.)
     allowUndeclaredProperties: true,
   },
 );
-
-const cards = card.createMap();
 ```
 
 ### Card type specialization via extend()
@@ -62,13 +61,12 @@ const featureCard = card.extend({
 const column = valueScope({
   id: value<string>(),
   name: value<string>(),
-  cardIds: value<string[]>([]), // ordered list of card IDs in this column
+  // ordered list of unique card IDs in this column
+  cardIds: value<string[]>([]).pipe((ids) => [...new Set(ids)]),
 
   cardCount: (get) => get("cardIds").length,
   isEmpty: (get) => get("cardIds").length === 0,
 });
-
-const columns = column.createMap();
 ```
 
 ### The board
@@ -76,21 +74,39 @@ const columns = column.createMap();
 ```ts
 const board = valueScope({
   name: value<string>("My Board"),
-  columnOrder: value<string[]>([]), // ordered column IDs
-
-  // Shared filter — all cards can see this via valueRef
+  columnOrder: value<string[]>([]),
   filterAssignee: value<string | null>(null),
 });
 
-const boardInstance = board.create({
-  columnOrder: ["todo", "in-progress", "done"],
-});
-
-// Initialize columns
-columns.set("todo", { id: "todo", name: "To Do" });
-columns.set("in-progress", { id: "in-progress", name: "In Progress" });
-columns.set("done", { id: "done", name: "Done" });
+let boardInstance: ReturnType<typeof board.create>;
+let cards: ReturnType<typeof card.createMap>;
+let columns: ReturnType<typeof column.createMap>;
 ```
+
+### Hydrating from an API
+
+`createMap()` accepts an array and a key field (or function), so hydrating from
+API data is one line per collection:
+
+```ts
+async function loadBoard(boardId: string) {
+  const data = await fetch(`/api/boards/${boardId}`).then((r) => r.json());
+
+  boardInstance = board.create({
+    name: data.name,
+    columnOrder: data.columns.map((c) => c.id),
+  });
+
+  // Each card becomes its own scope instance, keyed by "id"
+  cards = card.createMap(data.cards, "id");
+
+  // Each column becomes its own scope instance, keyed by "id"
+  columns = column.createMap(data.columns, "id");
+}
+```
+
+Cards from the API arrive with `createdAt` already set, so `onInit` preserves
+it. New cards created client-side get `Date.now()` as the fallback.
 
 ## Drag and drop
 
@@ -184,52 +200,45 @@ function Card({ id }: { id: string }) {
 }
 ```
 
-## allowUndeclaredProperties for custom fields
+## Going further
 
-Boards often let users define their own card fields — priority, due date, story
-points, labels. These come from a config endpoint, not the type system:
+### Custom fields from an API
+
+Boards often let users define their own card fields. Since the card scope has
+`allowUndeclaredProperties: true`, dynamic fields from an API are preserved
+alongside the typed ones:
 
 ```ts
-// API returns the board's custom field schema
-const customFields = await fetch("/api/boards/123/fields");
-// [{ key: "priority", type: "select" }, { key: "dueDate", type: "date" }]
-
-// When creating a card, pass the custom fields along.
-// Known fields (title, columnId, etc.) are reactive.
-// Custom fields (priority, dueDate) are preserved as passthrough.
 cards.set("card-1", {
   id: "card-1",
   title: "Fix login bug",
   columnId: "todo",
+  // Dynamic fields from the API — preserved as passthrough
   priority: "high",
   dueDate: "2026-04-15",
 } as any);
 
-// Read them back
 cards.get("card-1")?.get("priority"); // "high"
 ```
 
-If a custom field needs to become reactive later (e.g., you want derived state
-based on `priority`), promote it with `extend()`:
+If a dynamic field later needs reactivity or derived state, promote it with
+`extend()`:
 
 ```ts
 const prioritizedCard = card.extend({
   priority: value<"low" | "medium" | "high">("medium"),
-
   isUrgent: (get) => get("priority") === "high" && get("assignee") === null,
 });
 ```
 
-## Nested access
+### Board-level filtering
 
-The board instance exposes the filter. A card component can read it via the
-board's scope:
+A card component can subscribe to the board's filter directly, without prop
+drilling or context:
 
 ```tsx
 function FilteredCard({ id }: { id: string }) {
   const [get] = cards.use(id);
-
-  // Per-field subscription to the board's filter
   const [filterAssignee] = boardInstance.use("filterAssignee");
 
   const dimmed = filterAssignee !== null && get("assignee") !== filterAssignee;
@@ -242,52 +251,23 @@ function FilteredCard({ id }: { id: string }) {
 }
 ```
 
-Or use `valueRef` to bake the board into the card scope itself, so the
-derivation can access the filter without an external import:
+### Auto-saving with onChange
 
-```ts
-const card = valueScope({
-  // ... other fields ...
-  board: valueRef(boardInstance), // ref to the board scope instance
-
-  isFiltered: (get) => {
-    const filter = get("board").get("filterAssignee");
-    return filter !== null && get("assignee") !== filter;
-  },
-});
-```
-
-## Persistence with onChange and getSnapshot
+Add persistence to the card scope without touching the components:
 
 ```ts
 const card = valueScope(
   {
-    id: value<string>(),
-    title: value<string>().pipe((v) => v.trim()),
-    columnId: value<string>(),
-    position: value<number>(0),
-    assignee: value<string | null>(null),
-    createdAt: value<number>(0),
+    /* ...fields from above... */
   },
   {
-    onChange: ({ changes, set, get, getSnapshot }) => {
-      // One-liner persistence — getSnapshot() captures everything
+    onChange: ({ get, getSnapshot }) => {
       debounce(() => saveCard(get("id"), getSnapshot()), 500);
     },
   },
 );
 ```
 
-## Why scopes fit this model
-
-| Kanban concept            | ValUse equivalent                                                  |
-| ------------------------- | ------------------------------------------------------------------ |
-| Card with typed fields    | `valueScope({ title: value<string>(), ... })`                      |
-| Card type (bug, feature)  | `card.extend({ severity: value<string>() })`                       |
-| Custom fields per board   | `allowUndeclaredProperties: true`                                  |
-| Column with ordered cards | `valueScope({ cardIds: value<string[]>([]) })`                     |
-| All cards / all columns   | `card.createMap()` / `column.createMap()`                          |
-| Drag-and-drop             | Two `set("cardIds", ...)` calls on the affected columns            |
-| Board-level filter        | `boardInstance.use("filterAssignee")` or `valueRef(boardInstance)` |
-| Per-card persistence      | `onChange` + `getSnapshot()`                                       |
-| Per-card re-renders       | `cards.use(id)` — automatic isolation                              |
+Want to archive cards instead of deleting them? See the
+[soft delete middleware](middleware.md#soft-delete) for a reusable `extend()`
+pattern that adds `isDeleted` and `deletedAt` to any scope.
