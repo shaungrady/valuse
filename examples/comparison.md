@@ -10,6 +10,16 @@ dimensions: how many concepts you need to learn, how common concerns map to each
 library, and what real code looks like when you build the same feature in all
 four.
 
+## Table of contents
+
+- [Concept count](#concept-count)
+- [Side-by-side summary](#side-by-side-summary)
+- [Code comparison](#code-comparison) — user table built four ways
+- [Async data comparison](#async-data-comparison) — fetch with abort, loading,
+  error
+  - [No async contagion](#no-async-contagion) — why async doesn't infect your
+    derivations
+
 ---
 
 ## Concept count
@@ -41,18 +51,22 @@ combination was supposed to do.
 
 ## Side-by-side summary
 
-| Concern             | ValUse                                | React Context                         | Zustand                                     | Jotai                             |
-| ------------------- | ------------------------------------- | ------------------------------------- | ------------------------------------------- | --------------------------------- |
-| Define a user model | `valueScope({ ... })`                 | Type alias + reducer                  | Interface + store factory                   | `atomFamily` per entity           |
-| Collection of users | `user.createMap()`                    | `Record<string, User>` in state       | Map-in-store + spreads                      | `atomFamily` + separate key atom  |
-| Add/remove users    | `users.set(id, data)` / `.delete(id)` | Dispatch action                       | Store action                                | Update family + key atom          |
-| Derived state       | Inline `(get) => ...` in scope        | Compute in component                  | Compute in component or write selector      | `atom((get) => ...)` or component |
-| Change tracking     | `onChange` hook, one place            | Manual in reducer                     | Manual in every setter                      | Manual in writable atoms          |
-| Per-row isolation   | Automatic                             | Requires `memo` + split contexts      | Requires per-field selectors                | One atom per entity (leaks)       |
-| Lifecycle hooks     | `onUsed` / `onUnused` / `onDestroy`   | `useEffect` in component              | `useEffect` in component                    | `useEffect` in component          |
-| Works outside React | `.get()` / `.set()` / `.subscribe()`  | No                                    | `getState()` / `setState()` / `subscribe()` | Requires `Store` instance         |
-| Type safety on set  | `set("email", value)`, key is typed   | `dispatch({ field: "email" })`, loose | `setField(id, "email", value)`, loose       | `set(atom, value)`, per atom      |
-| Multi-instance      | `createMap()`, call anywhere          | Tied to component tree                | Singleton store                             | Requires `Provider`/`Store`       |
+| Concern               | ValUse                                                     | React Context                         | Zustand                                     | Jotai                                      |
+| --------------------- | ---------------------------------------------------------- | ------------------------------------- | ------------------------------------------- | ------------------------------------------ |
+| Define a user model   | `valueScope({ ... })`                                      | Type alias + reducer                  | Interface + store factory                   | `atomFamily` per entity                    |
+| Collection of users   | `user.createMap()`                                         | `Record<string, User>` in state       | Map-in-store + spreads                      | `atomFamily` + separate key atom           |
+| Add/remove users      | `users.set(id, data)` / `.delete(id)`                      | Dispatch action                       | Store action                                | Update family + key atom                   |
+| Derived state         | Inline `({ use }) => ...` in scope                         | Compute in component                  | Compute in component or write selector      | `atom((get) => ...)` or component          |
+| Change tracking       | `onChange` hook, one place                                 | Manual in reducer                     | Manual in every setter                      | Manual in writable atoms                   |
+| Per-row isolation     | Automatic                                                  | Requires `memo` + split contexts      | Requires per-field selectors                | One atom per entity (leaks)                |
+| Lifecycle hooks       | `onUsed` / `onUnused` / `onDestroy`                        | `useEffect` in component              | `useEffect` in component                    | `useEffect` in component                   |
+| Works outside React   | `.get()` / `.set()` / `.subscribe()`                       | No                                    | `getState()` / `setState()` / `subscribe()` | Requires `Store` instance                  |
+| Type safety on set    | `set("email", value)`, key is typed                        | `dispatch({ field: "email" })`, loose | `setField(id, "email", value)`, loose       | `set(atom, value)`, per atom               |
+| Multi-instance        | `createMap()`, call anywhere                               | Tied to component tree                | Singleton store                             | Requires `Provider`/`Store`                |
+| Async data            | `async ({ use, signal }) => ...`                           | `useEffect` + `useState` × 3          | Async action + manual loading/error state   | `async atom` + `loadable()` wrapper        |
+| Abort on dep change   | Automatic via `signal`                                     | Manual `AbortController` in effect    | Manual, often forgotten                     | No built-in abort                          |
+| Loading/error state   | `getAsync()` / `useAsync()` built in                       | Manual `isLoading`/`error` state      | Manual fields in store                      | `loadable()` or Suspense boundary          |
+| Async → sync boundary | Transparent — `use("asyncField")` returns `T \| undefined` | Consumer must handle Promise/loading  | Consumer must read loading/error fields     | Consumer must use `loadable()` or Suspense |
 
 The core difference: **ValUse treats "a user" as a structured, reactive model —
 then gives you a typed collection of them.** The others require you to build
@@ -90,8 +104,9 @@ const user = valueScope(
     role: value<string>("viewer"), // default value
     lastUpdated: value<number>(0),
 
-    // Plain functions are derived state, recomputed when dependencies change
-    displayName: (get) => `${get("firstName")} ${get("lastName")}`,
+    // Plain functions are derived state, recomputed when dependencies change.
+    // use() tracks deps (like .use() in React — subscribes and re-runs on change).
+    displayName: ({ use }) => `${use("firstName")} ${use("lastName")}`,
   },
   {
     // Fires on any field change. get/set are typed to this scope's fields.
@@ -550,3 +565,256 @@ now every `useAtom` call inside must be aware it's reading from a scoped
 provider. Atoms defined at module level still share state unless every consumer
 is wrapped. Compare that to ValUse:
 `const users = useMemo(() => user.createMap(), [])`.
+
+---
+
+## Async data comparison
+
+The same feature: **fetch a user profile by ID, re-fetch when the ID changes,
+show loading/error state, abort stale requests.** This is where the gap widens
+the most.
+
+---
+
+### ValUse
+
+```ts
+const userProfile = valueScope({
+  userId: value<string>(),
+
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use("userId")}`, { signal });
+    return res.json();
+  },
+});
+```
+
+```tsx
+function Profile() {
+  const inst = useMemo(() => userProfile.create({ userId: "alice" }), []);
+  const [profile, state] = inst.useAsync("profile");
+
+  if (state.status === "setting") return <Spinner />;
+  if (state.status === "error") return <Error error={state.error} />;
+  return <div>{profile.name}</div>;
+}
+```
+
+That's it. When `userId` changes, the previous fetch is aborted via `signal` and
+a new one starts. Status tracking is built in. No extra state, no cleanup logic,
+no effect dependencies to manage.
+
+---
+
+## No async contagion
+
+This is the part that's hardest to replicate in other libraries. In ValUse, a
+sync derivation can depend on an async derivation without knowing it's async:
+
+```ts
+const userProfile = valueScope({
+  userId: value<string>(),
+
+  // Async — fetches from API
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use("userId")}`, { signal });
+    return res.json();
+  },
+
+  // Sync — doesn't know or care that profile is async.
+  // Just sees string | undefined.
+  greeting: ({ use }) => {
+    const profile = use("profile");
+    return profile ? `Hello, ${profile.name}!` : "Loading...";
+  },
+});
+```
+
+`greeting` is a plain sync derivation. It recomputes when `profile` resolves,
+but it never deals with promises, loading states, or error handling. If you
+later change `profile` from an async fetch to a sync computation (or vice
+versa), `greeting` doesn't change at all.
+
+This matters because async boundaries tend to spread. In the other libraries:
+
+**React Context / Zustand:** There's no derivation layer, so the component reads
+`isLoading` and `profile` as separate fields. Every consumer must check loading
+state. If you add a derived field that depends on the fetched data, it's
+computed in the component, and that component also needs the loading check.
+
+**Jotai:** An async atom returns a promise. Any derived atom that `get()`s an
+async atom also becomes async — it must `await` the result or be wrapped in
+`loadable()`. The async-ness propagates through the dependency chain:
+
+```ts
+// Jotai: async is contagious
+const profileAtom = atom(async (get) => {
+  const res = await fetch(`/api/users/${get(userIdAtom)}`);
+  return res.json();
+});
+
+// This derived atom is now also async — it must await
+const greetingAtom = atom(async (get) => {
+  const profile = await get(profileAtom); // forced to await
+  return `Hello, ${profile.name}!`;
+});
+
+// And now the component needs loadable() or Suspense for greeting too
+const greetingLoadable = loadable(greetingAtom);
+```
+
+Every downstream atom inherits the async nature of its dependencies. In ValUse,
+async stops at the derivation boundary — downstream consumers just see a value.
+
+---
+
+Now compare the same async fetch in each library:
+
+### React Context
+
+```tsx
+function Profile({ userId }: { userId: string }) {
+  const [profile, setProfile] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setIsLoading(true);
+    setError(null);
+
+    fetch(`/api/users/${userId}`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => {
+        setProfile(data);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (err.name !== "AbortError") {
+          setError(err);
+          setIsLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [userId]);
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Error error={error} />;
+  return <div>{profile.name}</div>;
+}
+```
+
+Three `useState` hooks, an `AbortController` you have to create and clean up
+yourself, a catch guard for `AbortError`, and a `useEffect` dependency array
+that must stay in sync. This pattern is repeated verbatim every time you fetch
+data. None of it is reusable outside React.
+
+---
+
+### Zustand
+
+```ts
+interface ProfileStore {
+  userId: string;
+  profile: User | null;
+  isLoading: boolean;
+  error: unknown | null;
+  controller: AbortController | null;
+  setUserId: (id: string) => void;
+  fetchProfile: () => Promise<void>;
+}
+
+const useProfileStore = create<ProfileStore>((set, get) => ({
+  userId: "alice",
+  profile: null,
+  isLoading: false,
+  error: null,
+  controller: null,
+
+  setUserId: (id) => {
+    set({ userId: id });
+    get().fetchProfile();
+  },
+
+  fetchProfile: async () => {
+    // Abort previous request
+    get().controller?.abort();
+    const controller = new AbortController();
+    set({ controller, isLoading: true, error: null });
+
+    try {
+      const res = await fetch(`/api/users/${get().userId}`, {
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      set({ profile: data, isLoading: false });
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        set({ error: err, isLoading: false });
+      }
+    }
+  },
+}));
+```
+
+```tsx
+function Profile() {
+  const { profile, isLoading, error } = useProfileStore();
+
+  // Must trigger initial fetch manually
+  useEffect(() => {
+    useProfileStore.getState().fetchProfile();
+  }, []);
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Error error={error} />;
+  return <div>{profile.name}</div>;
+}
+```
+
+You manually manage `isLoading`, `error`, and `controller` fields. Abort logic
+is hand-written inside the action. The fetch must be triggered imperatively —
+there's no reactive "re-fetch when X changes." If you forget to call
+`fetchProfile()` after `setUserId()`, the data is stale. And the
+`AbortController` lives in the store alongside your domain data.
+
+---
+
+### Jotai
+
+```ts
+import { atom } from "jotai";
+import { loadable } from "jotai/utils";
+
+const userIdAtom = atom("alice");
+
+// Async atom — re-fetches when userIdAtom changes
+const profileAtom = atom(async (get) => {
+  const userId = get(userIdAtom);
+  const res = await fetch(`/api/users/${userId}`);
+  return res.json();
+});
+
+// loadable() wraps the async atom to avoid Suspense
+const profileLoadable = loadable(profileAtom);
+```
+
+```tsx
+function Profile() {
+  const state = useAtomValue(profileLoadable);
+
+  if (state.state === "loading") return <Spinner />;
+  if (state.state === "hasError") return <Error error={state.error} />;
+  return <div>{state.data.name}</div>;
+}
+```
+
+Jotai's async atoms do re-fetch reactively, which is good. But there's no
+`AbortSignal` — stale requests run to completion and are silently discarded. If
+the fetch has side effects or is expensive, you can't cancel it. Without
+`loadable()`, async atoms suspend by default, requiring a `<Suspense>` boundary
+you may not want. And `loadable()` uses its own state shape (`state` / `data` /
+`error`) that differs from both Jotai's normal API and standard conventions.
+There's also no built-in way to push intermediate values (optimistic updates,
+streaming) — you need writable atoms for that.

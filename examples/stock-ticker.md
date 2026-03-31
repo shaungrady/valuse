@@ -37,13 +37,13 @@ const stock = valueScope(
     marketOpen: valueRef(marketOpen),
 
     // Derivations
-    change: (get) => get("price") - get("prevClose"),
-    changePercent: (get) => {
-      const prev = get("prevClose");
-      return prev === 0 ? 0 : ((get("price") - prev) / prev) * 100;
+    change: ({ use }) => use("price") - use("prevClose"),
+    changePercent: ({ use }) => {
+      const prev = use("prevClose");
+      return prev === 0 ? 0 : ((use("price") - prev) / prev) * 100;
     },
-    isUp: (get) => get("change") >= 0,
-    isTrading: (get) => get("marketOpen") && get("price") > 0,
+    isUp: ({ use }) => use("change") >= 0,
+    isTrading: ({ use }) => use("marketOpen") && use("price") > 0,
   },
   {
     onUsed: ({ set, get }) => {

@@ -44,14 +44,14 @@ const bugCard = card.extend({
   severity: value<"low" | "medium" | "high" | "critical">("medium"),
   stepsToReproduce: value<string>(""),
 
-  isCritical: (get) => get("severity") === "critical",
+  isCritical: ({ use }) => use("severity") === "critical",
 });
 
 const featureCard = card.extend({
   storyPoints: value<number>(0),
   acceptanceCriteria: value<string>(""),
 
-  isEstimated: (get) => get("storyPoints") > 0,
+  isEstimated: ({ use }) => use("storyPoints") > 0,
 });
 ```
 
@@ -64,8 +64,8 @@ const column = valueScope({
   // ordered list of unique card IDs in this column
   cardIds: value<string[]>([]).pipe((ids) => [...new Set(ids)]),
 
-  cardCount: (get) => get("cardIds").length,
-  isEmpty: (get) => get("cardIds").length === 0,
+  cardCount: ({ use }) => use("cardIds").length,
+  isEmpty: ({ use }) => use("cardIds").length === 0,
 });
 ```
 
@@ -227,7 +227,7 @@ If a dynamic field later needs reactivity or derived state, promote it with
 ```ts
 const prioritizedCard = card.extend({
   priority: value<"low" | "medium" | "high">("medium"),
-  isUrgent: (get) => get("priority") === "high" && get("assignee") === null,
+  isUrgent: ({ use }) => use("priority") === "high" && use("assignee") === null,
 });
 ```
 

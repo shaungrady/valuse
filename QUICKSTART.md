@@ -73,7 +73,7 @@ const person = valueScope({
   lastName: value<string>(),
   role: value<string>("viewer"),
 
-  fullName: (get) => `${get("firstName")} ${get("lastName")}`,
+  fullName: ({ use }) => `${use("firstName")} ${use("lastName")}`,
 });
 ```
 
@@ -206,7 +206,7 @@ const formField = valueScope(
   {
     value: value<string>(),
     initialValue: value<string>(),
-    isDirty: (get) => get("value") !== get("initialValue"),
+    isDirty: ({ use }) => use("value") !== use("initialValue"),
   },
   {
     onInit: ({ set, get }) => {
@@ -226,6 +226,63 @@ const formField = valueScope(
     },
   },
 );
+```
+
+## Async derivations
+
+An `async` derivation is reactive — it re-runs when its `use()` deps change,
+aborts the previous run automatically, and tracks loading/error state:
+
+```ts
+const userProfile = valueScope({
+  userId: value<string>(),
+
+  // Fetches when userId changes. Previous fetch is aborted via signal.
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use("userId")}`, { signal });
+    return res.json();
+  },
+});
+
+const inst = userProfile.create({ userId: "alice" });
+
+// Read the value (undefined until resolved)
+inst.get("profile"); // undefined, then { name: 'Alice', ... }
+
+// Read the full async state
+inst.getAsync("profile");
+// { value: undefined, hasValue: false, status: 'setting', error: undefined }
+// → { value: { name: 'Alice' }, hasValue: true, status: 'set', error: undefined }
+```
+
+Push intermediate values with `set()` — for optimistic updates, streaming, or
+polling:
+
+```ts
+const search = valueScope({
+  query: value<string>(),
+
+  results: async ({ use, set, signal }) => {
+    const q = use("query");
+    const cached = cache.get(q);
+    if (cached) set(cached); // show cached immediately
+
+    const res = await fetch(`/api/search?q=${q}`, { signal });
+    return res.json(); // final value replaces cached
+  },
+});
+```
+
+In React — `useAsync()` gives you both the value and the loading state:
+
+```tsx
+function Profile() {
+  const [profile, state] = inst.useAsync("profile");
+
+  if (state.status === "setting") return <Spinner />;
+  if (state.status === "error") return <Error error={state.error} />;
+  return <div>{profile.name}</div>;
+}
 ```
 
 ## Extend and compose

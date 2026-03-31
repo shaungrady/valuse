@@ -20,7 +20,7 @@ const field = <T>(initial: T, validate: (v: T) => string | null) =>
       isTouched: value<boolean>(false),
       error: value<string | null>(null),
 
-      isDirty: (get) => get("value") !== get("initialValue"),
+      isDirty: ({ use }) => use("value") !== use("initialValue"),
     },
     {
       onInit: ({ set, get }) => {
@@ -82,12 +82,12 @@ const wizard = valueScope(
 
     stepCount: () => 3,
 
-    canGoBack: (get) => get("currentStep") > 0,
-    canGoForward: (get) => get("currentStep") < get("stepCount") - 1,
+    canGoBack: ({ use }) => use("currentStep") > 0,
+    canGoForward: ({ use }) => use("currentStep") < use("stepCount") - 1,
 
     // Aggregate validation across all steps
-    isValid: (get) => {
-      const steps = [get("account"), get("personal"), get("prefs")];
+    isValid: ({ use }) => {
+      const steps = [use("account"), use("personal"), use("prefs")];
 
       // Each step is a ScopeInstance — check its fields for errors
       return steps.every((step) =>

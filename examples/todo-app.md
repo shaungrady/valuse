@@ -15,8 +15,8 @@ const todo = valueScope(
     completed: value<boolean>(false),
     createdAt: value<number>(0),
 
-    label: (get) =>
-      get("completed") ? `[x] ${get("text")}` : `[ ] ${get("text")}`,
+    label: ({ use }) =>
+      use("completed") ? `[x] ${use("text")}` : `[ ] ${use("text")}`,
   },
   {
     onInit: ({ set }) => {
