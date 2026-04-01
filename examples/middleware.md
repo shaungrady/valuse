@@ -9,7 +9,7 @@ example shows two middleware patterns applied to the [todo app](./todo-app.md).
 Don't remove todos immediately — mark them as deleted so users can undo:
 
 ```ts
-import { value, valueScope, type ScopeTemplate } from "valuse";
+import { value, valueScope, type ScopeTemplate } from 'valuse';
 
 const withSoftDelete = <T extends ScopeTemplate<any>>(scope: T) =>
   scope.extend({
@@ -49,7 +49,7 @@ function restore(id: string) {
 function purgeOld() {
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   for (const [id, todo] of todos.entries()) {
-    if (todo.get("isDeleted") && (todo.get("deletedAt") ?? 0) < cutoff) {
+    if (todo.get('isDeleted') && (todo.get('deletedAt') ?? 0) < cutoff) {
       todos.delete(id);
     }
   }
@@ -61,7 +61,7 @@ In React, filter them out of the visible list:
 ```tsx
 function TodoList() {
   const keys = todos.useKeys();
-  const visible = keys.filter((id) => !todos.get(id)!.get("isDeleted"));
+  const visible = keys.filter((id) => !todos.get(id)!.get('isDeleted'));
 
   return (
     <ul>
@@ -141,21 +141,21 @@ const todo = valueScope({
   completed: value<boolean>(false),
 });
 
-const inst = todo.create({ text: "Buy milk" });
+const inst = todo.create({ text: 'Buy milk' });
 const { instance, undo, redo } = withHistory(inst);
 
-instance.set("text", "Buy oat milk");
-instance.set("completed", true);
+instance.set('text', 'Buy oat milk');
+instance.set('completed', true);
 
 undo();
-instance.get("completed"); // false
-instance.get("text"); // "Buy oat milk"
+instance.get('completed'); // false
+instance.get('text'); // "Buy oat milk"
 
 undo();
-instance.get("text"); // "Buy milk"
+instance.get('text'); // "Buy milk"
 
 redo();
-instance.get("text"); // "Buy oat milk"
+instance.get('text'); // "Buy oat milk"
 ```
 
 ### In React
@@ -170,8 +170,8 @@ function TodoEditor({ id }: { id: string }) {
   return (
     <div>
       <input
-        value={get("text")}
-        onChange={(e) => set("text", e.target.value)}
+        value={get('text')}
+        onChange={(e) => set('text', e.target.value)}
       />
       <button disabled={!history.canUndo()} onClick={history.undo}>
         Undo
@@ -215,7 +215,7 @@ const todo = withSoftDelete(
 const todos = todo.createMap();
 
 // Per-instance history on a specific todo
-const bobTodo = todos.get("bob")!;
+const bobTodo = todos.get('bob')!;
 const { instance, undo, redo } = withHistory(bobTodo);
 ```
 

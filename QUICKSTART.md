@@ -11,14 +11,14 @@ pnpm add valuse
 ## Standalone values
 
 ```ts
-import { value, valueSet, valueMap } from "valuse";
+import { value, valueSet, valueMap } from 'valuse';
 
 // Reactive primitives
-const name = value<string>("Alice");
+const name = value<string>('Alice');
 const count = value<number>(0);
 
 name.get(); // 'Alice'
-name.set("Bob");
+name.set('Bob');
 name.set((prev) => prev.toUpperCase()); // callback form
 
 // Subscribe outside React
@@ -26,17 +26,17 @@ const unsub = name.subscribe((v) => console.log(v));
 unsub(); // stop listening
 
 // Reactive Set
-const tags = valueSet<string>(["admin", "active"]);
-tags.has("admin"); // true
-tags.add("editor");
-tags.delete("admin");
-tags.set((draft) => draft.add("editor")); // draft mutation
+const tags = valueSet<string>(['admin', 'active']);
+tags.has('admin'); // true
+tags.add('editor');
+tags.delete('admin');
+tags.set((draft) => draft.add('editor')); // draft mutation
 
 // Reactive Map
-const scores = valueMap<string, number>([["alice", 95]]);
-scores.get("alice"); // 95
-scores.set((draft) => draft.set("bob", 82));
-scores.delete("bob");
+const scores = valueMap<string, number>([['alice', 95]]);
+scores.get('alice'); // 95
+scores.set((draft) => draft.set('bob', 82));
+scores.delete('bob');
 ```
 
 In React — `.use()` returns `[value, setter]`:
@@ -44,7 +44,7 @@ In React — `.use()` returns `[value, setter]`:
 ```tsx
 const [currentName, setName] = name.use();
 const [currentTags, setTags] = tags.use();
-const [aliceScore, setAlice] = scores.use("alice"); // per-key subscription
+const [aliceScore, setAlice] = scores.use('alice'); // per-key subscription
 const keys = scores.useKeys();
 ```
 
@@ -54,9 +54,9 @@ const keys = scores.useKeys();
 const trim = (v: string) => v.trim();
 const lower = (v: string) => v.toLowerCase();
 
-const email = value<string>("").pipe(trim).pipe(lower);
+const email = value<string>('').pipe(trim).pipe(lower);
 
-const user = value<User>({ id: 1, name: "Alice" }).compareUsing(
+const user = value<User>({ id: 1, name: 'Alice' }).compareUsing(
   (a, b) => a.id === b.id, // skip update if same id
 );
 ```
@@ -66,26 +66,26 @@ Works on all value types — `value`, `valueSet`, `valueMap`.
 ## Define a scope
 
 ```ts
-import { value, valueScope } from "valuse";
+import { value, valueScope } from 'valuse';
 
 const person = valueScope({
   firstName: value<string>(),
   lastName: value<string>(),
-  role: value<string>("viewer"),
+  role: value<string>('viewer'),
 
-  fullName: ({ use }) => `${use("firstName")} ${use("lastName")}`,
+  fullName: ({ use }) => `${use('firstName')} ${use('lastName')}`,
 });
 ```
 
 ## Create instances
 
 ```ts
-const bob = person.create({ firstName: "Bob", lastName: "Jones" });
+const bob = person.create({ firstName: 'Bob', lastName: 'Jones' });
 
-bob.get("fullName"); // 'Bob Jones'
-bob.set("role", "admin");
-bob.set("role", (prev) => prev.toUpperCase());
-bob.set({ firstName: "Robert", lastName: "Smith" }); // bulk set
+bob.get('fullName'); // 'Bob Jones'
+bob.set('role', 'admin');
+bob.set('role', (prev) => prev.toUpperCase());
+bob.set({ firstName: 'Robert', lastName: 'Smith' }); // bulk set
 ```
 
 ## Snapshots
@@ -94,14 +94,14 @@ bob.set({ firstName: "Robert", lastName: "Smith" }); // bulk set
 bob.getSnapshot();
 // { firstName: 'Bob', lastName: 'Jones', role: 'viewer', fullName: 'Bob Jones' }
 
-bob.setSnapshot({ firstName: "Alice" });
-bob.get("lastName"); // undefined — full replacement, not merge
+bob.setSnapshot({ firstName: 'Alice' });
+bob.get('lastName'); // undefined — full replacement, not merge
 ```
 
 ## Use in React
 
 ```tsx
-import "valuse/react"; // enable .use() hooks
+import 'valuse/react'; // enable .use() hooks
 
 function PersonCard() {
   // All fields — re-renders on any change
@@ -109,15 +109,15 @@ function PersonCard() {
 
   return (
     <div>
-      <h1>{get("fullName")}</h1>
-      <button onClick={() => set("role", "admin")}>Promote</button>
+      <h1>{get('fullName')}</h1>
+      <button onClick={() => set('role', 'admin')}>Promote</button>
     </div>
   );
 }
 
 function FirstNameOnly() {
   // Single field — only re-renders when firstName changes
-  const [firstName, setFirstName] = bob.use("firstName");
+  const [firstName, setFirstName] = bob.use('firstName');
 
   return (
     <input value={firstName} onChange={(e) => setFirstName(e.target.value)} />
@@ -126,7 +126,7 @@ function FirstNameOnly() {
 
 function FullNameDisplay() {
   // Derivation — read-only, no setter
-  const [fullName] = bob.use("fullName");
+  const [fullName] = bob.use('fullName');
 
   return <h2>{fullName}</h2>;
 }
@@ -137,17 +137,17 @@ function FullNameDisplay() {
 ```ts
 const people = person.createMap();
 
-people.set("alice", { firstName: "Alice", lastName: "Smith" });
-people.set("bob", { firstName: "Bob", lastName: "Jones" });
-people.delete("alice");
-people.has("bob"); // true
+people.set('alice', { firstName: 'Alice', lastName: 'Smith' });
+people.set('bob', { firstName: 'Bob', lastName: 'Jones' });
+people.delete('alice');
+people.has('bob'); // true
 people.keys(); // ['bob']
 ```
 
 Hydrate from an API in one line:
 
 ```ts
-const people = person.createMap(apiResponse, "id");
+const people = person.createMap(apiResponse, 'id');
 ```
 
 In React — each row is its own reactive boundary:
@@ -162,8 +162,8 @@ function PersonRow({ id }: { id: string }) {
   const [get, set] = people.use(id);
   return (
     <input
-      value={get("firstName")}
-      onChange={(e) => set("firstName", e.target.value)}
+      value={get('firstName')}
+      onChange={(e) => set('firstName', e.target.value)}
     />
   );
 }
@@ -172,8 +172,8 @@ function PersonRow({ id }: { id: string }) {
 Per-field subscriptions work here too:
 
 ```ts
-const [firstName, setFirstName] = people.use("bob", "firstName");
-const [fullName] = people.use("bob", "fullName"); // derivation, read-only
+const [firstName, setFirstName] = people.use('bob', 'firstName');
+const [fullName] = people.use('bob', 'fullName'); // derivation, read-only
 ```
 
 ## Refs
@@ -181,22 +181,22 @@ const [fullName] = people.use("bob", "fullName"); // derivation, read-only
 Share reactive state across scopes without copying:
 
 ```ts
-import { value, valueRef, valueScope } from "valuse";
+import { value, valueRef, valueScope } from 'valuse';
 
 const address = valueScope({
   street: value<string>(),
-  city: value("NYC"),
+  city: value('NYC'),
 });
-const sharedAddress = address.create({ street: "123 Main" });
+const sharedAddress = address.create({ street: '123 Main' });
 
 const person = valueScope({
   name: value<string>(),
   address: valueRef(sharedAddress),
 });
-const bob = person.create({ name: "Bob" });
+const bob = person.create({ name: 'Bob' });
 
-bob.get("address").get("city"); // 'NYC'
-bob.get("address").set("street", "456 Oak"); // mutates the shared instance
+bob.get('address').get('city'); // 'NYC'
+bob.get('address').set('street', '456 Oak'); // mutates the shared instance
 ```
 
 ## Lifecycle hooks
@@ -206,14 +206,14 @@ const formField = valueScope(
   {
     value: value<string>(),
     initialValue: value<string>(),
-    isDirty: ({ use }) => use("value") !== use("initialValue"),
+    isDirty: ({ use }) => use('value') !== use('initialValue'),
   },
   {
     onInit: ({ set, get }) => {
-      set("initialValue", get("value"));
+      set('initialValue', get('value'));
     },
     onChange: ({ changes, set }) => {
-      console.log("changed:", changes);
+      console.log('changed:', changes);
     },
     onUsed: ({ set, get }) => {
       // first subscriber attached — start polling, open socket, etc.
@@ -239,20 +239,31 @@ const userProfile = valueScope({
 
   // Fetches when userId changes. Previous fetch is aborted via signal.
   profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use("userId")}`, { signal });
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
     return res.json();
   },
 });
 
-const inst = userProfile.create({ userId: "alice" });
+const inst = userProfile.create({ userId: 'alice' });
 
 // Read the value (undefined until resolved)
-inst.get("profile"); // undefined, then { name: 'Alice', ... }
+inst.get('profile'); // undefined, then { name: 'Alice', ... }
 
 // Read the full async state
-inst.getAsync("profile");
+inst.getAsync('profile');
 // { value: undefined, hasValue: false, status: 'setting', error: undefined }
 // → { value: { name: 'Alice' }, hasValue: true, status: 'set', error: undefined }
+```
+
+Seed with cached data at creation — available immediately, replaced when the
+fetch resolves:
+
+```ts
+const inst = userProfile.create({
+  userId: 'alice',
+  profile: cachedProfile, // becomes previousValue in first run
+});
+inst.get('profile'); // cachedProfile — no waiting
 ```
 
 Push intermediate values with `set()` — for optimistic updates, streaming, or
@@ -263,7 +274,7 @@ const search = valueScope({
   query: value<string>(),
 
   results: async ({ use, set, signal }) => {
-    const q = use("query");
+    const q = use('query');
     const cached = cache.get(q);
     if (cached) set(cached); // show cached immediately
 
@@ -277,10 +288,10 @@ In React — `useAsync()` gives you both the value and the loading state:
 
 ```tsx
 function Profile() {
-  const [profile, state] = inst.useAsync("profile");
+  const [profile, state] = inst.useAsync('profile');
 
-  if (state.status === "setting") return <Spinner />;
-  if (state.status === "error") return <Error error={state.error} />;
+  if (state.status === 'setting') return <Spinner />;
+  if (state.status === 'error') return <Error error={state.error} />;
   return <div>{profile.name}</div>;
 }
 ```
@@ -292,7 +303,7 @@ const trackedPerson = person.extend(
   { lastUpdated: value<number>(0) },
   {
     onChange: ({ set }) => {
-      set("lastUpdated", Date.now());
+      set('lastUpdated', Date.now());
     },
   },
 );
@@ -310,10 +321,10 @@ const fullPerson = withSoftDelete(trackedPerson);
 ## Batching
 
 ```ts
-import { batch } from "valuse";
+import { batch } from 'valuse';
 
 batch(() => {
-  name.set("Bob");
+  name.set('Bob');
   count.set(42);
 });
 // Subscribers fire once, not twice
@@ -324,12 +335,12 @@ batch(() => {
 ```ts
 // Scope instance
 bob.subscribe((get) => {
-  console.log(get("fullName"));
+  console.log(get('fullName'));
 });
 
 // Scope map — fires when keys change
 people.subscribe((keys) => {
-  console.log("keys changed:", keys);
+  console.log('keys changed:', keys);
 });
 
 // Destroy — tear down all subscriptions at once

@@ -26,8 +26,8 @@ Just want to see code? **[Quickstart](QUICKSTART.md)**
 - [Values](#values) — reactive primitives with transforms and custom comparison
 - [Collections](#collections) — reactive Set and Map
 - [Scopes](#scopes) — structured models with typed fields and derivations
-- [Derivations](#derivations) — computed state with tracked and untracked reads
-- [Async derivations](#async-derivations) — fetch, stream, poll — all reactive
+  - [Derivations](#derivations) — use/get, previousValue, identity comparison
+  - [Async derivations](#async-derivations) — fetch, stream, poll — all reactive
 - [Refs](#refs) — share reactive state across scopes
 - [Keyed collections of scopes](#keyed-collections-of-scopes) — many instances
   of the same scope
@@ -42,9 +42,9 @@ Just want to see code? **[Quickstart](QUICKSTART.md)**
 The building block. A `value` is a single piece of reactive state.
 
 ```ts
-import { value } from "valuse";
+import { value } from 'valuse';
 
-const name = value<string>("Alice");
+const name = value<string>('Alice');
 const count = value<number>(0);
 ```
 
@@ -52,7 +52,7 @@ Read, write, and subscribe — no framework required:
 
 ```ts
 name.get(); // 'Alice'
-name.set("Bob");
+name.set('Bob');
 name.set((prev) => prev.toUpperCase()); // callback form
 name.subscribe((v) => console.log(v)); // logs on every change
 ```
@@ -79,7 +79,7 @@ Chain `.pipe()` to normalize values on every `set`. Transforms run in order
 before the value is stored:
 
 ```ts
-const email = value<string>("")
+const email = value<string>('')
   .pipe((v) => v.trim())
   .pipe((v) => v.toLowerCase());
 ```
@@ -92,7 +92,7 @@ const lower = (v: string) => v.toLowerCase();
 const clamp = (min: number, max: number) => (v: number) =>
   Math.max(min, Math.min(max, v));
 
-const email = value<string>("").pipe(trim).pipe(lower);
+const email = value<string>('').pipe(trim).pipe(lower);
 const age = value<number>(0).pipe(clamp(0, 150));
 ```
 
@@ -102,7 +102,7 @@ By default, values notify subscribers on identity change (`===`). Override with
 `.compareUsing()`:
 
 ```ts
-const user = value<User>({ id: 1, name: "Alice" }).compareUsing(
+const user = value<User>({ id: 1, name: 'Alice' }).compareUsing(
   (a, b) => a.id === b.id,
 );
 ```
@@ -119,21 +119,21 @@ Reactive versions of the JS data structures you already know. Same interface as
 ### valueSet
 
 ```ts
-import { valueSet } from "valuse";
+import { valueSet } from 'valuse';
 
-const tags = valueSet<string>(["admin", "active"]);
+const tags = valueSet<string>(['admin', 'active']);
 
 tags.get(); // Set { 'admin', 'active' }
-tags.has("admin"); // true
+tags.has('admin'); // true
 tags.size; // 2
 
 // Mutation callbacks receive a draft — write mutations, get a new immutable Set
-tags.set((draft) => draft.add("editor"));
-tags.set((draft) => draft.delete("admin"));
+tags.set((draft) => draft.add('editor'));
+tags.set((draft) => draft.delete('admin'));
 
 // Convenience methods
-tags.add("editor");
-tags.delete("admin");
+tags.add('editor');
+tags.delete('admin');
 tags.clear();
 ```
 
@@ -141,34 +141,34 @@ In React:
 
 ```tsx
 const [current, set] = tags.use();
-set((t) => t.add("editor"));
+set((t) => t.add('editor'));
 ```
 
 ### valueMap
 
 ```ts
-import { valueMap } from "valuse";
+import { valueMap } from 'valuse';
 
 const scores = valueMap<string, number>([
-  ["alice", 95],
-  ["bob", 82],
+  ['alice', 95],
+  ['bob', 82],
 ]);
 
 scores.get(); // Map { 'alice' => 95, 'bob' => 82 }
-scores.get("alice"); // 95
-scores.has("alice"); // true
+scores.get('alice'); // 95
+scores.has('alice'); // true
 scores.size; // 2
 scores.keys(); // ['alice', 'bob']
 
-scores.set((draft) => draft.set("charlie", 90));
-scores.delete("bob");
+scores.set((draft) => draft.set('charlie', 90));
+scores.delete('bob');
 ```
 
 In React, subscribe to the whole map or a single key:
 
 ```tsx
 const [all, setAll] = scores.use(); // whole map
-const [aliceScore, setAlice] = scores.use("alice"); // only re-renders when alice changes
+const [aliceScore, setAlice] = scores.use('alice'); // only re-renders when alice changes
 const keys = scores.useKeys(); // only re-renders when keys change
 ```
 
@@ -177,43 +177,43 @@ const keys = scores.useKeys(); // only re-renders when keys change
 A `valueScope` bundles related state and derivations into a reusable template.
 
 ```ts
-import { value, valueScope } from "valuse";
+import { value, valueScope } from 'valuse';
 
 const person = valueScope({
   firstName: value<string>(),
   lastName: value<string>(),
-  role: value<string>("viewer"),
+  role: value<string>('viewer'),
 
-  fullName: ({ use }) => `${use("firstName")} ${use("lastName")}`,
+  fullName: ({ use }) => `${use('firstName')} ${use('lastName')}`,
 });
 ```
 
 Values called without an argument start as `undefined`. Values called with an
 argument start with that default. Derivations receive a context object — see
-[Derivations](#derivations) for the full API.
+below for the full API.
 
 ### Creating instances
 
 ```ts
 const bob = person.create({
-  firstName: "Bob",
-  lastName: "Jones",
+  firstName: 'Bob',
+  lastName: 'Jones',
   // role defaults to 'viewer'
 });
 
-const partial = person.create({ role: "admin" }); // firstName, lastName are undefined
+const partial = person.create({ role: 'admin' }); // firstName, lastName are undefined
 const empty = person.create(); // all undefined or defaults
 ```
 
 ### Reading and writing
 
 ```ts
-bob.get("firstName"); // 'Bob'
-bob.get("fullName"); // 'Bob Jones' — derivations work like any other field
+bob.get('firstName'); // 'Bob'
+bob.get('fullName'); // 'Bob Jones' — derivations work like any other field
 
-bob.set("role", "admin");
-bob.set("role", (prev) => prev.toUpperCase()); // callback form
-bob.set({ firstName: "Robert", lastName: "Smith" }); // bulk — omitted fields untouched
+bob.set('role', 'admin');
+bob.set('role', (prev) => prev.toUpperCase()); // callback form
+bob.set({ firstName: 'Robert', lastName: 'Smith' }); // bulk — omitted fields untouched
 ```
 
 Only `value()` fields are settable. Derivations and refs are read-only — a
@@ -224,12 +224,12 @@ TypeScript error to `set`, silently ignored at runtime.
 ```tsx
 // All fields — re-renders on any change
 const [get, set] = bob.use();
-get("fullName"); // 'Bob Jones'
-set("role", "admin");
+get('fullName'); // 'Bob Jones'
+set('role', 'admin');
 
 // Single field — only re-renders when that field changes
-const [firstName, setFirstName] = bob.use("firstName");
-const [fullName] = bob.use("fullName"); // derivation — no setter
+const [firstName, setFirstName] = bob.use('firstName');
+const [fullName] = bob.use('fullName'); // derivation — no setter
 ```
 
 ### Snapshots
@@ -245,9 +245,9 @@ bob.getSnapshot();
 `setSnapshot()` is a full replacement. Omitted keys reset to `undefined`:
 
 ```ts
-bob.setSnapshot({ firstName: "Alice", lastName: "Smith", role: "admin" });
-bob.setSnapshot({ firstName: "Charlie" });
-bob.get("lastName"); // undefined — not 'Smith'
+bob.setSnapshot({ firstName: 'Alice', lastName: 'Smith', role: 'admin' });
+bob.setSnapshot({ firstName: 'Charlie' });
+bob.get('lastName'); // undefined — not 'Smith'
 ```
 
 Use `setSnapshot(data, { rerunInit: true })` to re-fire `onInit` after
@@ -257,25 +257,17 @@ restoring.
 
 ```ts
 bob.subscribe((get) => {
-  console.log(get("fullName"));
+  console.log(get('fullName'));
 });
 ```
 
-## Derivations
+### Derivations
 
-Derivations are functions in a scope that compute values from other fields. They
-receive a **context object** with tools for reading state:
+Derivations are functions in a scope that compute values from other fields —
+like `fullName` above. They receive a **context object** with tools for reading
+state.
 
-```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-
-  fullName: ({ use }) => `${use("firstName")} ${use("lastName")}`,
-});
-```
-
-### use() vs get() — tracked and untracked reads
+#### use() vs get() — tracked and untracked reads
 
 The same naming convention runs through the entire library:
 
@@ -288,12 +280,12 @@ The same naming convention runs through the entire library:
 
 ```ts
 const scope = valueScope({
-  query: value<string>(""),
-  locale: value<string>("en"),
+  query: value<string>(''),
+  locale: value<string>('en'),
 
   // Re-runs when query changes, but NOT when locale changes.
   // locale is read once at compute time, not tracked.
-  results: ({ use, get }) => search(use("query"), get("locale")),
+  results: ({ use, get }) => search(use('query'), get('locale')),
 });
 ```
 
@@ -303,7 +295,7 @@ changes — configuration, one-time reads, or avoiding unnecessary recomputation
 A derivation with zero `use()` calls is a **constant** — it runs once and never
 recomputes.
 
-### previousValue — referential stability
+#### previousValue — referential stability
 
 Every derivation receives `previousValue`, which is the value it returned on its
 last computation (`undefined` on the first run). Use it to maintain referential
@@ -312,10 +304,10 @@ stability when you want to avoid unnecessary downstream updates:
 ```ts
 const scope = valueScope({
   items: value<Item[]>([]),
-  filter: value<string>(""),
+  filter: value<string>(''),
 
   filtered: ({ use, previousValue }) => {
-    const result = use("items").filter((i) => i.name.includes(use("filter")));
+    const result = use('items').filter((i) => i.name.includes(use('filter')));
     // If the result is deeply equal to the last one, return the same reference
     if (previousValue && deepEqual(result, previousValue)) return previousValue;
     return result;
@@ -327,7 +319,7 @@ Derivation returns are compared by identity (`===`). If a derivation returns the
 same reference as before, downstream derivations and subscribers are not
 notified.
 
-### getAsync() — read async metadata
+#### getAsync() — read async metadata
 
 Use `getAsync(key)` inside a derivation to read the full `AsyncState` of any
 field (see [Async derivations](#async-derivations)). For sync fields, this
@@ -336,14 +328,14 @@ returns `{ value, hasValue: true, status: 'set' }`:
 ```ts
 const scope = valueScope({
   price: value(42),
-  priceStatus: ({ getAsync }) => getAsync("price").status, // 'set'
+  priceStatus: ({ getAsync }) => getAsync('price').status, // 'set'
 });
 ```
 
 This is most useful when reading async derivations to check loading state or
 errors. See [AsyncState](#asyncstate) below.
 
-### The full derivation context
+#### The full derivation context
 
 | Property        | Type                       | Description                                                                |
 | --------------- | -------------------------- | -------------------------------------------------------------------------- |
@@ -355,7 +347,7 @@ errors. See [AsyncState](#asyncstate) below.
 | `set(value)`    | `(value) => void`          | _(Async only)_ Push intermediate values (optimistic, streaming, progress). |
 | `onCleanup(fn)` | `(fn: () => void) => void` | _(Async only)_ Register cleanup that runs on re-derivation or destroy.     |
 
-## Async derivations
+### Async derivations
 
 When a derivation is an `async` function, ValUse automatically manages its
 lifecycle — abort on re-run, status tracking, intermediate values, and cleanup.
@@ -365,7 +357,7 @@ const scope = valueScope({
   userId: value<string>(),
 
   profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use("userId")}`, { signal });
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
     return res.json();
   },
 });
@@ -374,7 +366,7 @@ const scope = valueScope({
 When `userId` changes, the previous fetch is **aborted** via `signal` and a new
 one starts. Downstream consumers just see `T | undefined` — no async contagion.
 
-### Status tracking with AsyncState
+#### Status tracking with AsyncState
 
 Every async derivation has an `AsyncState<T>` that tracks its lifecycle:
 
@@ -382,7 +374,7 @@ Every async derivation has an `AsyncState<T>` that tracks its lifecycle:
 interface AsyncState<T> {
   value: T | undefined; // The resolved value (or undefined if unset)
   hasValue: boolean; // Whether a value has ever been set
-  status: "unset" | "setting" | "set" | "error";
+  status: 'unset' | 'setting' | 'set' | 'error';
   error: unknown | undefined;
 }
 ```
@@ -398,9 +390,9 @@ Status transitions:
 Read async state on instances with `getAsync(key)` or `useAsync(key)`:
 
 ```ts
-const inst = scope.create({ userId: "alice" });
+const inst = scope.create({ userId: 'alice' });
 
-inst.getAsync("profile");
+inst.getAsync('profile');
 // { value: undefined, hasValue: false, status: 'setting', error: undefined }
 
 // ...after resolution:
@@ -410,17 +402,17 @@ inst.getAsync("profile");
 In React:
 
 ```tsx
-const [profile, profileState] = inst.useAsync("profile");
+const [profile, profileState] = inst.useAsync('profile');
 // profile = the value (or undefined)
 // profileState = full AsyncState
 
-if (profileState.status === "setting") return <Spinner />;
-if (profileState.status === "error")
+if (profileState.status === 'setting') return <Spinner />;
+if (profileState.status === 'error')
   return <Error error={profileState.error} />;
 return <Profile data={profile} />;
 ```
 
-### Intermediate values with set()
+#### Intermediate values with set()
 
 Use `set()` inside async derivations to push values before the final `return`.
 This enables optimistic updates, streaming, polling, and progress reporting:
@@ -430,7 +422,7 @@ const scope = valueScope({
   query: value<string>(),
 
   results: async ({ use, set, signal }) => {
-    const q = use("query");
+    const q = use('query');
 
     // Optimistic: show cached results immediately
     const cached = cache.get(q);
@@ -443,7 +435,30 @@ const scope = valueScope({
 });
 ```
 
-### Cleanup
+#### Seeding with cached data
+
+Pass a value for an async derivation key in `create()` to seed it with cached
+data. The seed is available immediately via `get()` — stale-while-revalidate
+with zero extra state:
+
+```ts
+const scope = valueScope({
+  userId: value<string>(),
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
+    return res.json();
+  },
+});
+
+// Seed with cached data — available instantly, replaced when fetch resolves
+const instance = scope.create({
+  userId: 'alice',
+  profile: cachedProfile,
+});
+instance.get('profile'); // cachedProfile — no waiting
+```
+
+#### Cleanup
 
 Register cleanup functions with `onCleanup()`. They run when the derivation
 re-runs (deps changed) or when the instance is destroyed:
@@ -453,7 +468,7 @@ const scope = valueScope({
   roomId: value<string>(),
 
   messages: async ({ use, set, onCleanup }) => {
-    const ws = new WebSocket(`/rooms/${use("roomId")}`);
+    const ws = new WebSocket(`/rooms/${use('roomId')}`);
     onCleanup(() => ws.close());
 
     ws.onmessage = (e) => set(JSON.parse(e.data));
@@ -463,16 +478,16 @@ const scope = valueScope({
 });
 ```
 
-### Dependency tracking in async
+#### Dependency tracking in async
 
 Dependencies are tracked during the **synchronous preamble** only — the part
 before the first `await`. Any `use()` calls after an `await` are not tracked:
 
 ```ts
 async ({ use, signal }) => {
-  const id = use("userId"); // ✅ tracked — before await
+  const id = use('userId'); // ✅ tracked — before await
   const data = await fetch(`/api/${id}`, { signal });
-  const locale = use("locale"); // ⚠️ NOT tracked — after await
+  const locale = use('locale'); // ⚠️ NOT tracked — after await
   return format(data, locale);
 };
 ```
@@ -482,14 +497,14 @@ the first `await`:
 
 ```ts
 async ({ use, signal }) => {
-  const id = use("userId"); // tracked
-  const locale = use("locale"); // tracked — read before await
+  const id = use('userId'); // tracked
+  const locale = use('locale'); // tracked — read before await
   const data = await fetch(`/api/${id}`, { signal });
   return format(data, locale);
 };
 ```
 
-### No async contagion
+#### No async contagion
 
 Sync derivations can depend on async derivations without knowing they're async.
 `use("profile")` returns `T | undefined` regardless of whether `profile` is sync
@@ -499,13 +514,13 @@ or async — no promises, no `await`, no loading checks:
 const scope = valueScope({
   userId: value<string>(),
   profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use("userId")}`, { signal });
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
     return res.json();
   },
   // Sync — just sees User | undefined. Recomputes when profile resolves.
   greeting: ({ use }) => {
-    const p = use("profile");
-    return p ? `Hello, ${p.name}!` : "Loading...";
+    const p = use('profile');
+    return p ? `Hello, ${p.name}!` : 'Loading...';
   },
 });
 ```
@@ -514,11 +529,11 @@ If you later change `profile` from async to sync (or vice versa), `greeting`
 doesn't change at all. When you _do_ need loading state, errors, or status
 transitions, `useAsync("profile")` gives you the full `AsyncState` — but only
 the consumers that care about those details opt in. See the
-[comparison doc](examples/comparison.md#no-async-contagion) for how this differs
+[comparison doc](examples/comparison.md#code-comparison) for how this differs
 from other libraries, where async tends to spread through the entire dependency
 chain.
 
-### Stock price example — async derivation vs manual lifecycle
+#### Stock price example — async derivation vs manual lifecycle
 
 The old way uses lifecycle hooks to manually manage a polling interval:
 
@@ -533,13 +548,13 @@ const stockPrice = valueScope(
   {
     onUsed: ({ set, get }) => {
       const id = setInterval(async () => {
-        const p = await fetchPrice(get("symbol"));
-        set("price", p);
+        const p = await fetchPrice(get('symbol'));
+        set('price', p);
       }, 1000);
-      set("interval", id);
+      set('interval', id);
     },
     onUnused: ({ get }) => {
-      clearInterval(get("interval"));
+      clearInterval(get('interval'));
     },
   },
 );
@@ -553,7 +568,7 @@ const stockPrice = valueScope({
   symbol: value<string>(),
 
   price: async ({ use, set, signal, onCleanup }) => {
-    const sym = use("symbol");
+    const sym = use('symbol');
     const poll = async () => {
       while (!signal.aborted) {
         const p = await fetchPrice(sym);
@@ -577,9 +592,9 @@ Use `valueRef()` to bring external reactive state into a scope. Refs are shared
 across all instances — they point to the same source, not a copy:
 
 ```ts
-import { value, valueRef, valueScope, valueSet } from "valuse";
+import { value, valueRef, valueScope, valueSet } from 'valuse';
 
-const globalSpecialTags = valueSet<string>(["admin", "root"]);
+const globalSpecialTags = valueSet<string>(['admin', 'root']);
 
 const person = valueScope({
   firstName: value<string>(),
@@ -587,7 +602,7 @@ const person = valueScope({
   specialTags: valueRef(globalSpecialTags),
 
   hasSpecialTag: ({ use }) =>
-    use("tags").some((t) => use("specialTags").has(t)),
+    use('tags').some((t) => use('specialTags').has(t)),
 });
 ```
 
@@ -596,19 +611,19 @@ Refs also work with scope instances for nested reactive access:
 ```ts
 const address = valueScope({
   street: value<string>(),
-  city: value("NYC"),
-  full: ({ use }) => `${use("street")}, ${use("city")}`,
+  city: value('NYC'),
+  full: ({ use }) => `${use('street')}, ${use('city')}`,
 });
-const sharedAddress = address.create({ street: "123 Main" });
+const sharedAddress = address.create({ street: '123 Main' });
 
 const person = valueScope({
   name: value<string>(),
   address: valueRef(sharedAddress),
 });
-const bob = person.create({ name: "Bob" });
+const bob = person.create({ name: 'Bob' });
 
-bob.get("address").get("full"); // '123 Main, NYC'
-bob.get("address").set("street", "456 Oak"); // mutates the shared instance
+bob.get('address').get('full'); // '123 Main, NYC'
+bob.get('address').set('street', '456 Oak'); // mutates the shared instance
 ```
 
 Signal tracking flows transitively — derivations that read through a ref
@@ -635,7 +650,7 @@ list, entries in a form — use `.createMap()`:
 const people = person.createMap();
 
 // From an array — string shorthand for the key field
-const people = person.createMap(apiResponse, "id");
+const people = person.createMap(apiResponse, 'id');
 
 // From an array — callback for computed keys
 const people = person.createMap(apiResponse, (item) => item.id);
@@ -643,8 +658,8 @@ const people = person.createMap(apiResponse, (item) => item.id);
 // From a Map
 const people = person.createMap(
   new Map([
-    ["alice", { firstName: "Alice", lastName: "Smith" }],
-    ["bob", { firstName: "Bob", lastName: "Jones" }],
+    ['alice', { firstName: 'Alice', lastName: 'Smith' }],
+    ['bob', { firstName: 'Bob', lastName: 'Jones' }],
   ]),
 );
 ```
@@ -652,11 +667,11 @@ const people = person.createMap(
 Add, update, and remove entries:
 
 ```ts
-people.set("alice", { firstName: "Alice", lastName: "Smith" });
-people.delete("alice"); // fires onDestroy for that instance
+people.set('alice', { firstName: 'Alice', lastName: 'Smith' });
+people.delete('alice'); // fires onDestroy for that instance
 people.size; // number of entries
 people.keys(); // string[]
-people.has("alice"); // boolean
+people.has('alice'); // boolean
 people.clear(); // remove all, fires onDestroy for each
 ```
 
@@ -670,8 +685,8 @@ function PersonRow({ id, people }: { id: string; people: People }) {
 
   return (
     <input
-      value={get("firstName")}
-      onChange={(e) => set("firstName", e.target.value)}
+      value={get('firstName')}
+      onChange={(e) => set('firstName', e.target.value)}
     />
   );
 }
@@ -685,8 +700,8 @@ function PeopleTable({ people }: { people: People }) {
 Per-field subscriptions work here too:
 
 ```ts
-const [firstName, setFirstName] = people.use("bob", "firstName");
-const [fullName] = people.use("bob", "fullName"); // derivation, read-only
+const [firstName, setFirstName] = people.use('bob', 'firstName');
+const [fullName] = people.use('bob', 'fullName'); // derivation, read-only
 ```
 
 ## Lifecycle
@@ -704,12 +719,12 @@ const formField = valueScope(
     value: value<string>(),
     initialValue: value<string>(),
     isTouched: value<boolean>(),
-    isDirty: ({ use }) => use("value") !== use("initialValue"),
+    isDirty: ({ use }) => use('value') !== use('initialValue'),
   },
   {
     onInit: ({ set, get }) => {
-      set("initialValue", get("value"));
-      set("isTouched", false);
+      set('initialValue', get('value'));
+      set('isTouched', false);
     },
   },
 );
@@ -731,7 +746,7 @@ const person = valueScope(
   {
     onChange: ({ changes, set, get, getSnapshot }) => {
       // changes = [{ key: 'firstName', from: 'Bob', to: 'Robert' }]
-      set("lastUpdated", Date.now());
+      set('lastUpdated', Date.now());
     },
   },
 );
@@ -753,10 +768,10 @@ const analytics = valueScope(
   },
   {
     onUsed: ({ get }) => {
-      track("session_start", { id: get("sessionId") });
+      track('session_start', { id: get('sessionId') });
     },
     onUnused: ({ get }) => {
-      track("session_end", { id: get("sessionId") });
+      track('session_end', { id: get('sessionId') });
     },
   },
 );
@@ -778,16 +793,16 @@ const chatRoom = valueScope(
   },
   {
     onInit: ({ set, get }) => {
-      set("ws", new WebSocket(`/rooms/${get("roomId")}`));
+      set('ws', new WebSocket(`/rooms/${get('roomId')}`));
     },
     onDestroy: ({ get }) => {
-      get("ws")?.close();
+      get('ws')?.close();
     },
   },
 );
 
 const rooms = chatRoom.createMap();
-rooms.delete("room-42"); // onDestroy fires, websocket closes
+rooms.delete('room-42'); // onDestroy fires, websocket closes
 ```
 
 ### allowUndeclaredProperties
@@ -807,7 +822,7 @@ const baseNode = valueScope(
 
 // Slate node has { id, type, text, children, bold, italic, ... }
 const nodes = baseNode.createMap();
-nodes.set("node-1", slateNode);
+nodes.set('node-1', slateNode);
 // id, type, isHighlighted — reactive
 // text, children, bold, italic — preserved but not reactive
 ```
@@ -825,8 +840,8 @@ const trackedPerson = person.extend(
   },
   {
     onChange: ({ changes, set }) => {
-      set("lastUpdated", Date.now());
-      set("changeCount", (prev) => prev + changes.length);
+      set('lastUpdated', Date.now());
+      set('changeCount', (prev) => prev + changes.length);
     },
   },
 );
@@ -836,13 +851,13 @@ Extended scopes can promote passthrough properties into reactive values:
 
 ```ts
 const paragraphNode = baseNode.extend({
-  text: value<string>(""),
-  wordCount: ({ use }) => use("text").split(/\s+/).filter(Boolean).length,
+  text: value<string>(''),
+  wordCount: ({ use }) => use('text').split(/\s+/).filter(Boolean).length,
 });
 
 const imageNode = baseNode.extend({
   src: value<string>(),
-  alt: value<string>(""),
+  alt: value<string>(''),
   isLoading: value<boolean>(false),
 });
 ```
@@ -861,8 +876,8 @@ const withTracking = (scope) =>
     },
     {
       onChange: ({ changes, set }) => {
-        set("lastUpdated", Date.now());
-        set("changeCount", (prev) => prev + changes.length);
+        set('lastUpdated', Date.now());
+        set('changeCount', (prev) => prev + changes.length);
       },
     },
   );
@@ -882,7 +897,7 @@ const fullPerson = withSoftDelete(withTracking(person));
 Since a scope is just a function return value, you can parameterize them:
 
 ```ts
-import { type } from "arktype";
+import { type } from 'arktype';
 
 const formField = (initialValue, schema) =>
   valueScope(
@@ -891,29 +906,29 @@ const formField = (initialValue, schema) =>
       initialValue: value(initialValue),
       isTouched: value<boolean>(),
 
-      isDirty: ({ use }) => use("value") !== use("initialValue"),
-      isValid: ({ use }) => schema.allows(use("value")),
-      errors: ({ use }) => schema(use("value")).errors ?? [],
+      isDirty: ({ use }) => use('value') !== use('initialValue'),
+      isValid: ({ use }) => schema.allows(use('value')),
+      errors: ({ use }) => schema(use('value')).errors ?? [],
       error: ({ use }) =>
-        use("isTouched") && !use("isValid") ? use("errors")[0]?.message : null,
+        use('isTouched') && !use('isValid') ? use('errors')[0]?.message : null,
     },
     {
       onInit: ({ set, get }) => {
-        set("initialValue", get("value"));
-        set("isTouched", false);
+        set('initialValue', get('value'));
+        set('isTouched', false);
       },
     },
   );
 
 const contactForm = valueScope({
-  name: formField("", type("string > 0")),
-  email: formField("", type("string.email")),
-  age: formField(18, type("number.integer >= 18")),
+  name: formField('', type('string > 0')),
+  email: formField('', type('string.email')),
+  age: formField(18, type('number.integer >= 18')),
 
   isValid: ({ use }) =>
-    use("name").isValid && use("email").isValid && use("age").isValid,
+    use('name').isValid && use('email').isValid && use('age').isValid,
   firstError: ({ use }) =>
-    use("name").error ?? use("email").error ?? use("age").error,
+    use('name').error ?? use('email').error ?? use('age').error,
 });
 ```
 
@@ -922,10 +937,10 @@ const contactForm = valueScope({
 Use `batch()` to group multiple writes so subscribers fire once:
 
 ```ts
-import { batch } from "valuse";
+import { batch } from 'valuse';
 
 batch(() => {
-  name.set("Bob");
+  name.set('Bob');
   count.set(42);
 });
 // Subscribers notified once, not twice

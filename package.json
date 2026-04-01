@@ -1,0 +1,78 @@
+{
+	"name": "valuse",
+	"version": "0.0.0",
+	"description": "Reactive state that mirrors how you already think about data.",
+	"type": "module",
+	"sideEffects": [
+		"./dist/react.mjs"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		},
+		"./react": {
+			"types": "./dist/react.d.mts",
+			"import": "./dist/react.mjs"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsdown",
+		"dev": "tsdown --watch",
+		"check": "tsc --noEmit",
+		"lint": "eslint --fix .",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:types": "vitest --typecheck.only --run",
+		"prepack": "pnpm build"
+	},
+	"dependencies": {
+		"@preact/signals-core": "^1.14.1"
+	},
+	"peerDependencies": {
+		"react": ">=18"
+	},
+	"peerDependenciesMeta": {
+		"react": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.39.4",
+		"@testing-library/react": "^16.3.2",
+		"@types/react": "^19.2.14",
+		"eslint": "^9.39.4",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-react-hooks": "^5.2.0",
+		"expect-type": "^1.3.0",
+		"jiti": "^2.6.1",
+		"jsdom": "^26.1.0",
+		"lefthook": "^2.1.4",
+		"prettier": "^3.8.1",
+		"react": "^19.2.4",
+		"react-dom": "^19.2.4",
+		"tsdown": "^0.21.7",
+		"type-fest": "^5.5.0",
+		"typescript": "^6.0.2",
+		"typescript-eslint": "^8.58.0",
+		"vitest": "^4.1.2"
+	},
+	"volta": {
+		"node": "24.14.1"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"license": "MIT",
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild",
+			"lefthook"
+		]
+	}
+}

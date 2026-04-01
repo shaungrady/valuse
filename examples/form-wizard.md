@@ -10,7 +10,7 @@ Start with a base field scope. Every field tracks its value, touched state, and
 validation:
 
 ```ts
-import { value, valueScope } from "valuse";
+import { value, valueScope } from 'valuse';
 
 const field = <T>(initial: T, validate: (v: T) => string | null) =>
   valueScope(
@@ -20,19 +20,19 @@ const field = <T>(initial: T, validate: (v: T) => string | null) =>
       isTouched: value<boolean>(false),
       error: value<string | null>(null),
 
-      isDirty: ({ use }) => use("value") !== use("initialValue"),
+      isDirty: ({ use }) => use('value') !== use('initialValue'),
     },
     {
       onInit: ({ set, get }) => {
-        set("initialValue", get("value"));
+        set('initialValue', get('value'));
       },
       onChange: ({ changes, set, get, getSnapshot }) => {
-        const valueChanged = changes.some((c) => c.key === "value");
+        const valueChanged = changes.some((c) => c.key === 'value');
         if (!valueChanged) return;
 
         // Run validation on every value change
-        const err = validate(get("value"));
-        set("error", err);
+        const err = validate(get('value'));
+        set('error', err);
       },
     },
   );
@@ -43,24 +43,24 @@ Now define each step of the wizard by composing fields:
 ```ts
 // Step 1: Account info
 const accountStep = valueScope({
-  email: field("", (v) => (!v.includes("@") ? "Invalid email" : null)),
-  password: field("", (v) => (v.length < 8 ? "Min 8 characters" : null)),
-  confirmPassword: field("", () => null), // cross-field validation below
+  email: field('', (v) => (!v.includes('@') ? 'Invalid email' : null)),
+  password: field('', (v) => (v.length < 8 ? 'Min 8 characters' : null)),
+  confirmPassword: field('', () => null), // cross-field validation below
 });
 
 // Step 2: Personal info
 const personalStep = valueScope({
-  firstName: field("", (v) => (!v.trim() ? "Required" : null)),
-  lastName: field("", (v) => (!v.trim() ? "Required" : null)),
-  phone: field("", (v) =>
-    v && !/^\+?\d{10,}$/.test(v) ? "Invalid phone" : null,
+  firstName: field('', (v) => (!v.trim() ? 'Required' : null)),
+  lastName: field('', (v) => (!v.trim() ? 'Required' : null)),
+  phone: field('', (v) =>
+    v && !/^\+?\d{10,}$/.test(v) ? 'Invalid phone' : null,
   ),
 });
 
 // Step 3: Preferences — schema-driven, dynamic fields
 const prefsStep = valueScope(
   {
-    theme: field<"light" | "dark">("light", () => null),
+    theme: field<'light' | 'dark'>('light', () => null),
     notifications: field(true, () => null),
   },
   {
@@ -82,18 +82,18 @@ const wizard = valueScope(
 
     stepCount: () => 3,
 
-    canGoBack: ({ use }) => use("currentStep") > 0,
-    canGoForward: ({ use }) => use("currentStep") < use("stepCount") - 1,
+    canGoBack: ({ use }) => use('currentStep') > 0,
+    canGoForward: ({ use }) => use('currentStep') < use('stepCount') - 1,
 
     // Aggregate validation across all steps
     isValid: ({ use }) => {
-      const steps = [use("account"), use("personal"), use("prefs")];
+      const steps = [use('account'), use('personal'), use('prefs')];
 
       // Each step is a ScopeInstance — check its fields for errors
       return steps.every((step) =>
         Object.keys(step.getSnapshot()).every((key) => {
           const field = step.get(key);
-          return !field?.get?.("error");
+          return !field?.get?.('error');
         }),
       );
     },
@@ -101,7 +101,7 @@ const wizard = valueScope(
   {
     onChange: ({ changes, set, get, getSnapshot }) => {
       // Auto-save draft on step change
-      if (changes.some((c) => c.key === "currentStep")) {
+      if (changes.some((c) => c.key === 'currentStep')) {
         saveDraft();
       }
     },
@@ -114,12 +114,12 @@ const wizard = valueScope(
 ### Wizard.tsx
 
 ```tsx
-import { useEffect } from "react";
-import { value } from "valuse/react";
+import { useEffect } from 'react';
+import { value } from 'valuse/react';
 
 // Infer the instance type from the field factory
 type WizardForm = ReturnType<typeof wizard.create>;
-type FieldInstance = ReturnType<ReturnType<typeof field>["create"]>;
+type FieldInstance = ReturnType<ReturnType<typeof field>['create']>;
 
 // Shared reactive reference to the form instance.
 // Other components import this instead of receiving it as a prop.
@@ -134,7 +134,7 @@ export function Wizard() {
   const [form] = wizardForm.use();
   if (!form) return null;
 
-  const [currentStep] = form.use("currentStep");
+  const [currentStep] = form.use('currentStep');
 
   return (
     <div>
@@ -150,7 +150,7 @@ export function Wizard() {
 ### AccountStep.tsx
 
 ```tsx
-import { wizardForm, type WizardForm, type FieldInstance } from "./Wizard";
+import { wizardForm, type WizardForm, type FieldInstance } from './Wizard';
 
 function AccountStep() {
   // Plain read, not a subscription — this component doesn't re-render
@@ -159,14 +159,14 @@ function AccountStep() {
   const form = wizardForm.get();
   if (!form) return null;
 
-  const account = form.get("account");
+  const account = form.get('account');
 
   return (
     <div>
       <h2>Account</h2>
-      <FormField field={account.get("email")} label="Email" type="email" />
+      <FormField field={account.get('email')} label="Email" type="email" />
       <FormField
-        field={account.get("password")}
+        field={account.get('password')}
         label="Password"
         type="password"
       />
@@ -178,7 +178,7 @@ function AccountStep() {
 ### WizardNav.tsx
 
 ```tsx
-import { wizardForm } from "./Wizard";
+import { wizardForm } from './Wizard';
 
 function WizardNav() {
   const form = wizardForm.get();
@@ -187,12 +187,12 @@ function WizardNav() {
   // Per-field use() — only re-renders when these specific fields change,
   // not when unrelated fields (like account.email) change.
   // Derived fields return [value]
-  const [canGoBack] = form.use("canGoBack"); // [boolean] — derived
-  const [canGoForward] = form.use("canGoForward"); // [boolean] — derived
-  const [stepCount] = form.use("stepCount"); // [number] — derived
+  const [canGoBack] = form.use('canGoBack'); // [boolean] — derived
+  const [canGoForward] = form.use('canGoForward'); // [boolean] — derived
+  const [stepCount] = form.use('stepCount'); // [number] — derived
 
   // Value fields return [value, setter].
-  const [currentStep, setStep] = form.use("currentStep"); // [number, setter]
+  const [currentStep, setStep] = form.use('currentStep'); // [number, setter]
 
   return (
     <div>
@@ -213,12 +213,12 @@ function WizardNav() {
 ### FormField.tsx
 
 ```tsx
-import type { FieldInstance } from "./Wizard";
+import type { FieldInstance } from './Wizard';
 
 function FormField({
   field,
   label,
-  type = "text",
+  type = 'text',
 }: {
   field: FieldInstance;
   label: string;
@@ -233,12 +233,12 @@ function FormField({
       <label>{label}</label>
       <input
         type={type}
-        value={get("value")}
-        onChange={(e) => set("value", e.target.value)}
-        onBlur={() => set("isTouched", true)}
+        value={get('value')}
+        onChange={(e) => set('value', e.target.value)}
+        onBlur={() => set('isTouched', true)}
       />
-      {get("isTouched") && get("error") && (
-        <span className="error">{get("error")}</span>
+      {get('isTouched') && get('error') && (
+        <span className="error">{get('error')}</span>
       )}
     </div>
   );
@@ -253,9 +253,9 @@ Say some users see an "Organization" step between Account and Personal. Use
 ```ts
 const orgStep = personalStep.extend(
   {
-    orgName: field("", (v) => (!v.trim() ? "Required" : null)),
-    orgSize: field<"small" | "medium" | "large">("small", () => null),
-    taxId: field("", (v) => (v && v.length < 9 ? "Invalid tax ID" : null)),
+    orgName: field('', (v) => (!v.trim() ? 'Required' : null)),
+    orgSize: field<'small' | 'medium' | 'large'>('small', () => null),
+    taxId: field('', (v) => (v && v.length < 9 ? 'Invalid tax ID' : null)),
   },
   {
     onChange: ({ changes, set, get, getSnapshot }) => {
@@ -276,7 +276,7 @@ at runtime:
 
 ```ts
 // API returns extra preference fields
-const extraPrefs = await fetch("/api/user-prefs-schema");
+const extraPrefs = await fetch('/api/user-prefs-schema');
 // { newsletter: true, betaFeatures: false, language: "en" }
 
 const prefsInstance = prefsStep.create({
@@ -287,8 +287,8 @@ const prefsInstance = prefsStep.create({
 });
 
 // Read them back
-prefsInstance.get("newsletter"); // true
-prefsInstance.get("language"); // "en"
+prefsInstance.get('newsletter'); // true
+prefsInstance.get('language'); // "en"
 ```
 
 The known fields (`theme`, `notifications`) are reactive — changing them
@@ -300,8 +300,8 @@ comes from an external source.
 
 ```ts
 async function submit() {
-  await fetch("/api/register", {
-    method: "POST",
+  await fetch('/api/register', {
+    method: 'POST',
     body: JSON.stringify(wizardForm.get()!.getSnapshot()),
   });
 }

@@ -1,8 +1,8 @@
 # Example: Stock Ticker
 
 A live stock price table where each row subscribes to real-time data only while
-visible. This showcases lifecycle hooks — the feature that most state libraries
-don't have.
+visible. This showcases async derivations with WebSocket streams and the
+transitive lifecycle that activates them.
 
 ## The problem
 
@@ -13,96 +13,76 @@ away, the subscription should stop. When they come back, it should resume.
 
 In Zustand or Jotai, you'd wire this up with `useEffect` in each component. The
 subscription logic lives in the view layer, tangled with React lifecycle. In
-ValUse, it lives in the model.
+ValUse, it lives in the model — as an async derivation.
 
 ## The model
 
 ```ts
-import { value, valueRef, valueScope } from "valuse";
+import { value, valueRef, valueScope } from 'valuse';
 
 // Market status — shared across all tickers
-const marketOpen = value<boolean>(false);
+const isMarketOpen = value<boolean>(false);
 
-const stock = valueScope(
-  {
-    symbol: value<string>(),
-    price: value<number>(0).compareUsing((a, b) => Math.abs(a - b) < 0.01), // ignore sub-penny noise
-    prevClose: value<number>(0),
-    high: value<number>(0),
-    low: value<number>(0),
-    volume: value<number>(0),
-    ws: value<WebSocket | null>(null),
+const stock = valueScope({
+  symbol: value<string>(),
+  prevClose: value<number>(0),
 
-    // Ref to shared market status
-    marketOpen: valueRef(marketOpen),
+  // Ref to shared market status
+  isMarketOpen: valueRef(isMarketOpen),
 
-    // Derivations
-    change: ({ use }) => use("price") - use("prevClose"),
-    changePercent: ({ use }) => {
-      const prev = use("prevClose");
-      return prev === 0 ? 0 : ((use("price") - prev) / prev) * 100;
-    },
-    isUp: ({ use }) => use("change") >= 0,
-    isTrading: ({ use }) => use("marketOpen") && use("price") > 0,
+  // Async derivation — opens a WebSocket, pushes price updates via set().
+  // When symbol changes, the previous WebSocket is cleaned up and a new one opens.
+  // When the instance is destroyed, onCleanup fires automatically.
+  price: async ({ use, set, onCleanup }) => {
+    const sym = use('symbol');
+    const ws = new WebSocket(`wss://feed.example.com/stocks/${sym}`);
+    onCleanup(() => ws.close());
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      set(data.price);
+    };
+
+    // No return — value comes from set() via WebSocket messages
   },
-  {
-    onUsed: ({ set, get }) => {
-      // First React component subscribed — open the WebSocket
-      const symbol = get("symbol");
-      const ws = new WebSocket(`wss://feed.example.com/stocks/${symbol}`);
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        set("price", data.price);
-        set("high", (prev) => Math.max(prev, data.price));
-        set("low", (prev) =>
-          prev === 0 ? data.price : Math.min(prev, data.price),
-        );
-        set("volume", data.volume);
-      };
-
-      set("ws", ws);
-    },
-
-    onUnused: ({ get }) => {
-      // Last subscriber gone — close the connection
-      const ws = get("ws");
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
-    },
-
-    onDestroy: ({ get }) => {
-      // Removed from watchlist entirely — ensure cleanup
-      const ws = get("ws");
-      if (ws && ws.readyState !== WebSocket.CLOSED) {
-        ws.close();
-      }
-    },
+  // Sync derivations — don't know or care that price is async.
+  // They see number | undefined and recompute when price resolves.
+  change: ({ use }) => {
+    const price = use('price');
+    return price != null ? price - use('prevClose') : 0;
   },
-);
+  changePercent: ({ use }) => {
+    const prev = use('prevClose');
+    const price = use('price');
+    if (!prev || price == null) return 0;
+    return ((price - prev) / prev) * 100;
+  },
+  isUp: ({ use }) => use('change') >= 0,
+  isTrading: ({ use }) => use('isMarketOpen') && use('price') != null,
+});
 
 // The watchlist
 const watchlist = stock.createMap();
 ```
 
-### What onUsed/onUnused give you
+### What happens automatically
 
-| Event                                                        | What happens                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------------------- |
-| Component mounts, calls `watchlist.use("AAPL")`              | `onUsed` fires, WebSocket opens                                 |
-| Second component also subscribes to AAPL                     | Nothing — already connected (subscriber count goes from 1 to 2) |
-| First component unmounts                                     | Nothing — still one subscriber                                  |
-| Last component unmounts                                      | `onUnused` fires, WebSocket closes                              |
-| User removes AAPL from watchlist: `watchlist.delete("AAPL")` | `onDestroy` fires, WebSocket closes                             |
+| Event                                                        | What happens                                            |
+| ------------------------------------------------------------ | ------------------------------------------------------- |
+| Component mounts, calls `watchlist.use("AAPL")`              | Async derivation runs, WebSocket opens                  |
+| Second component also subscribes to AAPL                     | Nothing — already connected                             |
+| First component unmounts                                     | Nothing — still one subscriber                          |
+| Last component unmounts                                      | `onCleanup` fires, WebSocket closes                     |
+| `symbol` changes on an active instance                       | Old WebSocket closes, derivation re-runs, new one opens |
+| User removes AAPL from watchlist: `watchlist.delete("AAPL")` | Instance destroyed, WebSocket closes                    |
 
-This is **lazy resource management at the model level**. The view doesn't know
-about WebSockets. The model doesn't know about React.
+The view doesn't know about WebSockets. The model doesn't know about React.
 
 ## React components
 
 ```tsx
-import { value, valueScope } from "valuse/react";
+import { value, valueScope } from 'valuse/react';
 
 function WatchlistTable() {
   const symbols = watchlist.useKeys();
@@ -114,9 +94,6 @@ function WatchlistTable() {
           <th>Symbol</th>
           <th>Price</th>
           <th>Change</th>
-          <th>Volume</th>
-          <th>High</th>
-          <th>Low</th>
         </tr>
       </thead>
       <tbody>
@@ -129,36 +106,40 @@ function WatchlistTable() {
 }
 
 function StockRow({ symbol }: { symbol: string }) {
-  // This subscription triggers onUsed/onUnused automatically
-  const [get] = watchlist.use(symbol);
+  // This subscription activates the async derivation via transitive lifecycle
+  const [getStock] = watchlist.use(symbol);
 
-  const changeStr = get("change").toFixed(2);
-  const pctStr = get("changePercent").toFixed(2);
+  const price = getStock('price');
+  const change = getStock('change');
+  const pct = getStock('changePercent');
 
   return (
     <tr>
       <td>{symbol}</td>
-      <td>${get("price").toFixed(2)}</td>
-      <td style={{ color: get("isUp") ? "green" : "red" }}>
-        {get("isUp") ? "+" : ""}
-        {changeStr} ({pctStr}%)
+      <td>{price != null ? `$${price.toFixed(2)}` : '—'}</td>
+      <td style={{ color: getStock('isUp') ? 'green' : 'red' }}>
+        {price != null ? (
+          <>
+            {change >= 0 ? '+' : ''}
+            {change.toFixed(2)} ({pct.toFixed(2)}%)
+          </>
+        ) : (
+          '—'
+        )}
       </td>
-      <td>{get("volume").toLocaleString()}</td>
-      <td>{get("high").toFixed(2)}</td>
-      <td>{get("low").toFixed(2)}</td>
     </tr>
   );
 }
 
 function AddSymbol() {
-  const input = value("");
+  const input = value('');
   const [text, setText] = input.use();
 
   const add = () => {
     const sym = text.trim().toUpperCase();
     if (!sym || watchlist.has(sym)) return;
     watchlist.set(sym, { symbol: sym });
-    setText("");
+    setText('');
   };
 
   return (
@@ -174,8 +155,8 @@ function AddSymbol() {
 }
 
 function MarketStatus() {
-  const [isOpen] = marketOpen.use();
-  return <div>{isOpen ? "Market Open" : "Market Closed"}</div>;
+  const [isOpen] = isMarketOpen.use();
+  return <div>{isOpen ? 'Market Open' : 'Market Closed'}</div>;
 }
 ```
 
@@ -193,7 +174,7 @@ For large watchlists, combine with a virtualizer. Only visible rows mount, which
 means only visible stocks have active WebSocket subscriptions:
 
 ```tsx
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 function VirtualWatchlist() {
   const symbols = watchlist.useKeys();
@@ -206,7 +187,7 @@ function VirtualWatchlist() {
   });
 
   return (
-    <div ref={parentRef} style={{ height: 400, overflow: "auto" }}>
+    <div ref={parentRef} style={{ height: 400, overflow: 'auto' }}>
       <div style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map((row) => (
           <StockRow key={symbols[row.index]} symbol={symbols[row.index]} />
@@ -217,9 +198,9 @@ function VirtualWatchlist() {
 }
 ```
 
-Scroll down — `onUsed` fires and the WebSocket opens. Scroll past — `onUnused`
-fires and it closes. No `useEffect`, no cleanup logic in the component. The
-model handles it.
+Scroll down — the async derivation runs and the WebSocket opens. Scroll past —
+the instance becomes unused and `onCleanup` closes it. No `useEffect`, no
+cleanup logic in the component. The model handles it.
 
 ## How this looks in Zustand
 
@@ -271,6 +252,5 @@ function StockRow({ symbol }: { symbol: string }) {
 }
 ```
 
-Same problem: subscription logic in the view. No concept of "this atom is being
-watched by N subscribers" at the model level. No `onUsed`/`onUnused`. Every
-component manages its own cleanup.
+Same problem: subscription logic in the view. Every component manages its own
+cleanup.

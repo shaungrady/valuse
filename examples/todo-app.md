@@ -6,7 +6,7 @@ model — not a bag of atoms or a slice of a global store.
 ## The model
 
 ```ts
-import { value, valueScope } from "valuse";
+import { value, valueScope } from 'valuse';
 
 const todo = valueScope(
   {
@@ -16,15 +16,15 @@ const todo = valueScope(
     createdAt: value<number>(0),
 
     label: ({ use }) =>
-      use("completed") ? `[x] ${use("text")}` : `[ ] ${use("text")}`,
+      use('completed') ? `[x] ${use('text')}` : `[ ] ${use('text')}`,
   },
   {
     onInit: ({ set }) => {
       // Only set if not already provided (e.g., hydrated from localStorage)
-      if (!get("createdAt")) set("createdAt", Date.now());
+      if (!get('createdAt')) set('createdAt', Date.now());
     },
     onChange: ({ changes, set, get, getSnapshot }) => {
-      localStorage.setItem(`todo:${get("id")}`, JSON.stringify(getSnapshot()));
+      localStorage.setItem(`todo:${get('id')}`, JSON.stringify(getSnapshot()));
     },
   },
 );
@@ -39,8 +39,8 @@ create, and a hook point for persistence. No reducers, no actions, no selectors.
 ## Adding todos
 
 ```ts
-todos.set("todo-1", { id: "todo-1", text: "Buy milk" });
-todos.set("todo-2", { id: "todo-2", text: "Write docs", completed: true });
+todos.set('todo-1', { id: 'todo-1', text: 'Buy milk' });
+todos.set('todo-2', { id: 'todo-2', text: 'Write docs', completed: true });
 ```
 
 `set` on a collection creates a new instance if the key doesn't exist, or
@@ -49,10 +49,10 @@ updates the existing one if it does. No `addTodo` action needed.
 ## React components
 
 ```tsx
-import { value, valueScope } from "valuse/react";
+import { value, valueScope } from 'valuse/react';
 
 // Filter lives outside the collection — it's app-level state
-const filter = value<"all" | "active" | "completed">("all");
+const filter = value<'all' | 'active' | 'completed'>('all');
 
 function TodoList() {
   // Re-renders when the key list or filter changes,
@@ -62,8 +62,8 @@ function TodoList() {
 
   const visible = keys.filter((id) => {
     const todo = todos.get(id)!;
-    if (currentFilter === "active") return !todo.get("completed");
-    if (currentFilter === "completed") return todo.get("completed");
+    if (currentFilter === 'active') return !todo.get('completed');
+    if (currentFilter === 'completed') return todo.get('completed');
     return true;
   });
 
@@ -85,26 +85,26 @@ function TodoItem({ id }: { id: string }) {
     <li>
       <input
         type="checkbox"
-        checked={get("completed")}
-        onChange={() => set("completed", (prev) => !prev)}
+        checked={get('completed')}
+        onChange={() => set('completed', (prev) => !prev)}
       />
       <span
-        style={{ textDecoration: get("completed") ? "line-through" : "none" }}
+        style={{ textDecoration: get('completed') ? 'line-through' : 'none' }}
       >
-        {get("text")}
+        {get('text')}
       </span>
     </li>
   );
 }
 
 function AddTodo() {
-  const [text, setText] = value("").use();
+  const [text, setText] = value('').use();
 
   const add = () => {
     if (!text.trim()) return;
     const id = crypto.randomUUID();
     todos.set(id, { id, text });
-    setText("");
+    setText('');
   };
 
   return (
@@ -122,15 +122,15 @@ function Footer() {
   const [currentFilter, setFilter] = filter.use();
 
   const activeCount = keys.filter(
-    (id) => !todos.get(id)!.get("completed"),
+    (id) => !todos.get(id)!.get('completed'),
   ).length;
 
   return (
     <footer>
       <span>{activeCount} items left</span>
-      <button onClick={() => setFilter("all")}>All</button>
-      <button onClick={() => setFilter("active")}>Active</button>
-      <button onClick={() => setFilter("completed")}>Completed</button>
+      <button onClick={() => setFilter('all')}>All</button>
+      <button onClick={() => setFilter('active')}>Active</button>
+      <button onClick={() => setFilter('completed')}>Completed</button>
     </footer>
   );
 }
@@ -143,12 +143,12 @@ No context providers, no store setup, no boilerplate. Import, define, use.
 ```ts
 // Mark all as completed
 for (const todo of todos.values()) {
-  todo.set("completed", true);
+  todo.set('completed', true);
 }
 
 // Clear completed
 for (const [id, todo] of todos.entries()) {
-  if (todo.get("completed")) {
+  if (todo.get('completed')) {
     todos.delete(id);
   }
 }
@@ -165,11 +165,11 @@ function saveTodos() {
   for (const [id, todo] of todos.entries()) {
     data[id] = todo.getSnapshot();
   }
-  localStorage.setItem("todos", JSON.stringify(data));
+  localStorage.setItem('todos', JSON.stringify(data));
 }
 
 function loadTodos() {
-  const raw = localStorage.getItem("todos");
+  const raw = localStorage.getItem('todos');
   if (!raw) return;
   for (const [id, fields] of Object.entries(JSON.parse(raw))) {
     todos.set(id, fields as any);

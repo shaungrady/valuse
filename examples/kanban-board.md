@@ -1,16 +1,16 @@
 # Example: Kanban Board
 
 A kanban board with columns containing cards. Cards have fixed fields plus
-user-defined custom fields per board. This showcases nested scopes via
-`valueRef`, `allowUndeclaredProperties` for dynamic card metadata, `extend()`
-for card type specialization, and `createMap()` for both collections.
+user-defined custom fields per board. This showcases async derivations for data
+fetching, `allowUndeclaredProperties` for dynamic card metadata, `extend()` for
+card type specialization, and `createMap()` for both collections.
 
 ## The model
 
 ### Cards
 
 ```ts
-import { value, valueRef, valueScope } from "valuse";
+import { value, valueRef, valueScope } from 'valuse';
 
 // Base card — every card has these fields
 const card = valueScope(
@@ -29,7 +29,7 @@ const card = valueScope(
   {
     onInit: ({ set, get }) => {
       // Only set if not already provided (e.g., hydrated from API)
-      if (!get("createdAt")) set("createdAt", Date.now());
+      if (!get('createdAt')) set('createdAt', Date.now());
     },
     // Boards can attach arbitrary fields (priority, story points, due date, etc.)
     allowUndeclaredProperties: true,
@@ -41,17 +41,17 @@ const card = valueScope(
 
 ```ts
 const bugCard = card.extend({
-  severity: value<"low" | "medium" | "high" | "critical">("medium"),
-  stepsToReproduce: value<string>(""),
+  severity: value<'low' | 'medium' | 'high' | 'critical'>('medium'),
+  stepsToReproduce: value<string>(''),
 
-  isCritical: ({ use }) => use("severity") === "critical",
+  isCritical: ({ use }) => use('severity') === 'critical',
 });
 
 const featureCard = card.extend({
   storyPoints: value<number>(0),
-  acceptanceCriteria: value<string>(""),
+  acceptanceCriteria: value<string>(''),
 
-  isEstimated: ({ use }) => use("storyPoints") > 0,
+  isEstimated: ({ use }) => use('storyPoints') > 0,
 });
 ```
 
@@ -64,8 +64,8 @@ const column = valueScope({
   // ordered list of unique card IDs in this column
   cardIds: value<string[]>([]).pipe((ids) => [...new Set(ids)]),
 
-  cardCount: ({ use }) => use("cardIds").length,
-  isEmpty: ({ use }) => use("cardIds").length === 0,
+  cardCount: ({ use }) => use('cardIds').length,
+  isEmpty: ({ use }) => use('cardIds').length === 0,
 });
 ```
 
@@ -73,9 +73,20 @@ const column = valueScope({
 
 ```ts
 const board = valueScope({
-  name: value<string>("My Board"),
-  columnOrder: value<string[]>([]),
+  boardId: value<string>(),
   filterAssignee: value<string | null>(null),
+
+  // Async derivation — fetches board data when boardId changes.
+  // Aborts the previous fetch automatically.
+  data: async ({ use, signal }) => {
+    const id = use('boardId');
+    const res = await fetch(`/api/boards/${id}`, { signal });
+    return res.json();
+  },
+
+  // Sync derivations — read the async data without knowing it's async.
+  name: ({ use }) => use('data')?.name ?? 'Loading...',
+  columnOrder: ({ use }) => use('data')?.columns?.map((c) => c.id) ?? [],
 });
 
 let boardInstance: ReturnType<typeof board.create>;
@@ -83,30 +94,34 @@ let cards: ReturnType<typeof card.createMap>;
 let columns: ReturnType<typeof column.createMap>;
 ```
 
-### Hydrating from an API
+### Hydrating from async data
 
-`createMap()` accepts an array and a key field (or function), so hydrating from
-API data is one line per collection:
+The board's `data` derivation fetches from the API. Once it resolves, populate
+the card and column collections. `createMap()` accepts an array and a key field
+(or function), so hydrating is one line per collection:
 
 ```ts
-async function loadBoard(boardId: string) {
-  const data = await fetch(`/api/boards/${boardId}`).then((r) => r.json());
+function initBoard(boardId: string) {
+  boardInstance = board.create({ boardId });
+  cards = card.createMap();
+  columns = column.createMap();
 
-  boardInstance = board.create({
-    name: data.name,
-    columnOrder: data.columns.map((c) => c.id),
+  // Populate collections once the board data resolves
+  boardInstance.subscribe((get) => {
+    const data = get('data');
+    if (!data) return;
+
+    // createMap accepts an array + key field — one line per collection
+    for (const col of data.columns) columns.set(col.id, col);
+    for (const c of data.cards) cards.set(c.id, c);
   });
-
-  // Each card becomes its own scope instance, keyed by "id"
-  cards = card.createMap(data.cards, "id");
-
-  // Each column becomes its own scope instance, keyed by "id"
-  columns = column.createMap(data.columns, "id");
 }
 ```
 
 Cards from the API arrive with `createdAt` already set, so `onInit` preserves
-it. New cards created client-side get `Date.now()` as the fallback.
+it. New cards created client-side get `Date.now()` as the fallback. If `boardId`
+changes later, the previous request is aborted and a new fetch starts
+automatically.
 
 ## Drag and drop
 
@@ -125,17 +140,17 @@ function moveCard(
   if (!fromCol || !toCol) return;
 
   // Remove from source
-  fromCol.set("cardIds", (ids) => ids.filter((id) => id !== cardId));
+  fromCol.set('cardIds', (ids) => ids.filter((id) => id !== cardId));
 
   // Insert at position in destination
-  toCol.set("cardIds", (ids) => {
+  toCol.set('cardIds', (ids) => {
     const next = [...ids];
     next.splice(toIndex, 0, cardId);
     return next;
   });
 
   // Update the card's column reference
-  cards.get(cardId)?.set("columnId", toColumnId);
+  cards.get(cardId)?.set('columnId', toColumnId);
 }
 ```
 
@@ -145,12 +160,10 @@ and card is untouched.
 ## React components
 
 ```tsx
-import { value, valueScope } from "valuse/react";
+import { value, valueScope } from 'valuse/react';
 
 function Board() {
-  // Per-field subscription — only re-renders when columnOrder changes,
-  // not when the board name or filter changes
-  const [columnOrder] = boardInstance.use("columnOrder");
+  const [columnOrder] = boardInstance.use('columnOrder');
 
   return (
     <div className="board">
@@ -162,16 +175,14 @@ function Board() {
 }
 
 function Column({ id }: { id: string }) {
-  // Re-renders when this column's cards change (add/remove/reorder),
-  // but NOT when a card's title or assignee is edited
-  const [get] = columns.use(id);
+  const [getColumn] = columns.use(id);
 
   return (
     <div className="column">
       <h2>
-        {get("name")} ({get("cardCount")})
+        {getColumn('name')} ({getColumn('cardCount')})
       </h2>
-      {get("cardIds").map((cardId) => (
+      {getColumn('cardIds').map((cardId) => (
         <Card key={cardId} id={cardId} />
       ))}
     </div>
@@ -179,22 +190,23 @@ function Column({ id }: { id: string }) {
 }
 
 function Card({ id }: { id: string }) {
-  // Subscribes to this card only — other cards don't re-render
-  const [get, set] = cards.use(id);
+  const [getCard, setCard] = cards.use(id);
 
   return (
     <div
       draggable
-      onDragStart={() => set("isDragging", true)}
-      onDragEnd={() => set("isDragging", false)}
-      style={{ opacity: get("isDragging") ? 0.5 : 1 }}
+      onDragStart={() => setCard('isDragging', true)}
+      onDragEnd={() => setCard('isDragging', false)}
+      style={{ opacity: getCard('isDragging') ? 0.5 : 1 }}
     >
-      <h3>{get("title")}</h3>
-      <span>{get("assignee") ?? "Unassigned"}</span>
+      <h3>{getCard('title')}</h3>
+      <span>{getCard('assignee') ?? 'Unassigned'}</span>
 
       {/* Custom fields from allowUndeclaredProperties */}
-      {get("severity") && <span className="badge">{get("severity")}</span>}
-      {get("storyPoints") && <span>{get("storyPoints")} pts</span>}
+      {getCard('severity') && (
+        <span className="badge">{getCard('severity')}</span>
+      )}
+      {getCard('storyPoints') && <span>{getCard('storyPoints')} pts</span>}
     </div>
   );
 }
@@ -209,16 +221,16 @@ Boards often let users define their own card fields. Since the card scope has
 alongside the typed ones:
 
 ```ts
-cards.set("card-1", {
-  id: "card-1",
-  title: "Fix login bug",
-  columnId: "todo",
+cards.set('card-1', {
+  id: 'card-1',
+  title: 'Fix login bug',
+  columnId: 'todo',
   // Dynamic fields from the API — preserved as passthrough
-  priority: "high",
-  dueDate: "2026-04-15",
+  priority: 'high',
+  dueDate: '2026-04-15',
 } as any);
 
-cards.get("card-1")?.get("priority"); // "high"
+cards.get('card-1')?.get('priority'); // "high"
 ```
 
 If a dynamic field later needs reactivity or derived state, promote it with
@@ -226,8 +238,8 @@ If a dynamic field later needs reactivity or derived state, promote it with
 
 ```ts
 const prioritizedCard = card.extend({
-  priority: value<"low" | "medium" | "high">("medium"),
-  isUrgent: ({ use }) => use("priority") === "high" && use("assignee") === null,
+  priority: value<'low' | 'medium' | 'high'>('medium'),
+  isUrgent: ({ use }) => use('priority') === 'high' && use('assignee') === null,
 });
 ```
 
@@ -238,14 +250,15 @@ drilling or context:
 
 ```tsx
 function FilteredCard({ id }: { id: string }) {
-  const [get] = cards.use(id);
-  const [filterAssignee] = boardInstance.use("filterAssignee");
+  const [getCard] = cards.use(id);
+  const [filterAssignee] = boardInstance.use('filterAssignee');
 
-  const dimmed = filterAssignee !== null && get("assignee") !== filterAssignee;
+  const dimmed =
+    filterAssignee !== null && getCard('assignee') !== filterAssignee;
 
   return (
     <div style={{ opacity: dimmed ? 0.3 : 1 }}>
-      <h3>{get("title")}</h3>
+      <h3>{getCard('title')}</h3>
     </div>
   );
 }
@@ -262,7 +275,7 @@ const card = valueScope(
   },
   {
     onChange: ({ get, getSnapshot }) => {
-      debounce(() => saveCard(get("id"), getSnapshot()), 500);
+      debounce(() => saveCard(get('id'), getSnapshot()), 500);
     },
   },
 );
