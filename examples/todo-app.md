@@ -19,11 +19,11 @@ const todo = valueScope(
       use('completed') ? `[x] ${use('text')}` : `[ ] ${use('text')}`,
   },
   {
-    onInit: ({ set }) => {
+    onInit: ({ set, get }) => {
       // Only set if not already provided (e.g., hydrated from localStorage)
       if (!get('createdAt')) set('createdAt', Date.now());
     },
-    onChange: ({ changes, set, get, getSnapshot }) => {
+    onChange: ({ get, getSnapshot }) => {
       localStorage.setItem(`todo:${get('id')}`, JSON.stringify(getSnapshot()));
     },
   },
@@ -79,19 +79,21 @@ function TodoList() {
 function TodoItem({ id }: { id: string }) {
   // todos.use(id) subscribes to this single todo's scope instance.
   // Editing todo-2 never re-renders todo-1.
-  const [get, set] = todos.use(id);
+  const [getTodo, setTodo] = todos.use(id);
 
   return (
     <li>
       <input
         type="checkbox"
-        checked={get('completed')}
-        onChange={() => set('completed', (prev) => !prev)}
+        checked={getTodo('completed')}
+        onChange={() => setTodo('completed', (prev) => !prev)}
       />
       <span
-        style={{ textDecoration: get('completed') ? 'line-through' : 'none' }}
+        style={{
+          textDecoration: getTodo('completed') ? 'line-through' : 'none',
+        }}
       >
-        {get('text')}
+        {getTodo('text')}
       </span>
     </li>
   );

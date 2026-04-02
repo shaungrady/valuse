@@ -6,7 +6,8 @@ import {
 	type ReadonlySignal,
 } from './signal.js';
 import { Value } from './value.js';
-import { ValueRef } from './value-ref.js';
+import { ValueRef, createRefFromSource } from './value-ref.js';
+import { ValuePlain, type AnyValuePlain } from './value-plain.js';
 import { ScopeMap } from './scope-map.js';
 import { getReactHooks, versionedAdapter } from './react-bridge.js';
 import type { AnyValueRef } from './value-ref.js';
@@ -85,8 +86,8 @@ export interface DerivationContext {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DerivationFn = (ctx: DerivationContext) => any;
 
-/** A single entry in a scope definition: a Value, a ValueRef, or a derivation function. @internal */
-export type ScopeEntry = AnyValue | AnyValueRef | DerivationFn;
+/** A single entry in a scope definition: a Value, a ValueRef, a ValuePlain, or a derivation function. @internal */
+export type ScopeEntry = AnyValue | AnyValueRef | AnyValuePlain | DerivationFn;
 
 /**
  * Extract the keys from a scope definition that are writable {@link Value} fields
@@ -101,11 +102,21 @@ export type ScopeEntry = AnyValue | AnyValueRef | DerivationFn;
  * ```
  */
 export type ValueKeys<Def> = {
-	[K in keyof Def]: Def[K] extends AnyValueRef
-		? never
-		: Def[K] extends AnyValue
-			? K
-			: never;
+	[K in keyof Def]: Def[K] extends AnyValueRef ? never
+	: Def[K] extends ValuePlain<unknown, true> ? never
+	: Def[K] extends AnyValuePlain ? K
+	: Def[K] extends AnyValue ? K
+	: never;
+}[keyof Def];
+
+/**
+ * Extract the keys from a scope definition that are {@link ValuePlain} fields (any readonlyness).
+ * Used to exclude plain keys from `use()`.
+ *
+ * @typeParam Def - the scope definition record
+ */
+type PlainKeys<Def> = {
+	[K in keyof Def]: Def[K] extends AnyValuePlain ? K : never;
 }[keyof Def];
 
 /**
@@ -119,15 +130,12 @@ export type ValueKeys<Def> = {
  * @typeParam Entry - a single scope definition entry
  */
 type UnwrapFieldType<Entry> =
-	Entry extends Value<infer T>
-		? T
-		: Entry extends ValueRef<infer T>
-			? T
-			: Entry extends (...args: never[]) => Promise<infer T>
-				? T
-				: Entry extends (...args: never[]) => infer R
-					? R
-					: never;
+	Entry extends Value<infer T> ? T
+	: Entry extends ValueRef<infer T> ? T
+	: Entry extends ValuePlain<infer T, boolean> ? T
+	: Entry extends (...args: never[]) => Promise<infer T> ? T
+	: Entry extends (...args: never[]) => infer R ? R
+	: never;
 
 /**
  * Resolve the runtime type returned by `instance.get(key)` for any key in a scope definition.
@@ -136,11 +144,10 @@ type UnwrapFieldType<Entry> =
  * @typeParam Def - the scope definition record
  * @typeParam K - the key to resolve
  */
-export type GetType<Def, K extends keyof Def> = Def[K] extends (
-	...args: never[]
-) => Promise<unknown>
-	? UnwrapFieldType<Def[K]> | undefined
-	: UnwrapFieldType<Def[K]>;
+export type GetType<Def, K extends keyof Def> =
+	Def[K] extends (...args: never[]) => Promise<unknown> ?
+		UnwrapFieldType<Def[K]> | undefined
+	:	UnwrapFieldType<Def[K]>;
 
 /**
  * Resolve the {@link AsyncState} type for a field.
@@ -159,13 +166,10 @@ export type GetAsyncType<Def, K extends keyof Def> = AsyncState<
  * @typeParam Def - the scope definition record
  */
 export type AsyncDerivationKeys<Def> = {
-	[K in keyof Def]: Def[K] extends AnyValue
-		? never
-		: Def[K] extends AnyValueRef
-			? never
-			: Def[K] extends (...args: never[]) => Promise<unknown>
-				? K
-				: never;
+	[K in keyof Def]: Def[K] extends AnyValue ? never
+	: Def[K] extends AnyValueRef ? never
+	: Def[K] extends (...args: never[]) => Promise<unknown> ? K
+	: never;
 }[keyof Def];
 
 /**
@@ -175,11 +179,12 @@ export type AsyncDerivationKeys<Def> = {
  * @typeParam Def - the scope definition record
  */
 export type SetInput<Def> = {
-	[K in ValueKeys<Def>]?: Def[K] extends Value<infer T>
-		? undefined extends T
-			? NonNullable<T> | undefined
-			: T
-		: never;
+	[K in ValueKeys<Def>]?: Def[K] extends Value<infer T> ?
+		undefined extends T ?
+			NonNullable<T> | undefined
+		:	T
+	: Def[K] extends ValuePlain<infer T> ? T
+	: never;
 };
 
 /**
@@ -201,7 +206,9 @@ export type CreateInput<Def> = SetInput<Def> & {
  * @typeParam K - the value key being set
  */
 export type SetValue<Def, K extends ValueKeys<Def>> =
-	Def[K] extends Value<infer T> ? T | ((prev: T) => T) : never;
+	Def[K] extends Value<infer T> ? T | ((prev: T) => T)
+	: Def[K] extends ValuePlain<infer T> ? T | ((prev: T) => T)
+	: never;
 
 // --- Change tracking ---
 
@@ -211,7 +218,7 @@ export type SetValue<Def, K extends ValueKeys<Def>> =
  * @example
  * ```ts
  * onChange: ({ changes }) => {
- *   for (const { key, from, to } of changes) {
+ *   for (const [key, { from, to }] of changes) {
  *     console.log(`${key}: ${from} → ${to}`);
  *   }
  * }
@@ -222,6 +229,41 @@ export interface ScopeChange {
 	from: unknown;
 	to: unknown;
 }
+
+/**
+ * A map of field changes keyed by field name, passed to the catch-all
+ * {@link ScopeConfig.onChange | onChange} handler.
+ *
+ * Supports `changes.has('fieldName')` for quick checks, iteration via
+ * `for (const [key, { from, to }] of changes)`, and `.get('fieldName')`
+ * for targeted access.
+ *
+ * When a field is set multiple times in a single batch, the entry preserves
+ * the original `from` and the final `to`.
+ */
+export type ScopeChanges = ReadonlyMap<string, ScopeChange>;
+
+// --- beforeChange types ---
+
+/**
+ * A single pending field change, passed to the {@link ScopeConfig.beforeChange | beforeChange}
+ * lifecycle hook. Values are post-pipe, post-comparison (the hook only fires
+ * when the value actually differs from the current value).
+ */
+export interface BeforeChange {
+	key: string;
+	from: unknown;
+	to: unknown;
+}
+
+/**
+ * A map of pending field changes keyed by field name, passed to the catch-all
+ * {@link ScopeConfig.beforeChange | beforeChange} handler.
+ *
+ * Supports `changes.has('fieldName')`, iteration via
+ * `for (const [key, { from, to }] of changes)`, and `.get('fieldName')`.
+ */
+export type BeforeChanges = ReadonlyMap<string, BeforeChange>;
 
 // --- Scope Config (lifecycle hooks) ---
 
@@ -250,7 +292,7 @@ type ScopeSet<Def> = <K extends string & ValueKeys<Def>>(
  *       if (!input?.name) set("name", "Anonymous");
  *     },
  *     onChange: ({ changes }) => {
- *       console.log("Changed:", changes.map((c) => c.key));
+ *       console.log("Changed:", [...changes.keys()]);
  *     },
  *   },
  * );
@@ -276,14 +318,78 @@ export interface ScopeConfig<Def extends Record<string, ScopeEntry>> {
 	}) => void;
 	/**
 	 * Fires on a microtask after one or more value fields change. Changes are batched.
-	 * @param ctx - context with `changes` array, `get`, `set`, and `getSnapshot`
+	 *
+	 * Two forms:
+	 * - **Function**: receives all changes in one callback.
+	 * - **Object**: per-field handlers, each receiving `{ from, to, get, set }`.
+	 *
+	 * @example
+	 * ```ts
+	 * // Catch-all
+	 * onChange: ({ changes }) => { ... }
+	 *
+	 * // Per-field
+	 * onChange: {
+	 *   data: ({ to, get }) => { ... },
+	 *   boardId: ({ to }) => console.log(`Switched to ${to}`),
+	 * }
+	 * ```
 	 */
-	onChange?: (ctx: {
-		changes: ScopeChange[];
-		set: ScopeSet<Def>;
-		get: ScopeGet<Def>;
-		getSnapshot: () => Record<string, unknown>;
-	}) => void;
+	onChange?:
+		| ((ctx: {
+				changes: ScopeChanges;
+				set: ScopeSet<Def>;
+				get: ScopeGet<Def>;
+				getSnapshot: () => Record<string, unknown>;
+		  }) => void)
+		| {
+				[K in string & keyof Def]?: (ctx: {
+					from: GetType<Def, K>;
+					to: GetType<Def, K>;
+					set: ScopeSet<Def>;
+					get: ScopeGet<Def>;
+				}) => void;
+		  };
+	/**
+	 * Fires synchronously before value fields are written. Can prevent individual
+	 * or all changes. Values are post-comparison — the hook only fires when a
+	 * real change is about to occur.
+	 *
+	 * Two forms:
+	 * - **Function**: receives all pending changes and a `prevent()` method.
+	 *   Call `prevent()` to block all changes, or `prevent('email', 'role')` to
+	 *   block specific fields.
+	 * - **Object**: per-field handlers, each receiving `{ from, to, prevent }`.
+	 *
+	 * @example
+	 * ```ts
+	 * // Catch-all — prevent specific fields
+	 * beforeChange: ({ changes, prevent }) => {
+	 *   if (changes.has('role') && !isAdmin) prevent('role');
+	 * }
+	 *
+	 * // Per-field
+	 * beforeChange: {
+	 *   email: ({ to, prevent }) => {
+	 *     if (!isValidEmail(to)) prevent();
+	 *   },
+	 * }
+	 * ```
+	 */
+	beforeChange?:
+		| ((ctx: {
+				changes: BeforeChanges;
+				prevent: (...keys: (string & keyof Def)[]) => void;
+				get: ScopeGet<Def>;
+		  }) => void)
+		| {
+				[K in string & keyof Def]?: (ctx: {
+					from: GetType<Def, K>;
+					to: GetType<Def, K>;
+					prevent: () => void;
+					get: ScopeGet<Def>;
+				}) => void;
+		  };
 	/**
 	 * Fires when the first subscriber attaches (via `.subscribe()` or `.use()`).
 	 * @param ctx - context with `get` and `set`
@@ -337,6 +443,9 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	>();
 	private readonly _asyncControllers = new Map<string, AbortController>();
 	private readonly _passthrough = new Map<string, unknown>();
+	private readonly _plainKeys = new Set<string>();
+	private readonly _readonlyPlainKeys = new Set<string>();
+	private readonly _scopeMapKeys = new Set<string>();
 	private readonly _config: ScopeConfig<Def> | undefined;
 	private readonly _disposers: (() => void)[] = [];
 	private _disposed = false;
@@ -348,9 +457,10 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	private readonly _refUnsubscribes: Unsubscribe[] = [];
 
 	// onChange batching state
-	private readonly _pendingChanges: ScopeChange[] = [];
+	private readonly _pendingChanges = new Map<string, ScopeChange>();
 	private _changeBatchScheduled = false;
 	private _insideOnChangeHook = false;
+	private _insideBeforeChangeHook = false;
 
 	/**
 	 * @param definition - the scope definition record
@@ -374,14 +484,44 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 			}
 		}
 
+		// Initialize plain (non-reactive) values
+		for (const [key, entry] of Object.entries(definition)) {
+			if (entry instanceof ValuePlain) {
+				this._plainKeys.add(key);
+				if (entry._readonly) this._readonlyPlainKeys.add(key);
+				const hasInput = inputObject !== undefined && key in inputObject;
+				this._passthrough.set(key, hasInput ? inputObject[key] : entry._value);
+			}
+		}
+
 		// Initialize ref computeds — read from external reactive source
 		for (const [key, entry] of Object.entries(definition)) {
 			if (entry instanceof ValueRef) {
-				const ref = entry;
-				this._computeds.set(
-					key,
-					computed(() => ref.get() as unknown),
-				);
+				// Factory refs create a per-instance source
+				const ref =
+					entry.factory ? createRefFromSource(entry.factory()) : entry;
+
+				if (ref.source instanceof ScopeMap) {
+					// ScopeMap refs: wire key-list changes into a version signal
+					// so derivations using use() re-run on add/remove.
+					// The map lives in _passthrough, the version signal in _signals.
+					// get() and _trackedRead check _scopeMapKeys to return the map.
+					const map = ref.source;
+					this._scopeMapKeys.add(key);
+					this._passthrough.set(key, map);
+					const version = signal(0);
+					this._signals.set(key, version as Signal<unknown>);
+					const unsub = map.subscribe(() => {
+						version.value++;
+					});
+					this._disposers.push(unsub);
+				} else {
+					this._computeds.set(
+						key,
+						computed(() => ref.get() as unknown),
+					);
+				}
+
 				// Track ScopeInstance sources for transitive lifecycle
 				if (ref.source instanceof ScopeInstance) {
 					this._refInstances.push(ref.source);
@@ -445,6 +585,8 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	get<K extends string & keyof Def>(key: K): GetType<Def, K>;
 	get(key: string): unknown;
 	get(key: string): unknown {
+		// ScopeMap ref: return the map, not the version signal
+		if (this._scopeMapKeys.has(key)) return this._passthrough.get(key);
 		const fieldSignal = this._signals.get(key);
 		if (fieldSignal) return fieldSignal.value;
 		const fieldComputed = this._computeds.get(key);
@@ -486,11 +628,16 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	 * if (state.status === "setting") return <Spinner />;
 	 * ```
 	 */
-	useAsync<K extends string & keyof Def>(
+	useAsync<K extends string & Exclude<keyof Def, PlainKeys<Def>>>(
 		key: K,
 	): [GetType<Def, K>, GetAsyncType<Def, K>];
 	useAsync(key: string): [unknown, AsyncState<unknown>];
 	useAsync(key: string): [unknown, AsyncState<unknown>] {
+		if (this._plainKeys.has(key)) {
+			throw new Error(
+				`Cannot useAsync() plain value "${key}" — use get() instead`,
+			);
+		}
 		const targetSignal =
 			this._asyncStates.get(key) ??
 			this._signals.get(key) ??
@@ -522,50 +669,168 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	set(values: SetInput<Def>): void;
 	set(keyOrValues: string | SetInput<Def>, valueOrFn?: unknown): void {
 		if (typeof keyOrValues === 'object') {
+			const pending = new Map<string, BeforeChange>();
 			for (const [fieldKey, fieldValue] of Object.entries(keyOrValues)) {
+				if (this._readonlyPlainKeys.has(fieldKey)) {
+					throw new Error(`Cannot set readonly plain value "${fieldKey}"`);
+				}
 				if (this._signals.has(fieldKey)) {
-					this._setField(fieldKey, fieldValue);
+					const change = this._resolveChange(fieldKey, fieldValue);
+					if (change) pending.set(fieldKey, change);
+				} else if (this._plainKeys.has(fieldKey)) {
+					this._setPlainField(fieldKey, fieldValue);
 				} else if (this._config?.allowUndeclaredProperties) {
 					this._passthrough.set(fieldKey, fieldValue);
 				}
 			}
+			this._applyChanges(pending);
 			return;
 		}
-		this._setField(keyOrValues, valueOrFn);
+		if (this._readonlyPlainKeys.has(keyOrValues)) {
+			throw new Error(`Cannot set readonly plain value "${keyOrValues}"`);
+		}
+		if (this._plainKeys.has(keyOrValues)) {
+			this._setPlainField(keyOrValues, valueOrFn);
+			return;
+		}
+		const change = this._resolveChange(keyOrValues, valueOrFn);
+		if (change) {
+			const pending = new Map<string, BeforeChange>();
+			pending.set(keyOrValues, change);
+			this._applyChanges(pending);
+		}
 	}
 
-	/** Set a single field, tracking the change for onChange batching. @internal */
-	private _setField(key: string, valueOrFn: unknown): void {
-		const fieldSignal = this._signals.get(key);
-		if (!fieldSignal) return;
-
-		const previousValue = fieldSignal.value;
+	/** Set a plain (non-reactive) field. No change tracking or notifications. @internal */
+	private _setPlainField(key: string, valueOrFn: unknown): void {
+		const current = this._passthrough.get(key);
 		if (typeof valueOrFn === 'function') {
-			fieldSignal.value = (valueOrFn as (prev: unknown) => unknown)(
-				fieldSignal.value,
+			this._passthrough.set(
+				key,
+				(valueOrFn as (prev: unknown) => unknown)(current),
 			);
 		} else {
-			fieldSignal.value = valueOrFn;
-		}
-
-		if (
-			this._config?.onChange &&
-			!this._insideOnChangeHook &&
-			fieldSignal.value !== previousValue
-		) {
-			this._pendingChanges.push({
-				key,
-				from: previousValue,
-				to: fieldSignal.value,
-			});
-			this._scheduleChangeBatch();
+			this._passthrough.set(key, valueOrFn);
 		}
 	}
 
 	/**
+	 * Resolve a field's next value without writing it.
+	 * Returns a BeforeChange if the value actually changed, or null if identical.
+	 * @internal
+	 */
+	private _resolveChange(key: string, valueOrFn: unknown): BeforeChange | null {
+		const fieldSignal = this._signals.get(key);
+		if (!fieldSignal) return null;
+
+		const previousValue = fieldSignal.value;
+		const nextValue =
+			typeof valueOrFn === 'function' ?
+				(valueOrFn as (prev: unknown) => unknown)(previousValue)
+			:	valueOrFn;
+
+		if (nextValue === previousValue) return null;
+		return { key, from: previousValue, to: nextValue };
+	}
+
+	/**
+	 * Run beforeChange, write surviving changes to signals, and batch for onChange.
+	 * @internal
+	 */
+	private _applyChanges(pending: Map<string, BeforeChange>): void {
+		if (pending.size === 0) return;
+
+		// Run beforeChange hook — may prevent some or all changes
+		if (this._config?.beforeChange && !this._insideBeforeChangeHook) {
+			const prevented = new Set<string>();
+			const beforeChange = this._config.beforeChange;
+
+			this._insideBeforeChangeHook = true;
+			try {
+				if (typeof beforeChange === 'function') {
+					beforeChange({
+						changes: pending as BeforeChanges,
+						prevent: (...keys: string[]) => {
+							if (keys.length === 0) {
+								for (const key of pending.keys()) prevented.add(key);
+							} else {
+								for (const key of keys) prevented.add(key);
+							}
+						},
+						get: (key) => this.get(key as never),
+					});
+				} else {
+					for (const [, change] of pending) {
+						const handler = (
+							beforeChange as Record<
+								string,
+								| ((ctx: {
+										from: unknown;
+										to: unknown;
+										prevent: () => void;
+										get: unknown;
+								  }) => void)
+								| undefined
+							>
+						)[change.key];
+						if (handler) {
+							handler({
+								from: change.from,
+								to: change.to,
+								prevent: () => {
+									prevented.add(change.key);
+								},
+								get: (key: string) => this.get(key as never),
+							});
+						}
+					}
+				}
+			} finally {
+				this._insideBeforeChangeHook = false;
+			}
+
+			// Remove prevented changes
+			for (const key of prevented) pending.delete(key);
+		}
+
+		// Write surviving changes to signals and batch for onChange
+		for (const [, change] of pending) {
+			const fieldSignal = this._signals.get(change.key);
+			if (fieldSignal) fieldSignal.value = change.to;
+
+			if (this._config?.onChange && !this._insideOnChangeHook) {
+				const existing = this._pendingChanges.get(change.key);
+				this._pendingChanges.set(change.key, {
+					key: change.key,
+					from: existing ? existing.from : change.from,
+					to: change.to,
+				});
+				this._scheduleChangeBatch();
+			}
+		}
+	}
+
+	/**
+	 * Listen for changes to a single field. The callback fires with the new and
+	 * previous value on each update.
+	 *
+	 * @param field - the field name to subscribe to
+	 * @param fn - called with `(value, previousValue)` on each change
+	 * @returns an {@link Unsubscribe} function to stop listening
+	 *
+	 * @example
+	 * ```ts
+	 * const unsub = inst.subscribe('email', (value, prev) => {
+	 *   console.log(`email: ${prev} → ${value}`);
+	 * });
+	 * ```
+	 */
+	subscribe<K extends string & keyof Def>(
+		field: K,
+		fn: (value: GetType<Def, K>, previousValue: GetType<Def, K>) => void,
+	): Unsubscribe;
+	/**
 	 * Listen for changes to any field. The callback fires after every update.
-	 * Triggers {@link ScopeConfig.onUsed | onUsed} / {@link ScopeConfig.onUnused | onUnused}
-	 * lifecycle hooks based on subscriber count.
 	 *
 	 * @param fn - called with a typed `get` accessor on each change
 	 * @returns an {@link Unsubscribe} function to stop listening
@@ -575,15 +840,77 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	 * const unsub = inst.subscribe((get) => {
 	 *   console.log(get("first"), get("full"));
 	 * });
-	 * inst.set("first", "Bob"); // logs "Bob", "Bob Smith"
-	 * unsub();
 	 * ```
 	 */
 	subscribe(
 		fn: (
 			get: <K extends string & keyof Def>(key: K) => GetType<Def, K>,
 		) => void,
+	): Unsubscribe;
+	subscribe<K extends string & keyof Def>(
+		fieldOrFn:
+			| K
+			| ((
+					get: <F extends string & keyof Def>(key: F) => GetType<Def, F>,
+			  ) => void),
+		fn?: (value: GetType<Def, K>, previousValue: GetType<Def, K>) => void,
 	): Unsubscribe {
+		// Per-field subscription
+		if (typeof fieldOrFn === 'string') {
+			const field = fieldOrFn;
+			const fieldFn = fn as (value: unknown, previousValue: unknown) => void;
+			const targetSignal =
+				this._signals.get(field) ?? this._computeds.get(field);
+			if (!targetSignal) return () => {};
+
+			let previousValue = targetSignal.peek();
+			let isFirstRun = true;
+			const dispose = effect(() => {
+				const currentValue = targetSignal.value;
+				if (isFirstRun) {
+					isFirstRun = false;
+					return;
+				}
+				const prev = previousValue;
+				previousValue = currentValue;
+				fieldFn(currentValue, prev);
+			});
+
+			this._subscriberCount++;
+			if (this._subscriberCount === 1) {
+				if (this._config?.onUsed) {
+					this._config.onUsed({
+						set: (key, value) => {
+							this._setWithoutChangeTracking(key, value);
+						},
+						get: (key) => this.get(key),
+					});
+				}
+				for (const refInstance of this._refInstances) {
+					const unsub = refInstance.subscribe(() => {});
+					this._refUnsubscribes.push(unsub);
+				}
+			}
+
+			this._disposers.push(dispose);
+
+			return () => {
+				dispose();
+				this._subscriberCount--;
+				if (this._subscriberCount === 0) {
+					for (const unsub of this._refUnsubscribes) unsub();
+					this._refUnsubscribes.length = 0;
+					if (this._config?.onUnused) {
+						this._config.onUnused({ get: (key) => this.get(key) });
+					}
+				}
+			};
+		}
+
+		// Whole-scope subscription
+		const wholeScopeFn = fieldOrFn as (
+			get: <K extends string & keyof Def>(key: K) => GetType<Def, K>,
+		) => void;
 		let isFirstRun = true;
 		const dispose = effect(() => {
 			// Read every signal and computed to establish tracking for all fields
@@ -598,7 +925,7 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 				return;
 			}
 
-			fn((key) => this.get(key));
+			wholeScopeFn((key) => this.get(key));
 		});
 
 		this._subscriberCount++;
@@ -673,12 +1000,13 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	 * const [first, setFirst] = inst.use("first");
 	 * ```
 	 */
-	use<K extends string & ValueKeys<Def>>(
+	use<K extends string & Exclude<ValueKeys<Def>, PlainKeys<Def>>>(
 		key: K,
 	): [GetType<Def, K>, (value: SetValue<Def, K>) => void];
 	/**
 	 * React hook — single read-only field (derivation or ref). Returns `[value]`.
 	 * Only re-renders when this specific field changes.
+	 * Plain keys (`valuePlain`) are not allowed — use `get()` instead.
 	 *
 	 * @param key - the derivation or ref field to subscribe to
 	 * @returns a `[value]` tuple
@@ -688,10 +1016,17 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 	 * const [fullName] = inst.use("full");
 	 * ```
 	 */
-	use<K extends string & keyof Def>(key: K): [GetType<Def, K>];
+	use<K extends string & Exclude<keyof Def, PlainKeys<Def>>>(
+		key: K,
+	): [GetType<Def, K>];
 	// Implementation
 	use(key?: string): unknown {
 		if (key !== undefined) {
+			if (this._plainKeys.has(key)) {
+				throw new Error(
+					`Cannot use() plain value "${key}" — use get() instead`,
+				);
+			}
 			// Per-field subscription — subscribe to just this signal/computed
 			const targetSignal = this._signals.get(key) ?? this._computeds.get(key);
 			if (targetSignal) this._useReactSubscription(targetSignal);
@@ -772,9 +1107,15 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 		options?: { rerunInit?: boolean },
 	): void {
 		// Full replacement: every value key not in data resets to undefined
+		const pending = new Map<string, BeforeChange>();
 		for (const key of this._signals.keys()) {
-			this._setField(key, key in data ? data[key] : undefined);
+			const change = this._resolveChange(
+				key,
+				key in data ? data[key] : undefined,
+			);
+			if (change) pending.set(key, change);
 		}
+		this._applyChanges(pending);
 		// Passthrough: replace entirely
 		if (this._config?.allowUndeclaredProperties) {
 			this._passthrough.clear();
@@ -841,21 +1182,50 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 
 		void Promise.resolve().then(() => {
 			this._changeBatchScheduled = false;
-			if (this._pendingChanges.length === 0 || !this._config?.onChange) return;
+			if (this._pendingChanges.size === 0 || !this._config?.onChange) return;
 
-			const changes = [...this._pendingChanges];
-			this._pendingChanges.length = 0;
+			const changes: ScopeChanges = new Map(this._pendingChanges);
+			this._pendingChanges.clear();
+
+			const onChange = this._config.onChange;
+			const setHelper: typeof this._setWithoutChangeTracking = (key, value) => {
+				this._setWithoutChangeTracking(key, value);
+			};
+			const getHelper = (key: string) => this.get(key as never);
 
 			this._insideOnChangeHook = true;
 			try {
-				this._config.onChange({
-					changes,
-					set: (key, value) => {
-						this._setWithoutChangeTracking(key, value);
-					},
-					get: (key) => this.get(key),
-					getSnapshot: () => this.getSnapshot(),
-				});
+				if (typeof onChange === 'function') {
+					onChange({
+						changes,
+						set: setHelper as never,
+						get: getHelper as never,
+						getSnapshot: () => this.getSnapshot(),
+					});
+				} else {
+					for (const [, change] of changes) {
+						const handler = (
+							onChange as Record<
+								string,
+								| ((ctx: {
+										from: unknown;
+										to: unknown;
+										set: unknown;
+										get: unknown;
+								  }) => void)
+								| undefined
+							>
+						)[change.key];
+						if (handler) {
+							handler({
+								from: change.from,
+								to: change.to,
+								set: setHelper as never,
+								get: getHelper as never,
+							});
+						}
+					}
+				}
 			} finally {
 				this._insideOnChangeHook = false;
 			}
@@ -876,6 +1246,11 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 
 	/** Read a field's value with Preact tracking (for use inside computed/effect). @internal */
 	private _trackedRead(fieldKey: string): unknown {
+		if (this._scopeMapKeys.has(fieldKey)) {
+			// ScopeMap ref: read version signal for tracking, return map from passthrough
+			void this._signals.get(fieldKey)?.value;
+			return this._passthrough.get(fieldKey);
+		}
 		const fieldSignal = this._signals.get(fieldKey);
 		if (fieldSignal) return fieldSignal.value;
 		const fieldComputed = this._computeds.get(fieldKey);
@@ -886,6 +1261,8 @@ export class ScopeInstance<Def extends Record<string, ScopeEntry>> {
 
 	/** Read a field's value without Preact tracking (peek). @internal */
 	private _untrackedRead(fieldKey: string): unknown {
+		if (this._scopeMapKeys.has(fieldKey))
+			return this._passthrough.get(fieldKey);
 		const fieldSignal = this._signals.get(fieldKey);
 		if (fieldSignal) return fieldSignal.peek();
 		const fieldComputed = this._computeds.get(fieldKey);
@@ -1149,9 +1526,9 @@ export class ScopeTemplate<Def extends Record<string, ScopeEntry>> {
 		} else if (data && keyOrFn) {
 			for (const item of data) {
 				const key =
-					typeof keyOrFn === 'function'
-						? keyOrFn(item)
-						: (String(item[keyOrFn]) as K);
+					typeof keyOrFn === 'function' ?
+						keyOrFn(item)
+					:	(String(item[keyOrFn]) as K);
 				collection.set(key, item as CreateInput<Def>);
 			}
 		}
@@ -1186,10 +1563,97 @@ function mergeConfigs<Def extends Record<string, ScopeEntry>>(
 			extension.onInit?.(ctx);
 		};
 	}
+	if (base.beforeChange || extension.beforeChange) {
+		const normalizeBeforeChange = (
+			handler: ScopeConfig<Def>['beforeChange'],
+		):
+			| ((ctx: {
+					changes: BeforeChanges;
+					prevent: (...keys: string[]) => void;
+					get: ScopeGet<Def>;
+			  }) => void)
+			| undefined => {
+			if (!handler) return undefined;
+			if (typeof handler === 'function') return handler;
+			return (ctx) => {
+				for (const [, change] of ctx.changes) {
+					const fieldHandler = (
+						handler as Record<
+							string,
+							| ((ctx: {
+									from: unknown;
+									to: unknown;
+									prevent: () => void;
+									get: unknown;
+							  }) => void)
+							| undefined
+						>
+					)[change.key];
+					if (fieldHandler) {
+						fieldHandler({
+							from: change.from,
+							to: change.to,
+							prevent: () => {
+								ctx.prevent(change.key as never);
+							},
+							get: ctx.get as never,
+						});
+					}
+				}
+			};
+		};
+		const baseFn = normalizeBeforeChange(base.beforeChange);
+		const extFn = normalizeBeforeChange(extension.beforeChange);
+		merged.beforeChange = (ctx) => {
+			baseFn?.(ctx);
+			extFn?.(ctx);
+		};
+	}
 	if (base.onChange || extension.onChange) {
+		// Normalize both forms to catch-all functions for merging
+		const normalizeOnChange = (
+			handler: ScopeConfig<Def>['onChange'],
+		):
+			| ((ctx: {
+					changes: ScopeChanges;
+					set: ScopeSet<Def>;
+					get: ScopeGet<Def>;
+					getSnapshot: () => Record<string, unknown>;
+			  }) => void)
+			| undefined => {
+			if (!handler) return undefined;
+			if (typeof handler === 'function') return handler;
+			// Object form → wrap in a function
+			return (ctx) => {
+				for (const [, change] of ctx.changes) {
+					const fieldHandler = (
+						handler as Record<
+							string,
+							| ((ctx: {
+									from: unknown;
+									to: unknown;
+									set: unknown;
+									get: unknown;
+							  }) => void)
+							| undefined
+						>
+					)[change.key];
+					if (fieldHandler) {
+						fieldHandler({
+							from: change.from,
+							to: change.to,
+							set: ctx.set as never,
+							get: ctx.get as never,
+						});
+					}
+				}
+			};
+		};
+		const baseFn = normalizeOnChange(base.onChange);
+		const extFn = normalizeOnChange(extension.onChange);
 		merged.onChange = (ctx) => {
-			base.onChange?.(ctx);
-			extension.onChange?.(ctx);
+			baseFn?.(ctx);
+			extFn?.(ctx);
 		};
 	}
 	if (base.onUsed || extension.onUsed) {

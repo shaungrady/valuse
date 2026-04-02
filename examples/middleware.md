@@ -165,13 +165,13 @@ function TodoEditor({ id }: { id: string }) {
   const todo = todos.get(id)!;
   const history = useMemo(() => withHistory(todo), [todo]);
 
-  const [get, set] = history.instance.use();
+  const [getTodo, setTodo] = history.instance.use();
 
   return (
     <div>
       <input
-        value={get('text')}
-        onChange={(e) => set('text', e.target.value)}
+        value={getTodo('text')}
+        onChange={(e) => setTodo('text', e.target.value)}
       />
       <button disabled={!history.canUndo()} onClick={history.undo}>
         Undo

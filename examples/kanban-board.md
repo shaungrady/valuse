@@ -71,50 +71,62 @@ const column = valueScope({
 
 ### The board
 
+The board owns the card and column collections via `valueRef` factories — each
+`board.create()` gets its own independent maps. The per-field `onChange` on
+`data` hydrates the collections when the async fetch resolves:
+
 ```ts
-const board = valueScope({
-  boardId: value<string>(),
-  filterAssignee: value<string | null>(null),
+const board = valueScope(
+  {
+    boardId: value<string>(),
+    filterAssignee: value<string | null>(null),
 
-  // Async derivation — fetches board data when boardId changes.
-  // Aborts the previous fetch automatically.
-  data: async ({ use, signal }) => {
-    const id = use('boardId');
-    const res = await fetch(`/api/boards/${id}`, { signal });
-    return res.json();
+    // Per-instance collections — each board gets its own maps
+    cards: valueRef(() => card.createMap()),
+    columns: valueRef(() => column.createMap()),
+
+    // Async derivation — fetches board data when boardId changes.
+    // Aborts the previous fetch automatically.
+    data: async ({ use, signal }) => {
+      const id = use('boardId');
+      const res = await fetch(`/api/boards/${id}`, { signal });
+      return res.json();
+    },
+
+    // Sync derivations — read the async data without knowing it's async.
+    name: ({ use }) => use('data')?.name ?? 'Loading...',
+    columnOrder: ({ use }) => use('data')?.columns?.map((c) => c.id) ?? [],
+
+    // Derivation reacts to column map key changes
+    columnCount: ({ use }) => use('columns').size,
   },
+  {
+    onChange: {
+      data: ({ to, get }) => {
+        if (!to) return;
+        const columns = get('columns');
+        const cards = get('cards');
 
-  // Sync derivations — read the async data without knowing it's async.
-  name: ({ use }) => use('data')?.name ?? 'Loading...',
-  columnOrder: ({ use }) => use('data')?.columns?.map((c) => c.id) ?? [],
-});
+        // Hydrate collections from fetched data
+        for (const col of to.columns) columns.set(col.id, col);
+        for (const c of to.cards) cards.set(c.id, c);
+      },
+    },
+  },
+);
 
 let boardInstance: ReturnType<typeof board.create>;
-let cards: ReturnType<typeof card.createMap>;
-let columns: ReturnType<typeof column.createMap>;
 ```
 
 ### Hydrating from async data
 
-The board's `data` derivation fetches from the API. Once it resolves, populate
-the card and column collections. `createMap()` accepts an array and a key field
-(or function), so hydrating is one line per collection:
+The board's `data` derivation fetches from the API. When it resolves, the
+per-field `onChange` handler populates the card and column collections
+automatically — no manual `subscribe` needed:
 
 ```ts
 function initBoard(boardId: string) {
   boardInstance = board.create({ boardId });
-  cards = card.createMap();
-  columns = column.createMap();
-
-  // Populate collections once the board data resolves
-  boardInstance.subscribe((get) => {
-    const data = get('data');
-    if (!data) return;
-
-    // createMap accepts an array + key field — one line per collection
-    for (const col of data.columns) columns.set(col.id, col);
-    for (const c of data.cards) cards.set(c.id, c);
-  });
 }
 ```
 
@@ -135,6 +147,8 @@ function moveCard(
   toColumnId: string,
   toIndex: number,
 ) {
+  const columns = boardInstance.get('columns');
+  const cards = boardInstance.get('cards');
   const fromCol = columns.get(fromColumnId);
   const toCol = columns.get(toColumnId);
   if (!fromCol || !toCol) return;
@@ -161,6 +175,10 @@ and card is untouched.
 
 ```tsx
 import { value, valueScope } from 'valuse/react';
+
+// Pull collections from the board — no module-level variables needed
+const columns = boardInstance.get('columns');
+const cards = boardInstance.get('cards');
 
 function Board() {
   const [columnOrder] = boardInstance.use('columnOrder');
@@ -266,7 +284,8 @@ function FilteredCard({ id }: { id: string }) {
 
 ### Auto-saving with onChange
 
-Add persistence to the card scope without touching the components:
+Add persistence to the card scope without touching the components. The `changes`
+map lets you skip UI-only fields:
 
 ```ts
 const card = valueScope(
@@ -274,7 +293,9 @@ const card = valueScope(
     /* ...fields from above... */
   },
   {
-    onChange: ({ get, getSnapshot }) => {
+    onChange: ({ changes, get, getSnapshot }) => {
+      // Skip UI-only changes
+      if (changes.has('isDragging') || changes.has('isSelected')) return;
       debounce(() => saveCard(get('id'), getSnapshot()), 500);
     },
   },

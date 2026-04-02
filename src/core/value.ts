@@ -55,9 +55,9 @@ export class Value<T> {
 	set(valueOrFn: T | ((prev: T) => T)): void {
 		const previous = this.get();
 		const raw =
-			typeof valueOrFn === 'function'
-				? (valueOrFn as (prev: T) => T)(previous)
-				: valueOrFn;
+			typeof valueOrFn === 'function' ?
+				(valueOrFn as (prev: T) => T)(previous)
+			:	valueOrFn;
 		const next = this._applyTransforms(raw);
 
 		if (this._comparator && this._comparator(previous, next)) {

@@ -108,7 +108,7 @@ describe('valueScope', () => {
 				},
 				{
 					onChange: ({ changes: c }) => {
-						changes.push(...c);
+						changes.push(...c.values());
 					},
 				},
 			);

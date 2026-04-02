@@ -118,14 +118,12 @@ function StockRow({ symbol }: { symbol: string }) {
       <td>{symbol}</td>
       <td>{price != null ? `$${price.toFixed(2)}` : '—'}</td>
       <td style={{ color: getStock('isUp') ? 'green' : 'red' }}>
-        {price != null ? (
+        {price != null ?
           <>
             {change >= 0 ? '+' : ''}
             {change.toFixed(2)} ({pct.toFixed(2)}%)
           </>
-        ) : (
-          '—'
-        )}
+        : '—'}
       </td>
     </tr>
   );

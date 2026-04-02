@@ -3,7 +3,7 @@ pre-commit:
   commands:
     format:
       glob: '*.{ts,tsx,json,md,yml,yaml}'
-      run: pnpm prettier --write {staged_files}
+      run: pnpm prettier --experimental-ternaries --write {staged_files}
       stage_fixed: true
     lint:
       glob: '*.{ts,tsx}'

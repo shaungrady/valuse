@@ -210,7 +210,7 @@ describe('async derivation integration', () => {
 				},
 				{
 					onChange: ({ changes }) => {
-						onChangeCalls.push(changes.map((change) => change.key));
+						onChangeCalls.push([...changes.keys()]);
 					},
 				},
 			);

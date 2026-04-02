@@ -6,17 +6,19 @@
  * The source is not copied — every scope instance reads from the same
  * underlying signal via a computed that tracks the source's changes.
  *
- * Two modes:
+ * Three modes:
  * - Reactive sources ({@link Value}, {@link ValueSet}, {@link ValueMap}):
  *   `ref.get()` delegates to `source.get()`
  * - {@link ScopeInstance}: `ref.get()` returns the instance itself — signal tracking
  *   flows transitively through chained `.get()`/`.set()` calls
+ * - Factory function: each scope instance calls the factory to get its own source
  */
 
 import { Value } from './value.js';
 import { ValueSet } from './value-set.js';
 import { ValueMap } from './value-map.js';
-import type { ScopeInstance } from './value-scope.js';
+import { ScopeMap } from './scope-map.js';
+import type { ScopeInstance, ScopeEntry } from './value-scope.js';
 
 /**
  * A read-only reactive reference. Used in scope definitions to declare
@@ -30,14 +32,18 @@ export class ValueRef<T> {
 	private _get: () => T;
 	/** The original source object passed to `valueRef()`. @internal */
 	readonly source: unknown;
+	/** Factory function for per-instance sources. @internal */
+	readonly factory: (() => unknown) | undefined;
 
 	/**
 	 * @param getter - a function that reads from the external source
 	 * @param source - the original source object (for transitive lifecycle)
+	 * @param factory - optional factory function for per-instance sources
 	 */
-	constructor(getter: () => T, source?: unknown) {
+	constructor(getter: () => T, source?: unknown, factory?: () => unknown) {
 		this._get = getter;
 		this.source = source;
+		this.factory = factory;
 	}
 
 	/**
@@ -84,6 +90,15 @@ export function valueRef<Def extends Record<string, AnyScopeEntry>>(
 ): ValueRef<ScopeInstance<Def>>;
 
 /**
+ * Create a ref to a {@link ScopeMap}. `.get()` returns the map itself.
+ * @param source - the ScopeMap to reference
+ */
+export function valueRef<
+	Def extends Record<string, ScopeEntry>,
+	K extends string | number,
+>(source: ScopeMap<Def, K>): ValueRef<ScopeMap<Def, K>>;
+
+/**
  * Create a ref to a {@link ValueMap}. `.get()` returns the current `Map<K, V>`.
  * @param source - the ValueMap to reference
  */
@@ -101,8 +116,37 @@ export function valueRef<T>(source: ValueSet<T>): ValueRef<Set<T>>;
  */
 export function valueRef<T>(source: ReactiveSource<T>): ValueRef<T>;
 
+/**
+ * Create a ref from a factory function. Each scope instance calls the factory
+ * to get its own source. The returned source is wired up as if it were passed
+ * directly to `valueRef()`.
+ *
+ * @param factory - a function that creates the source
+ * @returns a ref that will be instantiated per scope instance
+ *
+ * @example
+ * ```ts
+ * const board = valueScope({
+ *   columns: valueRef(() => column.createMap()),
+ * });
+ * // Each board.create() gets its own column map
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/unified-signatures -- factory has different runtime behavior
+export function valueRef<T>(factory: () => T): ValueRef<T>;
+
 // Implementation
 export function valueRef(source: unknown): ValueRef<unknown> {
+	// Factory function — defer creation to per-instance init
+	if (typeof source === 'function' && !isReactiveSource(source)) {
+		return new ValueRef(() => undefined, undefined, source as () => unknown);
+	}
+
+	return createRefFromSource(source);
+}
+
+/** Create a ValueRef from an already-resolved source. @internal */
+export function createRefFromSource(source: unknown): ValueRef<unknown> {
 	// Known reactive sources — delegate to .get() to unwrap the signal value
 	if (
 		source instanceof Value ||
@@ -112,6 +156,15 @@ export function valueRef(source: unknown): ValueRef<unknown> {
 		const reactive = source as ReactiveSource<unknown>;
 		return new ValueRef(() => reactive.get(), source);
 	}
-	// Everything else (ScopeInstance, etc.) — return the source itself
+	// ScopeMap / ScopeInstance / everything else — return the source itself
 	return new ValueRef(() => source, source);
+}
+
+function isReactiveSource(source: unknown): boolean {
+	return (
+		source instanceof Value ||
+		source instanceof ValueSet ||
+		source instanceof ValueMap ||
+		source instanceof ScopeMap
+	);
 }

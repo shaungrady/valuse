@@ -7,7 +7,10 @@ lifecycle hooks built in, so your state mirrors how your data actually works
 instead of how your framework wants it. And creating independent instances
 doesn't require factory wrappers or providers.
 
-[**Let's compare.**](examples/comparison.md)
+**Let's compare:** [Zustand](examples/compare-zustand.md) |
+[Jotai](examples/compare-jotai.md) | [MobX](examples/compare-mobx.md) |
+[Valtio](examples/compare-valtio.md) |
+[React Context](examples/compare-react-context.md)
 
 So what kind of stuff does ValUse make easy?
 
@@ -27,12 +30,15 @@ Just want to see code? **[Quickstart](QUICKSTART.md)**
 - [Collections](#collections) — reactive Set and Map
 - [Scopes](#scopes) — structured models with typed fields and derivations
   - [Derivations](#derivations) — use/get, previousValue, identity comparison
-  - [Async derivations](#async-derivations) — fetch, stream, poll — all reactive
-- [Refs](#refs) — share reactive state across scopes
+- [Plain values](#plain-values) — non-reactive data in scopes
 - [Keyed collections of scopes](#keyed-collections-of-scopes) — many instances
   of the same scope
-- [Lifecycle](#lifecycle) — onInit, onChange, onUsed/onUnused, onDestroy
+- [Lifecycle](#lifecycle) — onInit, beforeChange, onChange, onUsed/onUnused,
+  onDestroy
+- [Refs](#refs) — share reactive state across scopes, with per-instance
+  factories
 - [Extending scopes](#extending-scopes) — derive new scopes, reusable middleware
+- [Async derivations](#async-derivations) — fetch, stream, poll — all reactive
 - [Factories](#factories) — parameterized scope templates
 - [Batching](#batching)
 - [API reference](#api-reference)
@@ -223,9 +229,9 @@ TypeScript error to `set`, silently ignored at runtime.
 
 ```tsx
 // All fields — re-renders on any change
-const [get, set] = bob.use();
-get('fullName'); // 'Bob Jones'
-set('role', 'admin');
+const [getPerson, setPerson] = bob.use();
+getPerson('fullName'); // 'Bob Jones'
+setPerson('role', 'admin');
 
 // Single field — only re-renders when that field changes
 const [firstName, setFirstName] = bob.use('firstName');
@@ -258,6 +264,22 @@ restoring.
 ```ts
 bob.subscribe((get) => {
   console.log(get('fullName'));
+});
+```
+
+Subscribe to a single field — only fires when that field changes:
+
+```ts
+bob.subscribe('email', (value, previousValue) => {
+  console.log(`email: ${previousValue} → ${value}`);
+});
+```
+
+Per-field subscribe works on ScopeMap too:
+
+```ts
+people.subscribe('alice', 'email', (value, previousValue) => {
+  console.log(`alice's email: ${previousValue} → ${value}`);
 });
 ```
 
@@ -319,23 +341,7 @@ Derivation returns are compared by identity (`===`). If a derivation returns the
 same reference as before, downstream derivations and subscribers are not
 notified.
 
-#### getAsync() — read async metadata
-
-Use `getAsync(key)` inside a derivation to read the full `AsyncState` of any
-field (see [Async derivations](#async-derivations)). For sync fields, this
-returns `{ value, hasValue: true, status: 'set' }`:
-
-```ts
-const scope = valueScope({
-  price: value(42),
-  priceStatus: ({ getAsync }) => getAsync('price').status, // 'set'
-});
-```
-
-This is most useful when reading async derivations to check loading state or
-errors. See [AsyncState](#asyncstate) below.
-
-#### The full derivation context
+#### The derivation context
 
 | Property        | Type                       | Description                                                                |
 | --------------- | -------------------------- | -------------------------------------------------------------------------- |
@@ -347,298 +353,38 @@ errors. See [AsyncState](#asyncstate) below.
 | `set(value)`    | `(value) => void`          | _(Async only)_ Push intermediate values (optimistic, streaming, progress). |
 | `onCleanup(fn)` | `(fn: () => void) => void` | _(Async only)_ Register cleanup that runs on re-derivation or destroy.     |
 
-### Async derivations
+The async-only properties (`signal`, `set`, `onCleanup`) are covered in
+[Async derivations](#async-derivations).
 
-When a derivation is an `async` function, ValUse automatically manages its
-lifecycle — abort on re-run, status tracking, intermediate values, and cleanup.
+## Plain values
 
-```ts
-const scope = valueScope({
-  userId: value<string>(),
-
-  profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use('userId')}`, { signal });
-    return res.json();
-  },
-});
-```
-
-When `userId` changes, the previous fetch is **aborted** via `signal` and a new
-one starts. Downstream consumers just see `T | undefined` — no async contagion.
-
-#### Status tracking with AsyncState
-
-Every async derivation has an `AsyncState<T>` that tracks its lifecycle:
+Use `valuePlain()` to store non-reactive data in a scope. Plain values are
+readable via `get()` but invisible to the reactive graph — they won't trigger
+re-renders or re-derivations:
 
 ```ts
-interface AsyncState<T> {
-  value: T | undefined; // The resolved value (or undefined if unset)
-  hasValue: boolean; // Whether a value has ever been set
-  status: 'unset' | 'setting' | 'set' | 'error';
-  error: unknown | undefined;
-}
-```
+import { value, valuePlain, valueScope } from 'valuse';
 
-Status transitions:
-
-- Starts as `'unset'` — no value yet
-- When the async function is running: `'setting'` (preserves previous value if
-  any)
-- When it resolves: `'set'`
-- When it rejects: `'error'` (preserves previous value)
-
-Read async state on instances with `getAsync(key)` or `useAsync(key)`:
-
-```ts
-const inst = scope.create({ userId: 'alice' });
-
-inst.getAsync('profile');
-// { value: undefined, hasValue: false, status: 'setting', error: undefined }
-
-// ...after resolution:
-// { value: { name: 'Alice', ... }, hasValue: true, status: 'set', error: undefined }
-```
-
-In React:
-
-```tsx
-const [profile, profileState] = inst.useAsync('profile');
-// profile = the value (or undefined)
-// profileState = full AsyncState
-
-if (profileState.status === 'setting') return <Spinner />;
-if (profileState.status === 'error')
-  return <Error error={profileState.error} />;
-return <Profile data={profile} />;
-```
-
-#### Intermediate values with set()
-
-Use `set()` inside async derivations to push values before the final `return`.
-This enables optimistic updates, streaming, polling, and progress reporting:
-
-```ts
-const scope = valueScope({
-  query: value<string>(),
-
-  results: async ({ use, set, signal }) => {
-    const q = use('query');
-
-    // Optimistic: show cached results immediately
-    const cached = cache.get(q);
-    if (cached) set(cached);
-
-    // Then fetch fresh data
-    const res = await fetch(`/api/search?q=${q}`, { signal });
-    return res.json(); // final value
-  },
-});
-```
-
-#### Seeding with cached data
-
-Pass a value for an async derivation key in `create()` to seed it with cached
-data. The seed is available immediately via `get()` — stale-while-revalidate
-with zero extra state:
-
-```ts
-const scope = valueScope({
-  userId: value<string>(),
-  profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use('userId')}`, { signal });
-    return res.json();
-  },
+const board = valueScope({
+  boardId: value<string>(),
+  config: valuePlain({ theme: 'dark', locale: 'en' }, { readonly: true }),
+  metadata: valuePlain({ createdBy: '' }),
 });
 
-// Seed with cached data — available instantly, replaced when fetch resolves
-const instance = scope.create({
-  userId: 'alice',
-  profile: cachedProfile,
-});
-instance.get('profile'); // cachedProfile — no waiting
+const inst = board.create();
+inst.get('config'); // { theme: 'dark', locale: 'en' }
+inst.get('metadata'); // { createdBy: '' }
+inst.set('metadata', { createdBy: 'alice' }); // ok — writable
+inst.set('config', {}); // throws — readonly
+inst.use('config'); // throws — plain values can't be use()'d
 ```
 
-#### Cleanup
+Plain values appear in `getSnapshot()` and can be overridden at `create()` time.
+The `readonly` option prevents `set()` after creation (both a TypeScript error
+and a runtime throw).
 
-Register cleanup functions with `onCleanup()`. They run when the derivation
-re-runs (deps changed) or when the instance is destroyed:
-
-```ts
-const scope = valueScope({
-  roomId: value<string>(),
-
-  messages: async ({ use, set, onCleanup }) => {
-    const ws = new WebSocket(`/rooms/${use('roomId')}`);
-    onCleanup(() => ws.close());
-
-    ws.onmessage = (e) => set(JSON.parse(e.data));
-
-    // Return undefined — value comes from set() via WebSocket
-  },
-});
-```
-
-#### Dependency tracking in async
-
-Dependencies are tracked during the **synchronous preamble** only — the part
-before the first `await`. Any `use()` calls after an `await` are not tracked:
-
-```ts
-async ({ use, signal }) => {
-  const id = use('userId'); // ✅ tracked — before await
-  const data = await fetch(`/api/${id}`, { signal });
-  const locale = use('locale'); // ⚠️ NOT tracked — after await
-  return format(data, locale);
-};
-```
-
-If you need to track a value but only use it after an `await`, read it before
-the first `await`:
-
-```ts
-async ({ use, signal }) => {
-  const id = use('userId'); // tracked
-  const locale = use('locale'); // tracked — read before await
-  const data = await fetch(`/api/${id}`, { signal });
-  return format(data, locale);
-};
-```
-
-#### No async contagion
-
-Sync derivations can depend on async derivations without knowing they're async.
-`use("profile")` returns `T | undefined` regardless of whether `profile` is sync
-or async — no promises, no `await`, no loading checks:
-
-```ts
-const scope = valueScope({
-  userId: value<string>(),
-  profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use('userId')}`, { signal });
-    return res.json();
-  },
-  // Sync — just sees User | undefined. Recomputes when profile resolves.
-  greeting: ({ use }) => {
-    const p = use('profile');
-    return p ? `Hello, ${p.name}!` : 'Loading...';
-  },
-});
-```
-
-If you later change `profile` from async to sync (or vice versa), `greeting`
-doesn't change at all. When you _do_ need loading state, errors, or status
-transitions, `useAsync("profile")` gives you the full `AsyncState` — but only
-the consumers that care about those details opt in. See the
-[comparison doc](examples/comparison.md#code-comparison) for how this differs
-from other libraries, where async tends to spread through the entire dependency
-chain.
-
-#### Stock price example — async derivation vs manual lifecycle
-
-The old way uses lifecycle hooks to manually manage a polling interval:
-
-```ts
-// ❌ Manual lifecycle — more boilerplate, harder to follow
-const stockPrice = valueScope(
-  {
-    symbol: value<string>(),
-    price: value<number>(0),
-    interval: value<number | null>(null),
-  },
-  {
-    onUsed: ({ set, get }) => {
-      const id = setInterval(async () => {
-        const p = await fetchPrice(get('symbol'));
-        set('price', p);
-      }, 1000);
-      set('interval', id);
-    },
-    onUnused: ({ get }) => {
-      clearInterval(get('interval'));
-    },
-  },
-);
-```
-
-With async derivations, the same thing is declarative:
-
-```ts
-// ✅ Async derivation — self-contained, reactive, cancellable
-const stockPrice = valueScope({
-  symbol: value<string>(),
-
-  price: async ({ use, set, signal, onCleanup }) => {
-    const sym = use('symbol');
-    const poll = async () => {
-      while (!signal.aborted) {
-        const p = await fetchPrice(sym);
-        if (!signal.aborted) set(p);
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    };
-    poll();
-    // No return — value comes from set()
-  },
-});
-```
-
-When `symbol` changes, the previous poll is aborted and a new one starts. When
-the instance is destroyed, it's aborted automatically. No lifecycle hooks
-needed.
-
-## Refs
-
-Use `valueRef()` to bring external reactive state into a scope. Refs are shared
-across all instances — they point to the same source, not a copy:
-
-```ts
-import { value, valueRef, valueScope, valueSet } from 'valuse';
-
-const globalSpecialTags = valueSet<string>(['admin', 'root']);
-
-const person = valueScope({
-  firstName: value<string>(),
-  tags: valueSet<string>(),
-  specialTags: valueRef(globalSpecialTags),
-
-  hasSpecialTag: ({ use }) =>
-    use('tags').some((t) => use('specialTags').has(t)),
-});
-```
-
-Refs also work with scope instances for nested reactive access:
-
-```ts
-const address = valueScope({
-  street: value<string>(),
-  city: value('NYC'),
-  full: ({ use }) => `${use('street')}, ${use('city')}`,
-});
-const sharedAddress = address.create({ street: '123 Main' });
-
-const person = valueScope({
-  name: value<string>(),
-  address: valueRef(sharedAddress),
-});
-const bob = person.create({ name: 'Bob' });
-
-bob.get('address').get('full'); // '123 Main, NYC'
-bob.get('address').set('street', '456 Oak'); // mutates the shared instance
-```
-
-Signal tracking flows transitively — derivations that read through a ref
-automatically react to changes in the referenced scope.
-
-### Transitive lifecycle
-
-When a scope becomes "used" (its first subscriber attaches), all scope instances
-it references via `valueRef()` also become "used" — triggering their `onUsed`
-hooks and activating any async derivations. When the outer scope becomes
-"unused" (last subscriber detaches), referenced scopes are unsubscribed too.
-
-This means a stock price scope connected via `valueRef()` will automatically
-start its data feed when the consuming scope gets its first subscriber, and stop
-when the last one leaves — no manual wiring needed.
+Use `valuePlain` when you need data that travels with the scope but doesn't
+participate in reactivity — configuration, external references, metadata.
 
 ## Keyed collections of scopes
 
@@ -681,12 +427,12 @@ In React, each row is its own reactive boundary:
 type People = ReturnType<typeof person.createMap>;
 
 function PersonRow({ id, people }: { id: string; people: People }) {
-  const [get, set] = people.use(id);
+  const [getPerson, setPerson] = people.use(id);
 
   return (
     <input
-      value={get('firstName')}
-      onChange={(e) => set('firstName', e.target.value)}
+      value={getPerson('firstName')}
+      onChange={(e) => setPerson('firstName', e.target.value)}
     />
   );
 }
@@ -733,10 +479,14 @@ const formField = valueScope(
 ### onChange
 
 Fires after mutations. **Batched by default** — multiple synchronous sets
-produce one `onChange` call on the next microtask. Sets inside `onChange` do not
-re-trigger the hook:
+produce one `onChange` call on the next microtask. Multiple changes to the same
+field within a batch are collapsed — you see the original `from` and the final
+`to`. Sets inside `onChange` do not re-trigger the hook.
+
+Two forms — catch-all function or per-field object:
 
 ```ts
+// Catch-all: receives all changes in one callback
 const person = valueScope(
   {
     firstName: value<string>(),
@@ -745,21 +495,89 @@ const person = valueScope(
   },
   {
     onChange: ({ changes, set, get, getSnapshot }) => {
-      // changes = [{ key: 'firstName', from: 'Bob', to: 'Robert' }]
+      // changes is a Map<string, { key, from, to }>
+      // changes.has('firstName'), changes.get('firstName')?.to, etc.
       set('lastUpdated', Date.now());
     },
   },
 );
 ```
 
+```ts
+// Per-field: each handler only fires for its field
+const formField = valueScope(
+  {
+    value: value<string>(),
+    error: value<string | null>(null),
+  },
+  {
+    onChange: {
+      value: ({ to, set }) => {
+        set('error', validate(to));
+      },
+    },
+  },
+);
+```
+
+Per-field handlers receive `{ from, to, get, set }` — no digging through a
+changes map. Both forms can be mixed via `extend()` — the merge normalizes them
+automatically.
+
+### beforeChange
+
+Fires **synchronously** before values are written. Use it to validate or prevent
+changes — derivations never see prevented values.
+
+Two forms, mirroring `onChange` — catch-all or per-field:
+
+```ts
+// Catch-all: prevent specific fields or all changes
+const person = valueScope(
+  {
+    role: value<string>('viewer'),
+    email: value<string>(),
+    isAdmin: value<boolean>(false),
+  },
+  {
+    beforeChange: ({ changes, prevent, get }) => {
+      // Prevent non-admins from changing role
+      if (changes.has('role') && !get('isAdmin')) prevent('role');
+    },
+  },
+);
+```
+
+```ts
+// Per-field: each handler decides for its own field
+const person = valueScope(
+  {
+    email: value<string>(''),
+    name: value<string>(''),
+  },
+  {
+    beforeChange: {
+      email: ({ to, prevent }) => {
+        if (!to.includes('@')) prevent();
+      },
+    },
+  },
+);
+```
+
+`prevent()` with no arguments blocks all pending changes.
+`prevent('email', 'role')` blocks specific fields — the rest go through
+normally.
+
+Values shown in `beforeChange` are **post-comparison** — the hook only fires
+when a real change is about to occur (`===` check already passed). Prevented
+changes never trigger `onChange`. Bulk `set({ ... })` batches all fields into
+one `beforeChange` call so you can reason about them together.
+
 ### onUsed / onUnused
 
 `onUsed` fires when the first subscriber starts watching. `onUnused` fires when
-the last subscriber stops. Useful for lazy resources.
-
-For most cases, [async derivations](#async-derivations) are a better fit — they
-handle abort and cleanup automatically. But `onUsed`/`onUnused` remain useful
-for side effects that don't produce a derived value:
+the last subscriber stops. Useful for lazy resources:
 
 ```ts
 const analytics = valueScope(
@@ -777,9 +595,9 @@ const analytics = valueScope(
 );
 ```
 
-Lifecycle flows transitively through refs — when a scope becomes "used", all
-scope instances it references via `valueRef()` also become "used". See
-[Transitive lifecycle](#transitive-lifecycle).
+For producing derived values from async sources (fetch, WebSocket, polling),
+[async derivations](#async-derivations) are usually a better fit — they handle
+abort and cleanup automatically.
 
 ### onDestroy
 
@@ -827,6 +645,98 @@ nodes.set('node-1', slateNode);
 // text, children, bold, italic — preserved but not reactive
 ```
 
+## Refs
+
+Use `valueRef()` to bring external reactive state into a scope. Refs are shared
+across all instances — they point to the same source, not a copy:
+
+```ts
+import { value, valueRef, valueScope, valueSet } from 'valuse';
+
+const globalSpecialTags = valueSet<string>(['admin', 'root']);
+
+const person = valueScope({
+  firstName: value<string>(),
+  tags: valueSet<string>(),
+  specialTags: valueRef(globalSpecialTags),
+
+  hasSpecialTag: ({ use }) =>
+    use('tags').some((t) => use('specialTags').has(t)),
+});
+```
+
+### Nested scopes
+
+Refs work with scope instances, giving you nested reactive access:
+
+```ts
+const address = valueScope({
+  street: value<string>(),
+  city: value('NYC'),
+  full: ({ use }) => `${use('street')}, ${use('city')}`,
+});
+const sharedAddress = address.create({ street: '123 Main' });
+
+const person = valueScope({
+  name: value<string>(),
+  address: valueRef(sharedAddress),
+});
+const bob = person.create({ name: 'Bob' });
+
+bob.get('address').get('full'); // '123 Main, NYC'
+bob.get('address').set('street', '456 Oak'); // mutates the shared instance
+```
+
+Signal tracking flows transitively — derivations that read through a ref
+automatically react to changes in the referenced scope.
+
+### Per-instance refs with factories
+
+Pass a factory function to `valueRef()` to create a separate source for each
+scope instance. This is how you nest scopes where each parent gets its own
+children:
+
+```ts
+const column = valueScope({ id: value<string>(), name: value<string>() });
+
+const board = valueScope({
+  boardId: value<string>(),
+  columns: valueRef(() => column.createMap()),
+
+  columnCount: ({ use }) => use('columns').size,
+});
+
+const a = board.create({ boardId: 'a' });
+const b = board.create({ boardId: 'b' });
+// a and b each have their own independent column map
+```
+
+When a factory returns a `ScopeMap`, derivations using `use()` automatically
+react to key additions and removals. In the example above, `columnCount`
+re-derives whenever a column is added or removed.
+
+`valueRef` also accepts a `ScopeMap` directly for shared collections:
+
+```ts
+const sharedColumns = column.createMap();
+
+const board = valueScope({
+  columns: valueRef(sharedColumns), // all board instances share this map
+  columnCount: ({ use }) => use('columns').size,
+});
+```
+
+### Transitive lifecycle
+
+When a scope becomes "used" (its first subscriber attaches), all scope instances
+it references via `valueRef()` also become "used" — triggering their `onUsed`
+hooks and activating any async derivations. When the outer scope becomes
+"unused" (last subscriber detaches), referenced scopes are unsubscribed too.
+
+This means a stock price scope connected via `valueRef()` will automatically
+start its data feed when the consuming scope gets its first subscriber, and stop
+when the last one leaves — no manual wiring needed.
+
 ## Extending scopes
 
 `.extend()` returns a new scope that includes everything from the original plus
@@ -841,7 +751,7 @@ const trackedPerson = person.extend(
   {
     onChange: ({ changes, set }) => {
       set('lastUpdated', Date.now());
-      set('changeCount', (prev) => prev + changes.length);
+      set('changeCount', (prev) => prev + changes.size);
     },
   },
 );
@@ -877,7 +787,7 @@ const withTracking = (scope) =>
     {
       onChange: ({ changes, set }) => {
         set('lastUpdated', Date.now());
-        set('changeCount', (prev) => prev + changes.length);
+        set('changeCount', (prev) => prev + changes.size);
       },
     },
   );
@@ -891,6 +801,248 @@ const withSoftDelete = (scope) =>
 // Compose
 const fullPerson = withSoftDelete(withTracking(person));
 ```
+
+## Async derivations
+
+When a derivation is an `async` function, ValUse automatically manages its
+lifecycle — abort on re-run, status tracking, intermediate values, and cleanup.
+
+```ts
+const scope = valueScope({
+  userId: value<string>(),
+
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
+    return res.json();
+  },
+});
+```
+
+When `userId` changes, the previous fetch is **aborted** via `signal` and a new
+one starts. Downstream consumers just see `T | undefined` — no async contagion.
+
+### Status tracking with AsyncState
+
+Every async derivation has an `AsyncState<T>` that tracks its lifecycle:
+
+```ts
+interface AsyncState<T> {
+  value: T | undefined; // The resolved value (or undefined if unset)
+  hasValue: boolean; // Whether a value has ever been set
+  status: 'unset' | 'setting' | 'set' | 'error';
+  error: unknown;
+}
+```
+
+Status transitions:
+
+- Starts as `'unset'` — no value yet
+- When the async function is running: `'setting'` (preserves previous value if
+  any)
+- When it resolves: `'set'`
+- When it rejects: `'error'` (preserves previous value)
+
+Read async state on instances with `getAsync(key)` or `useAsync(key)`:
+
+```ts
+const inst = scope.create({ userId: 'alice' });
+
+inst.getAsync('profile');
+// { value: undefined, hasValue: false, status: 'setting', error: undefined }
+
+// ...after resolution:
+// { value: { name: 'Alice', ... }, hasValue: true, status: 'set', error: undefined }
+```
+
+In React:
+
+```tsx
+const [profile, profileState] = inst.useAsync('profile');
+// profile = the value (or undefined)
+// profileState = full AsyncState
+
+if (profileState.status === 'setting') return <Spinner />;
+if (profileState.status === 'error')
+  return <Error error={profileState.error} />;
+return <Profile data={profile} />;
+```
+
+### Intermediate values with set()
+
+Use `set()` inside async derivations to push values before the final `return`.
+This enables optimistic updates, streaming, polling, and progress reporting:
+
+```ts
+const scope = valueScope({
+  query: value<string>(),
+
+  results: async ({ use, set, signal }) => {
+    const q = use('query');
+
+    // Optimistic: show cached results immediately
+    const cached = cache.get(q);
+    if (cached) set(cached);
+
+    // Then fetch fresh data
+    const res = await fetch(`/api/search?q=${q}`, { signal });
+    return res.json(); // final value
+  },
+});
+```
+
+### Seeding with cached data
+
+Pass a value for an async derivation key in `create()` to seed it with cached
+data. The seed is available immediately via `get()` — stale-while-revalidate
+with zero extra state:
+
+```ts
+const scope = valueScope({
+  userId: value<string>(),
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
+    return res.json();
+  },
+});
+
+// Seed with cached data — available instantly, replaced when fetch resolves
+const instance = scope.create({
+  userId: 'alice',
+  profile: cachedProfile,
+});
+instance.get('profile'); // cachedProfile — no waiting
+```
+
+### Cleanup
+
+Register cleanup functions with `onCleanup()`. They run when the derivation
+re-runs (deps changed) or when the instance is destroyed:
+
+```ts
+const scope = valueScope({
+  roomId: value<string>(),
+
+  messages: async ({ use, set, onCleanup }) => {
+    const ws = new WebSocket(`/rooms/${use('roomId')}`);
+    onCleanup(() => ws.close());
+
+    ws.onmessage = (e) => set(JSON.parse(e.data));
+
+    // Return undefined — value comes from set() via WebSocket
+  },
+});
+```
+
+### Dependency tracking in async
+
+Dependencies are tracked during the **synchronous preamble** only — the part
+before the first `await`. Any `use()` calls after an `await` are not tracked:
+
+```ts
+async ({ use, signal }) => {
+  const id = use('userId'); // tracked — before await
+  const data = await fetch(`/api/${id}`, { signal });
+  const locale = use('locale'); // NOT tracked — after await
+  return format(data, locale);
+};
+```
+
+If you need to track a value but only use it after an `await`, read it before
+the first `await`:
+
+```ts
+async ({ use, signal }) => {
+  const id = use('userId'); // tracked
+  const locale = use('locale'); // tracked — read before await
+  const data = await fetch(`/api/${id}`, { signal });
+  return format(data, locale);
+};
+```
+
+### No async contagion
+
+Sync derivations can depend on async derivations without knowing they're async.
+`use("profile")` returns `T | undefined` regardless of whether `profile` is sync
+or async — no promises, no `await`, no loading checks:
+
+```ts
+const scope = valueScope({
+  userId: value<string>(),
+  profile: async ({ use, signal }) => {
+    const res = await fetch(`/api/users/${use('userId')}`, { signal });
+    return res.json();
+  },
+  // Sync — just sees User | undefined. Recomputes when profile resolves.
+  greeting: ({ use }) => {
+    const p = use('profile');
+    return p ? `Hello, ${p.name}!` : 'Loading...';
+  },
+});
+```
+
+If you later change `profile` from async to sync (or vice versa), `greeting`
+doesn't change at all. When you _do_ need loading state, errors, or status
+transitions, `useAsync("profile")` gives you the full `AsyncState` — but only
+the consumers that care about those details opt in. See the
+[comparison doc](examples/comparison.md#code-comparison) for how this differs
+from other libraries, where async tends to spread through the entire dependency
+chain.
+
+### Async derivations vs manual lifecycle
+
+The old way uses lifecycle hooks to manually manage a polling interval:
+
+```ts
+// Manual lifecycle — more boilerplate, harder to follow
+const stockPrice = valueScope(
+  {
+    symbol: value<string>(),
+    price: value<number>(0),
+    interval: value<number | null>(null),
+  },
+  {
+    onUsed: ({ set, get }) => {
+      const id = setInterval(async () => {
+        const p = await fetchPrice(get('symbol'));
+        set('price', p);
+      }, 1000);
+      set('interval', id);
+    },
+    onUnused: ({ get }) => {
+      clearInterval(get('interval'));
+    },
+  },
+);
+```
+
+With async derivations, the same thing is declarative:
+
+```ts
+// Async derivation — self-contained, reactive, cancellable
+const stockPrice = valueScope({
+  symbol: value<string>(),
+
+  price: async ({ use, set, signal, onCleanup }) => {
+    const sym = use('symbol');
+    const poll = async () => {
+      while (!signal.aborted) {
+        const p = await fetchPrice(sym);
+        if (!signal.aborted) set(p);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    };
+    poll();
+    // No return — value comes from set()
+  },
+});
+```
+
+When `symbol` changes, the previous poll is aborted and a new one starts. When
+the instance is destroyed, it's aborted automatically. No lifecycle hooks
+needed. Now that you've seen both approaches, the manual `onUsed`/`onUnused`
+pattern from the [lifecycle](#onused--onunused) section should feel like the
+escape hatch it is — useful for side effects that don't produce a value, but
+async derivations cover the common case.
 
 ## Factories
 
@@ -950,16 +1102,19 @@ batch(() => {
 
 ### Primitives
 
-| Export                     | Description                                               |
-| -------------------------- | --------------------------------------------------------- |
-| `value<T>()`               | Reactive value, starts as `undefined`                     |
-| `value<T>(default)`        | Reactive value with default                               |
-| `valueRef(source)`         | Reference to external reactive state (shared, not copied) |
-| `value().pipe(fn)`         | Transform values on set, chainable                        |
-| `value().compareUsing(fn)` | Custom equality check for re-renders                      |
-| `valueSet<T>()`            | Reactive Set (accepts `T[]` or `Set<T>`)                  |
-| `valueMap<K, V>()`         | Reactive Map (accepts `[K, V][]` or `Map<K, V>`)          |
-| `batch(fn)`                | Group writes — subscribers fire once                      |
+| Export                      | Description                                                |
+| --------------------------- | ---------------------------------------------------------- |
+| `value<T>()`                | Reactive value, starts as `undefined`                      |
+| `value<T>(default)`         | Reactive value with default                                |
+| `valuePlain<T>(value)`      | Non-reactive value in a scope (readable, not subscribable) |
+| `valuePlain(v, {readonly})` | Non-reactive, read-only after creation                     |
+| `valueRef(source)`          | Reference to external reactive state (shared, not copied)  |
+| `valueRef(() => source)`    | Per-instance ref — factory called on each `create()`       |
+| `value().pipe(fn)`          | Transform values on set, chainable                         |
+| `value().compareUsing(fn)`  | Custom equality check for re-renders                       |
+| `valueSet<T>()`             | Reactive Set (accepts `T[]` or `Set<T>`)                   |
+| `valueMap<K, V>()`          | Reactive Map (accepts `[K, V][]` or `Map<K, V>`)           |
+| `batch(fn)`                 | Group writes — subscribers fire once                       |
 
 ### Scopes
 
@@ -975,42 +1130,61 @@ batch(() => {
 
 ### Instance methods
 
-| Method               | Description                                                             |
-| -------------------- | ----------------------------------------------------------------------- |
-| `.get(key)`          | Read a single value, derivation, or ref                                 |
-| `.set(key, value)`   | Set a single value field (callback form: `prev => next`)                |
-| `.set({ ... })`      | Bulk set — each provided key is set, others untouched                   |
-| `.getAsync(key)`     | Read `AsyncState<T>` for any field (sync fields return `status: 'set'`) |
-| `.getSnapshot()`     | Plain object of full state (values, derivations, refs, passthrough)     |
-| `.setSnapshot(data)` | Full replace — omitted value keys reset to `undefined`                  |
-| `.subscribe(fn)`     | Listen for changes, returns unsubscribe function                        |
-| `.destroy()`         | Tear down instance, fire `onDestroy`, detach all subscribers            |
+| Method                  | Description                                                             |
+| ----------------------- | ----------------------------------------------------------------------- |
+| `.get(key)`             | Read a single value, derivation, or ref                                 |
+| `.set(key, value)`      | Set a single value field (callback form: `prev => next`)                |
+| `.set({ ... })`         | Bulk set — each provided key is set, others untouched                   |
+| `.getAsync(key)`        | Read `AsyncState<T>` for any field (sync fields return `status: 'set'`) |
+| `.use()`\*              | `[getFoo, setFoo]` — subscribe to all fields                            |
+| `.use(field)`\*         | `[value, setter]` or `[value]` for derivations                          |
+| `.useAsync(field)`\*    | `[value, AsyncState]` — subscribe to async status                       |
+| `.getSnapshot()`        | Plain object of full state (values, derivations, refs, passthrough)     |
+| `.setSnapshot(data)`    | Full replace — omitted value keys reset to `undefined`                  |
+| `.subscribe(fn)`        | Listen for changes to any field, returns unsubscribe function           |
+| `.subscribe(field, fn)` | Listen for changes to a single field — `fn(value, previousValue)`       |
+| `.destroy()`            | Tear down instance, fire `onDestroy`, detach all subscribers            |
+
+### Value / ValueSet / ValueMap methods
+
+| Method                 | Description                                       |
+| ---------------------- | ------------------------------------------------- |
+| `.get()`               | Read the current value                            |
+| `.set(value)`          | Write a new value (callback form: `prev => next`) |
+| `.use()`\*             | `[value, setter]`                                 |
+| `.subscribe(fn)`       | Listen for changes, returns unsubscribe function  |
+| `.pipe(fn)`            | Transform values on set, chainable                |
+| `.compareUsing(fn)`    | Custom equality check                             |
+| `.destroy()`           | Tear down all subscriptions                       |
+| `valueMap.use(key)`\*  | `[value, setter]` for a single key                |
+| `valueMap.useKeys()`\* | Array of keys                                     |
+
+### ScopeMap methods
+
+| Method                       | Description                                       |
+| ---------------------------- | ------------------------------------------------- |
+| `.get(key)`                  | Get the instance for a key                        |
+| `.set(key, data)`            | Add or update an instance                         |
+| `.delete(key)`               | Remove and destroy an instance                    |
+| `.keys()` / `.values()`      | List keys or instances                            |
+| `.use(key)`\*                | `[getFoo, setFoo]` for that instance              |
+| `.use(key, field)`\*         | `[value, setter]` or `[value]` for a single field |
+| `.useKeys()`\*               | Array of keys, re-renders on add/remove           |
+| `.subscribe(fn)`             | Listen for key-list changes                       |
+| `.subscribe(key, field, fn)` | Listen for a single field on an instance          |
+| `.clear()`                   | Remove all, fires `onDestroy` for each            |
+
+\* React hook. Requires `import 'valuse/react'`. Subscribes and re-renders on
+change.
 
 ### Scope config
 
-| Option                      | Description                                                                           |
-| --------------------------- | ------------------------------------------------------------------------------------- |
-| `onInit`                    | Once, when created. Receives `{ set, get, input }`                                    |
-| `onChange`                  | After mutations, batched per microtask. Receives `{ changes, set, get, getSnapshot }` |
-| `onUsed`                    | When the first subscriber starts watching                                             |
-| `onUnused`                  | When the last subscriber stops watching                                               |
-| `onDestroy`                 | When an instance is removed or destroyed                                              |
-| `allowUndeclaredProperties` | Preserve unrecognized properties as plain non-reactive data (default: `false`)        |
-
-### React hooks
-
-Import from `valuse/react` to enable `.use()` hooks.
-
-| Hook                       | Returns                                           |
-| -------------------------- | ------------------------------------------------- |
-| `value.use()`              | `[value, setValue]`                               |
-| `valueSet.use()`           | `[Set<T>, setter]`                                |
-| `valueMap.use()`           | `[Map<K,V>, setter]`                              |
-| `valueMap.use(key)`        | `[value, setter]` for that key                    |
-| `valueMap.useKeys()`       | Array of keys                                     |
-| `instance.use()`           | `[get, set]` — all fields                         |
-| `instance.use(field)`      | `[value, setter]` or `[value]` for derivations    |
-| `instance.useAsync(field)` | `[value, AsyncState]` — subscribe to async status |
-| `scopeMap.use(key)`        | `[get, set]` for that instance                    |
-| `scopeMap.use(key, field)` | `[value, setter]` or `[value]` for derivations    |
-| `scopeMap.useKeys()`       | Array of keys                                     |
+| Option                      | Description                                                                                                                   |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `onInit`                    | Once, when created. Receives `{ set, get, input }`                                                                            |
+| `beforeChange`              | Sync, before write. Function: `{ changes, prevent, get }`. Object: per-field `{ from, to, prevent, get }`. Can block changes  |
+| `onChange`                  | Function form: `{ changes: Map<key, {key,from,to}>, set, get, getSnapshot }`. Object form: per-field `{ from, to, set, get }` |
+| `onUsed`                    | When the first subscriber starts watching                                                                                     |
+| `onUnused`                  | When the last subscriber stops watching                                                                                       |
+| `onDestroy`                 | When an instance is removed or destroyed                                                                                      |
+| `allowUndeclaredProperties` | Preserve unrecognized properties as plain non-reactive data (default: `false`)                                                |

@@ -105,12 +105,12 @@ import 'valuse/react'; // enable .use() hooks
 
 function PersonCard() {
   // All fields — re-renders on any change
-  const [get, set] = bob.use();
+  const [getPerson, setPerson] = bob.use();
 
   return (
     <div>
-      <h1>{get('fullName')}</h1>
-      <button onClick={() => set('role', 'admin')}>Promote</button>
+      <h1>{getPerson('fullName')}</h1>
+      <button onClick={() => setPerson('role', 'admin')}>Promote</button>
     </div>
   );
 }
@@ -159,11 +159,11 @@ function PeopleTable() {
 }
 
 function PersonRow({ id }: { id: string }) {
-  const [get, set] = people.use(id);
+  const [getPerson, setPerson] = people.use(id);
   return (
     <input
-      value={get('firstName')}
-      onChange={(e) => set('firstName', e.target.value)}
+      value={getPerson('firstName')}
+      onChange={(e) => setPerson('firstName', e.target.value)}
     />
   );
 }
@@ -174,6 +174,27 @@ Per-field subscriptions work here too:
 ```ts
 const [firstName, setFirstName] = people.use('bob', 'firstName');
 const [fullName] = people.use('bob', 'fullName'); // derivation, read-only
+```
+
+## Plain values
+
+Non-reactive data in scopes — readable via `get()`, invisible to derivations and
+React:
+
+```ts
+import { value, valuePlain, valueScope } from 'valuse';
+
+const settings = valueScope({
+  name: value<string>(),
+  config: valuePlain({ theme: 'dark' }, { readonly: true }),
+  metadata: valuePlain({ createdBy: '' }),
+});
+
+const inst = settings.create();
+inst.get('config'); // { theme: 'dark' }
+inst.set('metadata', { createdBy: 'alice' }); // ok
+inst.set('config', {}); // throws — readonly
+inst.use('config'); // throws — not reactive
 ```
 
 ## Refs
@@ -199,6 +220,21 @@ bob.get('address').get('city'); // 'NYC'
 bob.get('address').set('street', '456 Oak'); // mutates the shared instance
 ```
 
+Per-instance refs with factories — each `create()` gets its own source:
+
+```ts
+const column = valueScope({ id: value<string>(), name: value<string>() });
+
+const board = valueScope({
+  columns: valueRef(() => column.createMap()),
+  columnCount: ({ use }) => use('columns').size, // reacts to add/remove
+});
+
+const a = board.create();
+const b = board.create();
+// a and b each have their own independent column map
+```
+
 ## Lifecycle hooks
 
 ```ts
@@ -212,8 +248,20 @@ const formField = valueScope(
     onInit: ({ set, get }) => {
       set('initialValue', get('value'));
     },
-    onChange: ({ changes, set }) => {
-      console.log('changed:', changes);
+    // Prevent changes before they're written
+    beforeChange: {
+      value: ({ to, prevent }) => {
+        if (to.length > 100) prevent(); // reject values over 100 chars
+      },
+    },
+    // Catch-all form:
+    // onChange: ({ changes, set }) => { ... },
+
+    // Per-field form:
+    onChange: {
+      value: ({ from, to, set }) => {
+        console.log(`value: ${from} → ${to}`);
+      },
     },
     onUsed: ({ set, get }) => {
       // first subscriber attached — start polling, open socket, etc.
@@ -333,14 +381,24 @@ batch(() => {
 ## Subscribe outside React
 
 ```ts
-// Scope instance
+// Scope instance — all fields
 bob.subscribe((get) => {
   console.log(get('fullName'));
+});
+
+// Single field — only fires when that field changes
+bob.subscribe('firstName', (value, previousValue) => {
+  console.log(`firstName: ${previousValue} → ${value}`);
 });
 
 // Scope map — fires when keys change
 people.subscribe((keys) => {
   console.log('keys changed:', keys);
+});
+
+// Scope map — single field on one instance
+people.subscribe('alice', 'email', (value, prev) => {
+  console.log(`alice's email: ${prev} → ${value}`);
 });
 
 // Destroy — tear down all subscriptions at once

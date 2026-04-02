@@ -1,7 +1,7 @@
 # Example: Multi-Step Form Wizard
 
 A multi-step form with per-field validation, cross-field rules, and a dynamic
-schema-driven step. This showcases `extend()`, `onChange`, and
+schema-driven step. This showcases `extend()`, per-field `onChange`, and
 `allowUndeclaredProperties`.
 
 ## The model
@@ -26,13 +26,12 @@ const field = <T>(initial: T, validate: (v: T) => string | null) =>
       onInit: ({ set, get }) => {
         set('initialValue', get('value'));
       },
-      onChange: ({ changes, set, get, getSnapshot }) => {
-        const valueChanged = changes.some((c) => c.key === 'value');
-        if (!valueChanged) return;
-
-        // Run validation on every value change
-        const err = validate(get('value'));
-        set('error', err);
+      // Per-field onChange — only fires when `value` changes,
+      // ignores isTouched, error, etc.
+      onChange: {
+        value: ({ to, set }) => {
+          set('error', validate(to));
+        },
       },
     },
   );
@@ -99,11 +98,10 @@ const wizard = valueScope(
     },
   },
   {
-    onChange: ({ changes, set, get, getSnapshot }) => {
-      // Auto-save draft on step change
-      if (changes.some((c) => c.key === 'currentStep')) {
+    onChange: {
+      currentStep: () => {
         saveDraft();
-      }
+      },
     },
   },
 );
@@ -226,19 +224,19 @@ function FormField({
 }) {
   // Fully typed ScopeInstance —
   // get("value"), get("error"), set("isTouched") are all type-checked
-  const [get, set] = field.use();
+  const [getField, setField] = field.use();
 
   return (
     <div>
       <label>{label}</label>
       <input
         type={type}
-        value={get('value')}
-        onChange={(e) => set('value', e.target.value)}
-        onBlur={() => set('isTouched', true)}
+        value={getField('value')}
+        onChange={(e) => setField('value', e.target.value)}
+        onBlur={() => setField('isTouched', true)}
       />
-      {get('isTouched') && get('error') && (
-        <span className="error">{get('error')}</span>
+      {getField('isTouched') && getField('error') && (
+        <span className="error">{getField('error')}</span>
       )}
     </div>
   );
@@ -258,8 +256,11 @@ const orgStep = personalStep.extend(
     taxId: field('', (v) => (v && v.length < 9 ? 'Invalid tax ID' : null)),
   },
   {
-    onChange: ({ changes, set, get, getSnapshot }) => {
-      // When org size changes, maybe adjust required fields
+    onChange: {
+      orgSize: ({ to, get }) => {
+        // When org size changes, adjust required fields
+        // e.g., large orgs require taxId
+      },
     },
   },
 );

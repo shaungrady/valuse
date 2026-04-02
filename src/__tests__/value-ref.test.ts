@@ -134,6 +134,194 @@ describe('valueRef in scopes', () => {
 	});
 });
 
+describe('valueRef with factory function', () => {
+	it('creates a per-instance source', () => {
+		const scope = valueScope({
+			name: value<string>(),
+			items: valueRef(() => value([] as string[])),
+		});
+		const a = scope.create({ name: 'Alice' });
+		const b = scope.create({ name: 'Bob' });
+
+		// Each instance has its own items
+		expect(a.get('items')).toEqual([]);
+		expect(b.get('items')).toEqual([]);
+		expect(a.get('items')).not.toBe(b.get('items'));
+	});
+
+	it('factory creates per-instance ScopeMap', () => {
+		const item = valueScope({
+			label: value<string>(),
+		});
+		const container = valueScope({
+			name: value<string>(),
+			items: valueRef(() => item.createMap()),
+		});
+
+		const a = container.create({ name: 'A' });
+		const b = container.create({ name: 'B' });
+
+		// Each gets its own map
+		const mapA = a.get('items');
+		const mapB = b.get('items');
+		expect(mapA).not.toBe(mapB);
+
+		mapA.set('x', { label: 'hello' });
+		expect(mapA.get('x')?.get('label')).toBe('hello');
+		expect(mapB.has('x')).toBe(false);
+	});
+
+	it('derivations can read factory-created refs', () => {
+		const item = valueScope({
+			label: value<string>(),
+		});
+		const container = valueScope({
+			items: valueRef(() => item.createMap()),
+			count: ({ use }) => use('items').size,
+		});
+
+		const inst = container.create();
+		expect(inst.get('count')).toBe(0);
+	});
+});
+
+describe('valueRef with ScopeMap', () => {
+	it('returns the ScopeMap via get()', () => {
+		const item = valueScope({ label: value<string>() });
+		const itemMap = item.createMap();
+
+		const scope = valueScope({
+			items: valueRef(itemMap),
+		});
+		const inst = scope.create();
+
+		expect(inst.get('items')).toBe(itemMap);
+	});
+
+	it('shared ScopeMap ref across instances', () => {
+		const item = valueScope({ label: value<string>() });
+		const itemMap = item.createMap();
+
+		const scope = valueScope({
+			name: value<string>(),
+			items: valueRef(itemMap),
+		});
+		const a = scope.create({ name: 'A' });
+		const b = scope.create({ name: 'B' });
+
+		itemMap.set('x', { label: 'hello' });
+		expect(a.get('items').get('x')?.get('label')).toBe('hello');
+		expect(b.get('items').get('x')?.get('label')).toBe('hello');
+	});
+
+	it('derivations re-run when ScopeMap keys change', () => {
+		const item = valueScope({ label: value<string>() });
+		const itemMap = item.createMap();
+
+		const scope = valueScope({
+			items: valueRef(itemMap),
+			count: ({ use }) => use('items').size,
+		});
+		const inst = scope.create();
+
+		expect(inst.get('count')).toBe(0);
+		itemMap.set('a', { label: 'hello' });
+		expect(inst.get('count')).toBe(1);
+		itemMap.set('b', { label: 'world' });
+		expect(inst.get('count')).toBe(2);
+		itemMap.delete('a');
+		expect(inst.get('count')).toBe(1);
+	});
+
+	it('subscribe fires on ScopeMap key changes', () => {
+		const item = valueScope({ label: value<string>() });
+		const itemMap = item.createMap();
+
+		const scope = valueScope({
+			items: valueRef(itemMap),
+			count: ({ use }) => use('items').size,
+		});
+		const inst = scope.create();
+
+		const counts: number[] = [];
+		inst.subscribe((get) => {
+			counts.push(get('count') as number);
+		});
+
+		itemMap.set('a', { label: 'hello' });
+		itemMap.set('b', { label: 'world' });
+		expect(counts).toEqual([1, 2]);
+	});
+
+	it('factory-created ScopeMap also tracks key changes', () => {
+		const item = valueScope({ label: value<string>() });
+
+		const scope = valueScope({
+			items: valueRef(() => item.createMap()),
+			count: ({ use }) => use('items').size,
+		});
+		const inst = scope.create();
+
+		expect(inst.get('count')).toBe(0);
+		const map = inst.get('items');
+		map.set('a', { label: 'hello' });
+		expect(inst.get('count')).toBe(1);
+	});
+
+	it('ScopeMap subscription is cleaned up on destroy', () => {
+		const item = valueScope({ label: value<string>() });
+		const itemMap = item.createMap();
+
+		const scope = valueScope({
+			items: valueRef(itemMap),
+			count: ({ use }) => use('items').size,
+		});
+		const inst = scope.create();
+
+		expect(inst.get('count')).toBe(0);
+		inst.destroy();
+		itemMap.set('a', { label: 'hello' });
+		// After destroy, the computed is inert — stale value is fine
+		expect(inst.get('count')).toBe(0);
+	});
+});
+
+describe('valueRef with ScopeMap + extend', () => {
+	it('extended scope tracks ScopeMap key changes', () => {
+		const item = valueScope({ label: value<string>() });
+		const base = valueScope({
+			items: valueRef(() => item.createMap()),
+			count: ({ use }) => use('items').size,
+		});
+		const extended = base.extend({
+			hasItems: ({ use }) => use('items').size > 0,
+		});
+		const inst = extended.create();
+
+		expect(inst.get('hasItems')).toBe(false);
+		inst.get('items').set('a', { label: 'hello' });
+		expect(inst.get('hasItems')).toBe(true);
+		expect(inst.get('count')).toBe(1);
+	});
+});
+
+describe('valueRef factory with getSnapshot', () => {
+	it('includes factory-created ScopeMap in snapshot', () => {
+		const item = valueScope({ label: value<string>() });
+		const scope = valueScope({
+			name: value<string>('test'),
+			items: valueRef(() => item.createMap()),
+		});
+		const inst = scope.create();
+		const map = inst.get('items');
+		map.set('a', { label: 'hello' });
+
+		const snap = inst.getSnapshot();
+		expect(snap.name).toBe('test');
+		expect(snap.items).toBe(map);
+	});
+});
+
 describe('valueRef with ScopeInstance', () => {
 	it('returns the scope instance via get()', () => {
 		const address = valueScope({

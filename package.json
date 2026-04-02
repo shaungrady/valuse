@@ -3,6 +3,7 @@
 	"version": "0.0.0",
 	"description": "Reactive state that mirrors how you already think about data.",
 	"type": "module",
+	"license": "MIT",
 	"sideEffects": [
 		"./dist/react.mjs"
 	],
@@ -17,14 +18,16 @@
 		}
 	},
 	"files": [
+		"README.md",
 		"dist"
 	],
 	"scripts": {
 		"build": "tsdown",
 		"dev": "tsdown --watch",
-		"check": "tsc --noEmit",
+		"check": "prettier --experimental-ternaries --check . && eslint . && tsc --noEmit && vitest run && tsdown",
+		"check:fix": "prettier --experimental-ternaries --write . && eslint --fix . && tsc --noEmit && vitest run && tsdown",
 		"lint": "eslint --fix .",
-		"format": "prettier --write .",
+		"format": "prettier --experimental-ternaries --write .",
 		"format:check": "prettier --check .",
 		"test": "vitest run",
 		"test:watch": "vitest",
@@ -68,7 +71,6 @@
 	"engines": {
 		"node": ">=22"
 	},
-	"license": "MIT",
 	"pnpm": {
 		"onlyBuiltDependencies": [
 			"esbuild",

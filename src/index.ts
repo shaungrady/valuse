@@ -6,6 +6,7 @@ export type {
 } from './core/types.js';
 export { Value, value } from './core/value.js';
 export { ValueRef, valueRef } from './core/value-ref.js';
+export { ValuePlain, valuePlain } from './core/value-plain.js';
 export { ValueSet, valueSet } from './core/value-set.js';
 export type { ValueSetSetter } from './core/value-set.js';
 export { ValueMap, valueMap } from './core/value-map.js';
@@ -18,6 +19,9 @@ export {
 export type {
 	ScopeConfig,
 	ScopeChange,
+	ScopeChanges,
+	BeforeChange,
+	BeforeChanges,
 	DerivationContext,
 	GetAsyncType,
 	CreateInput,

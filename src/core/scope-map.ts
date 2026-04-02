@@ -162,6 +162,26 @@ export class ScopeMap<
 	}
 
 	/**
+	 * Listen for changes to a single field of an instance.
+	 *
+	 * @param key - the instance key
+	 * @param field - the field name to subscribe to
+	 * @param fn - called with `(value, previousValue)` on each change
+	 * @returns an {@link Unsubscribe} function to stop listening
+	 *
+	 * @example
+	 * ```ts
+	 * const unsub = people.subscribe("alice", "email", (value, prev) => {
+	 *   console.log(`email: ${prev} → ${value}`);
+	 * });
+	 * ```
+	 */
+	subscribe<F extends string & keyof Def>(
+		key: K,
+		field: F,
+		fn: (value: GetType<Def, F>, previousValue: GetType<Def, F>) => void,
+	): Unsubscribe;
+	/**
 	 * Listen for changes to the key list (add/remove).
 	 * Does not fire when individual instance fields change.
 	 *
@@ -175,10 +195,30 @@ export class ScopeMap<
 	 * unsub();
 	 * ```
 	 */
-	subscribe(fn: (keys: K[]) => void): Unsubscribe {
-		this._listeners.add(fn);
+	subscribe(fn: (keys: K[]) => void): Unsubscribe;
+	subscribe<F extends string & keyof Def>(
+		keyOrFn: K | ((keys: K[]) => void),
+		field?: F,
+		fn?: (value: GetType<Def, F>, previousValue: GetType<Def, F>) => void,
+	): Unsubscribe {
+		// Per-field delegation
+		if (typeof keyOrFn !== 'function') {
+			const instance = this._instances.get(keyOrFn);
+			if (!instance) return () => {};
+			return instance.subscribe(
+				field as string & keyof Def,
+				fn as (
+					value: GetType<Def, string & keyof Def>,
+					previousValue: GetType<Def, string & keyof Def>,
+				) => void,
+			);
+		}
+
+		// Key-list subscription
+		const listener = keyOrFn as (keys: K[]) => void;
+		this._listeners.add(listener);
 		return () => {
-			this._listeners.delete(fn);
+			this._listeners.delete(listener);
 		};
 	}
 
