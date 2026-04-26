@@ -1,472 +1,335 @@
-import { describe, it, expect } from 'vitest';
-import { value, valueScope } from '../index.js';
+import { describe, it, expect, vi } from 'vitest';
+import { value } from '../core/value.js';
+import { valueScope } from '../core/value-scope.js';
+import { isComputed } from '../core/field-value.js';
 
-/** Flush microtasks so async derivation results land. */
-const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/**
+ * Helper to flush microtasks (Promise.resolve() chains).
+ */
+function flush(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 describe('async derivations', () => {
-	describe('basic resolution', () => {
-		it('resolves and populates value', async () => {
+	describe('basic behavior', () => {
+		it('async derivation resolves and updates the slot', async () => {
 			const scope = valueScope({
-				userId: value('alice'),
-				profile: async ({ use }) => {
-					const id = use('userId') as string;
-					return { name: id.toUpperCase() };
+				userId: value<string>('alice'),
+				profile: async ({ scope: s }: { scope: any }) => {
+					const id = s.userId.use();
+					return { name: `User ${id}` };
 				},
 			});
-			const scopeInstance = scope.create();
-
-			// Before resolution: undefined
-			expect(scopeInstance.get('profile')).toBeUndefined();
+			const instance = scope.create({ userId: 'alice' });
+			// Initially undefined (async hasn't resolved yet)
+			expect(instance.profile.get()).toBeUndefined();
 
 			await flush();
-
-			expect(scopeInstance.get('profile')).toEqual({ name: 'ALICE' });
+			expect(instance.profile.get()).toEqual({ name: 'User alice' });
 		});
 
-		it('sync derivation can read async derivation transparently', async () => {
+		it('async derivation is isComputed', () => {
 			const scope = valueScope({
-				userId: value('alice'),
-				profile: async ({ use }) => {
-					return { name: (use('userId') as string).toUpperCase() };
-				},
-				greeting: ({ use }) => {
-					const profile = use('profile') as { name: string } | undefined;
-					return profile ? `Hello, ${profile.name}!` : 'Loading...';
-				},
+				data: value<string>('x'),
+				result: async ({ scope: s }: { scope: any }) => s.data.use(),
 			});
-			const scopeInstance = scope.create();
-
-			expect(scopeInstance.get('greeting')).toBe('Loading...');
-
-			await flush();
-
-			expect(scopeInstance.get('greeting')).toBe('Hello, ALICE!');
-		});
-	});
-
-	describe('AsyncState transitions', () => {
-		it("starts as 'unset', transitions to 'setting', then 'set'", async () => {
-			const states: string[] = [];
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => {
-					return (use('x') as number) * 2;
-				},
-			});
-			const scopeInstance = scope.create();
-
-			states.push(scopeInstance.getAsync('derived').status);
-			expect(scopeInstance.getAsync('derived').hasValue).toBe(false);
-
-			await flush();
-
-			states.push(scopeInstance.getAsync('derived').status);
-			expect(scopeInstance.getAsync('derived').value).toBe(2);
-			expect(scopeInstance.getAsync('derived').hasValue).toBe(true);
-			expect(states).toEqual(['unset', 'set']);
+			const instance = scope.create();
+			expect(isComputed(instance.result)).toBe(true);
 		});
 
-		it('preserves previous value during re-run (set → setting → set)', async () => {
+		it('async derivation re-runs when tracked dep changes', async () => {
+			let runCount = 0;
 			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => {
-					return (use('x') as number) * 10;
+				query: value<string>('initial'),
+				result: async ({ scope: s }: { scope: any }) => {
+					runCount++;
+					const q = s.query.use();
+					return `result for ${q}`;
 				},
 			});
-			const scopeInstance = scope.create();
-
+			const instance = scope.create({ query: 'initial' });
 			await flush();
-			expect(scopeInstance.getAsync('derived').value).toBe(10);
-			expect(scopeInstance.getAsync('derived').status).toBe('set');
+			expect(runCount).toBe(1);
+			expect(instance.result.get()).toBe('result for initial');
 
-			// Trigger re-run
-			scopeInstance.set('x', 2);
-			const duringRerun = scopeInstance.getAsync('derived');
-			expect(duringRerun.status).toBe('setting');
-			expect(duringRerun.value).toBe(10); // previous value preserved
-			expect(duringRerun.hasValue).toBe(true);
-
+			instance.query.set('updated');
 			await flush();
-			expect(scopeInstance.getAsync('derived').value).toBe(20);
-			expect(scopeInstance.getAsync('derived').status).toBe('set');
+			expect(runCount).toBe(2);
+			expect(instance.result.get()).toBe('result for updated');
+		});
+
+		it('get() does not track (no re-run)', async () => {
+			let runCount = 0;
+			const scope = valueScope({
+				tracked: value<string>('a'),
+				untracked: value<string>('x'),
+				result: async ({ scope: s }: { scope: any }) => {
+					runCount++;
+					const t = s.tracked.use();
+					const u = s.untracked.get(); // untracked
+					return `${t}-${u}`;
+				},
+			});
+			const instance = scope.create({
+				tracked: 'a',
+				untracked: 'x',
+			});
+			await flush();
+			expect(runCount).toBe(1);
+			expect(instance.result.get()).toBe('a-x');
+
+			// Changing untracked dep should NOT re-run
+			instance.untracked.set('y');
+			await flush();
+			expect(runCount).toBe(1);
+
+			// Changing tracked dep SHOULD re-run
+			instance.tracked.set('b');
+			await flush();
+			expect(runCount).toBe(2);
+			expect(instance.result.get()).toBe('b-y'); // picks up untracked value too
 		});
 	});
 
-	describe('error handling', () => {
-		it("transitions to 'error' on rejection", async () => {
+	describe('use() after await', () => {
+		it('tracks deps registered after await', async () => {
+			let runCount = 0;
 			const scope = valueScope({
-				x: value(1),
-				derived: async () => {
+				step1: value<string>('a'),
+				step2: value<string>('x'),
+				result: async ({ scope: s }: { scope: any }) => {
+					runCount++;
+					const v1 = s.step1.use();
+					await Promise.resolve();
+					const v2 = s.step2.use(); // after await — should still track
+					return `${v1}-${v2}`;
+				},
+			});
+			const instance = scope.create({ step1: 'a', step2: 'x' });
+			await flush();
+			expect(instance.result.get()).toBe('a-x');
+
+			// Change step2 (registered after await) — should re-run
+			instance.step2.set('y');
+			await flush();
+			expect(runCount).toBeGreaterThan(1);
+			expect(instance.result.get()).toBe('a-y');
+		});
+	});
+
+	describe('abort and cleanup', () => {
+		it('provides abort signal that fires on dep change', async () => {
+			let aborted = false;
+			const scope = valueScope({
+				query: value<string>('initial'),
+				result: async ({
+					scope: s,
+					signal,
+				}: {
+					scope: any;
+					signal: AbortSignal;
+				}) => {
+					const q = s.query.use();
+					signal.addEventListener('abort', () => {
+						aborted = true;
+					});
+					await new Promise((resolve) => setTimeout(resolve, 50));
+					return `result for ${q}`;
+				},
+			});
+			const instance = scope.create({ query: 'initial' });
+
+			// Change dep before async resolves — should abort
+			instance.query.set('changed');
+			await flush();
+			expect(aborted).toBe(true);
+		});
+
+		it('onCleanup fires on re-run', async () => {
+			const cleanupFn = vi.fn();
+			const scope = valueScope({
+				dep: value<number>(1),
+				result: async ({
+					scope: s,
+					onCleanup,
+				}: {
+					scope: any;
+					onCleanup: any;
+				}) => {
+					const d = s.dep.use();
+					onCleanup(cleanupFn);
+					return d * 2;
+				},
+			});
+			const instance = scope.create({ dep: 1 });
+			await flush();
+			expect(cleanupFn).not.toHaveBeenCalled();
+
+			instance.dep.set(2);
+			await flush();
+			expect(cleanupFn).toHaveBeenCalledOnce();
+		});
+	});
+
+	describe('async state tracking', () => {
+		it('getAsync() returns proper state transitions', async () => {
+			const scope = valueScope({
+				input: value<string>('hello'),
+				result: async ({ scope: s }: { scope: any }) => {
+					const v = s.input.use();
+					return v.toUpperCase();
+				},
+			});
+			const instance = scope.create({ input: 'hello' });
+
+			// Before resolution
+			const initialState = instance.result.getAsync();
+			expect(initialState.status).toBe('setting');
+
+			await flush();
+			const resolvedState = instance.result.getAsync();
+			expect(resolvedState.status).toBe('set');
+			expect(resolvedState.value).toBe('HELLO');
+		});
+
+		it('getAsync() shows error state on rejection', async () => {
+			const scope = valueScope({
+				input: value<string>('hello'),
+				result: async ({ scope: s }: { scope: any }) => {
+					s.input.use();
 					throw new Error('boom');
 				},
 			});
-			const scopeInstance = scope.create();
-
+			const instance = scope.create({ input: 'hello' });
 			await flush();
 
-			const state = scopeInstance.getAsync('derived');
+			const state = instance.result.getAsync();
 			expect(state.status).toBe('error');
 			expect(state.error).toBeInstanceOf(Error);
-			expect((state.error as Error).message).toBe('boom');
-		});
-
-		it('preserves previous value on error', async () => {
-			let shouldFail = false;
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => {
-					const val = use('x') as number;
-					if (shouldFail) throw new Error('fail');
-					return val * 10;
-				},
-			});
-			const scopeInstance = scope.create();
-
-			await flush();
-			expect(scopeInstance.getAsync('derived').value).toBe(10);
-
-			shouldFail = true;
-			scopeInstance.set('x', 2);
-			await flush();
-
-			const state = scopeInstance.getAsync('derived');
-			expect(state.status).toBe('error');
-			expect(state.value).toBe(10); // previous value preserved
-			expect(state.hasValue).toBe(true);
 		});
 	});
 
-	describe('abort on dep change', () => {
-		it('aborts previous run when tracked dep changes', async () => {
-			const abortedSignals: boolean[] = [];
+	describe('set() in async derivation', () => {
+		it('set() pushes intermediate values', async () => {
+			const values: unknown[] = [];
 			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, signal }) => {
-					use('x');
-					abortedSignals.push(signal.aborted);
-					await flush();
-					abortedSignals.push(signal.aborted);
-					return 'done';
+				input: value<number>(1),
+				result: async ({ scope: s, set }: { scope: any; set: any }) => {
+					const v = s.input.use();
+					set(v * 10); // intermediate value
+					await Promise.resolve();
+					return v * 100; // final value
 				},
 			});
-			const scopeInstance = scope.create();
+			const instance = scope.create({ input: 1 });
 
-			// First run starts
-			await Promise.resolve(); // let effect fire
-
-			// Change dep — should abort first run, start second
-			scopeInstance.set('x', 2);
-
-			await flush();
-
-			// Run 1 starts (not aborted), run 2 starts (not aborted),
-			// run 1 resumes after await (now aborted), run 2 resumes (not aborted)
-			expect(abortedSignals).toEqual([false, false, true, false]);
-		});
-	});
-
-	describe('set() for intermediate values', () => {
-		it('pushes intermediate values before return', async () => {
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, set }) => {
-					const val = use('x') as number;
-					set(val * 2); // intermediate
-					await flush();
-					return val * 10; // final
-				},
-			});
-			const scopeInstance = scope.create();
-
-			// After sync preamble, intermediate should be available
+			// After microtask, set() should have fired
 			await Promise.resolve();
-			expect(scopeInstance.get('derived')).toBe(2);
-
+			values.push(instance.result.get());
 			await flush();
-			expect(scopeInstance.get('derived')).toBe(10);
+			values.push(instance.result.get());
+
+			// Should have intermediate (10) then final (100)
+			expect(values).toContain(10);
+			expect(values[values.length - 1]).toBe(100);
 		});
 	});
 
-	describe('onCleanup()', () => {
-		it('fires cleanup on re-run', async () => {
-			const cleanups: number[] = [];
+	describe('seeded async derivation', () => {
+		it('uses seed value as initial', async () => {
 			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, onCleanup }) => {
-					const val = use('x') as number;
-					onCleanup(() => cleanups.push(val));
-					return val;
+				input: value<string>('hello'),
+				result: async ({ scope: s }: { scope: any }) => {
+					const v = s.input.use();
+					return v.toUpperCase();
 				},
 			});
-			const scopeInstance = scope.create();
-			await flush();
-			expect(cleanups).toEqual([]);
+			const instance = scope.create({
+				input: 'hello',
+				result: 'CACHED',
+			});
 
-			// Trigger re-run — should fire cleanup from first run
-			scopeInstance.set('x', 2);
-			expect(cleanups).toEqual([1]);
-
-			await flush();
-
-			// Trigger another re-run
-			scopeInstance.set('x', 3);
-			expect(cleanups).toEqual([1, 2]);
+			// Before async resolves, should have seed value
+			expect(instance.result.get()).toBe('CACHED');
+			const state = instance.result.getAsync();
+			expect(state.status).toBe('set');
+			expect(state.value).toBe('CACHED');
 		});
+	});
 
-		it('fires cleanup on destroy', async () => {
-			const cleanups: string[] = [];
+	describe('cycle detection', () => {
+		it('throws on self-referencing async derivation', async () => {
 			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, onCleanup }) => {
-					use('x');
-					onCleanup(() => cleanups.push('cleaned'));
+				data: value<string>('x'),
+				selfRef: async ({ scope: s }: { scope: any }) => {
+					s.data.use();
+					// This would try to use its own slot — cycle
+					s.selfRef.use();
+					return 'never';
+				},
+			});
+
+			const instance = scope.create({ data: 'x' });
+			await flush();
+
+			// The derivation should have errored due to cycle
+			const state = instance.selfRef.getAsync();
+			expect(state.status).toBe('error');
+		});
+	});
+
+	describe('$destroy()', () => {
+		it('aborts the in-flight async derivation', async () => {
+			let capturedSignal: AbortSignal | null = null;
+			const scope = valueScope({
+				data: value<string>('x'),
+				result: async ({
+					scope: s,
+					signal,
+				}: {
+					scope: any;
+					signal: AbortSignal;
+				}) => {
+					capturedSignal = signal;
+					s.data.use();
+					await new Promise((resolve) => setTimeout(resolve, 50));
 					return 'done';
 				},
 			});
-			const scopeInstance = scope.create();
-			await flush();
+			const instance = scope.create();
+			// Let the derivation start (capture the signal) without letting it settle.
+			await Promise.resolve();
+			expect(capturedSignal).not.toBeNull();
+			expect(capturedSignal!.aborted).toBe(false);
 
-			scopeInstance.destroy();
-			expect(cleanups).toEqual(['cleaned']);
+			instance.$destroy();
+			expect(capturedSignal!.aborted).toBe(true);
 		});
-	});
 
-	describe('previousValue in async', () => {
-		it('receives undefined on first run, then last resolved value', async () => {
-			const previousValues: unknown[] = [];
+		it('runs user-provided onCleanup on destroy', async () => {
+			const cleanup = vi.fn();
 			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, previousValue }) => {
-					previousValues.push(previousValue);
-					return (use('x') as number) * 10;
+				data: value<string>('x'),
+				result: async ({
+					scope: s,
+					onCleanup,
+				}: {
+					scope: any;
+					onCleanup: (fn: () => void) => void;
+				}) => {
+					onCleanup(cleanup);
+					s.data.use();
+					await new Promise((resolve) => setTimeout(resolve, 50));
+					return 'done';
 				},
 			});
-			const scopeInstance = scope.create();
-			await flush();
-			expect(previousValues).toEqual([undefined]);
+			const instance = scope.create();
+			// Wait for onCleanup to be registered but not for the derivation to settle.
+			await Promise.resolve();
+			expect(cleanup).not.toHaveBeenCalled();
 
-			scopeInstance.set('x', 2);
-			await flush();
-			expect(previousValues).toEqual([undefined, 10]);
-		});
-	});
-
-	describe('return undefined semantics', () => {
-		it("stays 'unset' when returning undefined with no prior set()", async () => {
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => {
-					use('x');
-					return undefined;
-				},
-			});
-			const scopeInstance = scope.create();
-			await flush();
-
-			const state = scopeInstance.getAsync('derived');
-			expect(state.status).toBe('unset');
-			expect(state.hasValue).toBe(false);
-			expect(state.value).toBeUndefined();
-		});
-
-		it('preserves value when returning undefined after a prior set()', async () => {
-			let callCount = 0;
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, set }) => {
-					use('x');
-					callCount++;
-					if (callCount === 1) {
-						set(42);
-						return undefined; // but we already set(42)
-					}
-					return undefined;
-				},
-			});
-			const scopeInstance = scope.create();
-			await flush();
-
-			const state = scopeInstance.getAsync('derived');
-			expect(state.status).toBe('set');
-			expect(state.hasValue).toBe(true);
-			expect(state.value).toBe(42);
-		});
-	});
-
-	describe('getAsync() on instances', () => {
-		it("returns 'set' AsyncState for sync value fields", () => {
-			const scope = valueScope({ x: value(42) });
-			const scopeInstance = scope.create();
-
-			expect(scopeInstance.getAsync('x')).toEqual({
-				value: 42,
-				hasValue: true,
-				status: 'set',
-				error: undefined,
-			});
-		});
-
-		it("returns 'set' AsyncState for sync derivations", () => {
-			const scope = valueScope({
-				x: value(5),
-				doubled: ({ use }) => (use('x') as number) * 2,
-			});
-			const scopeInstance = scope.create();
-
-			expect(scopeInstance.getAsync('doubled')).toEqual({
-				value: 10,
-				hasValue: true,
-				status: 'set',
-				error: undefined,
-			});
-		});
-
-		it('returns correct AsyncState for async derivation', async () => {
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => (use('x') as number) * 10,
-			});
-			const scopeInstance = scope.create();
-
-			// Before resolution
-			expect(scopeInstance.getAsync('derived').status).toBe('unset');
-
-			await flush();
-
-			expect(scopeInstance.getAsync('derived')).toEqual({
-				value: 10,
-				hasValue: true,
-				status: 'set',
-				error: undefined,
-			});
-		});
-	});
-
-	describe('seed value from create input', () => {
-		it('seeded value is available via get() before async resolves', async () => {
-			const scope = valueScope({
-				userId: value<string>(),
-				profile: async ({ use }) => {
-					const id = use('userId');
-					await flush();
-					return { name: id, fresh: true };
-				},
-			});
-			const scopeInstance = scope.create({
-				userId: 'alice',
-				profile: { name: 'alice', fresh: false },
-			});
-
-			// Before resolution — seed value is available immediately
-			expect(scopeInstance.get('profile')).toEqual({
-				name: 'alice',
-				fresh: false,
-			});
-
-			await flush();
-			await flush();
-
-			// After resolution — replaced by fresh data
-			expect(scopeInstance.get('profile')).toEqual({
-				name: 'alice',
-				fresh: true,
-			});
-		});
-
-		it('seeded value is preserved in getAsync while derivation runs', () => {
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => (use('x') as number) * 10,
-			});
-			const scopeInstance = scope.create({ derived: 99 });
-
-			const state = scopeInstance.getAsync('derived');
-			expect(state.value).toBe(99);
-			expect(state.hasValue).toBe(true);
-			// Status is 'setting' because the async derivation is already running
-			expect(state.status).toBe('setting');
-		});
-
-		it('seeded value becomes previousValue in first derivation run', async () => {
-			const capturedPreviousValues: unknown[] = [];
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use, previousValue }) => {
-					capturedPreviousValues.push(previousValue);
-					return (use('x') as number) * 10;
-				},
-			});
-			scope.create({ derived: 42 });
-
-			await flush();
-
-			// First run should see the seeded value as previousValue
-			expect(capturedPreviousValues).toEqual([42]);
-		});
-
-		it('seed is available immediately and replaced when async resolves', async () => {
-			const scope = valueScope({
-				userId: value<string>(),
-				profile: async ({ use }) => {
-					await flush();
-					return {
-						name: (use('userId') as string).toUpperCase(),
-						cached: false,
-					};
-				},
-			});
-			const scopeInstance = scope.create({
-				userId: 'alice',
-				profile: { name: 'ALICE', cached: true },
-			});
-
-			// Seed is available immediately — no extra code in the derivation
-			expect(scopeInstance.get('profile')).toEqual({
-				name: 'ALICE',
-				cached: true,
-			});
-
-			await flush();
-			await flush();
-
-			// Fresh data replaces the seed
-			expect(scopeInstance.get('profile')).toEqual({
-				name: 'ALICE',
-				cached: false,
-			});
-		});
-
-		it('create without seed still starts as unset', () => {
-			const scope = valueScope({
-				x: value(1),
-				derived: async ({ use }) => (use('x') as number) * 10,
-			});
-			const scopeInstance = scope.create();
-
-			expect(scopeInstance.getAsync('derived').status).toBe('unset');
-			expect(scopeInstance.get('derived')).toBeUndefined();
-		});
-
-		it('seeded value works with createMap', async () => {
-			const scope = valueScope({
-				name: value<string>(),
-				greeting: async ({ use }) => {
-					await flush();
-					return `Hello, ${(use('name') as string).toUpperCase()}!`;
-				},
-			});
-			const map = scope.createMap();
-			map.set('alice', { name: 'alice', greeting: 'Hello, ALICE!' } as any);
-
-			// Seed available immediately
-			expect(map.get('alice')?.get('greeting')).toBe('Hello, ALICE!');
-
-			await flush();
-			await flush();
-
-			// Still correct after async resolves
-			expect(map.get('alice')?.get('greeting')).toBe('Hello, ALICE!');
+			instance.$destroy();
+			expect(cleanup).toHaveBeenCalledOnce();
 		});
 	});
 });

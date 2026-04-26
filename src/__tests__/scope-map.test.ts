@@ -1,169 +1,171 @@
 import { describe, it, expect, vi } from 'vitest';
-import { value, valueScope } from '../index.js';
+import { value } from '../core/value.js';
+import { valueScope } from '../core/value-scope.js';
 
-const person = valueScope({
-	firstName: value<string>(),
-	lastName: value<string>(),
-	role: value<string>('viewer'),
-	fullName: ({ use }) => `${use('firstName')} ${use('lastName')}`,
-});
+describe('ScopeMap', () => {
+	const person = valueScope({
+		firstName: value<string>(),
+		lastName: value<string>(),
+	});
 
-describe('scope.createMap()', () => {
-	describe('creation', () => {
-		it('creates an empty collection', () => {
-			const people = person.createMap();
-			expect(people.size).toBe(0);
+	describe('createMap()', () => {
+		it('creates an empty map', () => {
+			const map = person.createMap();
+			expect(map.size).toBe(0);
 		});
 
-		it('creates from an array with key field name', () => {
-			const data = [
-				{ id: 'a', firstName: 'Alice', lastName: 'Smith' },
-				{ id: 'b', firstName: 'Bob', lastName: 'Jones' },
-			];
-			const people = person.createMap(data, 'id');
-			expect(people.size).toBe(2);
-			expect(people.has('a')).toBe(true);
-			expect(people.has('b')).toBe(true);
-		});
-
-		it('creates from an array with key callback', () => {
-			const data = [
-				{ id: 'a', firstName: 'Alice', lastName: 'Smith' },
-				{ id: 'b', firstName: 'Bob', lastName: 'Jones' },
-			];
-			const people = person.createMap(data, (item) => item.id as string);
-			expect(people.size).toBe(2);
-		});
-
-		it('creates from a Map of keyed inputs', () => {
-			const data = new Map([
-				['a', { firstName: 'Alice', lastName: 'Smith' }],
-				['b', { firstName: 'Bob', lastName: 'Jones' }],
+		it('creates a map from entries', () => {
+			const map = person.createMap([
+				['alice', { firstName: 'Alice', lastName: 'Smith' }],
+				['bob', { firstName: 'Bob', lastName: 'Jones' }],
 			]);
-			const people = person.createMap(data);
-			expect(people.size).toBe(2);
-			expect(people.get('a')!.get('firstName')).toBe('Alice');
-			expect(people.get('b')!.get('fullName')).toBe('Bob Jones');
+			expect(map.size).toBe(2);
+			expect(map.get('alice')!.firstName.get()).toBe('Alice');
+			expect(map.get('bob')!.lastName.get()).toBe('Jones');
+		});
+
+		it('creates a map from a Map', () => {
+			const data = new Map<string, Record<string, unknown>>([
+				['alice', { firstName: 'Alice', lastName: 'Smith' }],
+			]);
+			const map = person.createMap(data);
+			expect(map.get('alice')!.firstName.get()).toBe('Alice');
 		});
 	});
 
-	describe('set / get / delete', () => {
-		it('sets and gets an entry', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice', lastName: 'Smith' });
-			const inst = people.get('alice');
-			expect(inst).toBeDefined();
-			expect(inst!.get('firstName')).toBe('Alice');
-			expect(inst!.get('fullName')).toBe('Alice Smith');
+	it('creates a map from an array keyed by field name', () => {
+		const withId = valueScope({
+			id: value<string>(),
+			name: value<string>(),
+		});
+		const map = withId.createMap(
+			[
+				{ id: 'a', name: 'Alice' },
+				{ id: 'b', name: 'Bob' },
+			],
+			'id',
+		);
+		expect(map.size).toBe(2);
+		expect(map.get('a')!.name.get()).toBe('Alice');
+		expect(map.get('b')!.name.get()).toBe('Bob');
+	});
+
+	it('creates a map from an array keyed by callback', () => {
+		const withId = valueScope({
+			id: value<number>(),
+			name: value<string>(),
+		});
+		const map = withId.createMap(
+			[
+				{ id: 1, name: 'Alice' },
+				{ id: 2, name: 'Bob' },
+			],
+			(item) => item.id!,
+		);
+		expect(map.size).toBe(2);
+		expect(map.get(1)!.name.get()).toBe('Alice');
+		expect(map.get(2)!.name.get()).toBe('Bob');
+	});
+
+	describe('set/get/has/delete', () => {
+		it('set creates a new instance', () => {
+			const map = person.createMap();
+			const instance = map.set('alice', {
+				firstName: 'Alice',
+				lastName: 'Smith',
+			});
+			expect(map.has('alice')).toBe(true);
+			expect(instance.firstName.get()).toBe('Alice');
 		});
 
-		it('updates an existing entry', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice', lastName: 'Smith' });
-			people.set('alice', { firstName: 'Alicia' });
-			expect(people.get('alice')!.get('firstName')).toBe('Alicia');
+		it('set updates existing instance via $setSnapshot', () => {
+			const map = person.createMap([
+				['alice', { firstName: 'Alice', lastName: 'Smith' }],
+			]);
+			map.set('alice', { firstName: 'Alicia' });
+			expect(map.get('alice')!.firstName.get()).toBe('Alicia');
+			expect(map.get('alice')!.lastName.get()).toBe('Smith');
 		});
 
-		it('deletes an entry', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice', lastName: 'Smith' });
-			expect(people.delete('alice')).toBe(true);
-			expect(people.has('alice')).toBe(false);
-			expect(people.size).toBe(0);
+		it('get returns undefined for missing key', () => {
+			const map = person.createMap();
+			expect(map.get('missing')).toBeUndefined();
+		});
+
+		it('delete removes and destroys instance', () => {
+			const map = person.createMap([['alice', { firstName: 'Alice' }]]);
+			const deleted = map.delete('alice');
+			expect(deleted).toBe(true);
+			expect(map.has('alice')).toBe(false);
+			expect(map.size).toBe(0);
 		});
 
 		it('delete returns false for missing key', () => {
-			const people = person.createMap();
-			expect(people.delete('nobody')).toBe(false);
+			const map = person.createMap();
+			expect(map.delete('missing')).toBe(false);
 		});
 	});
 
-	describe('Map-like methods', () => {
-		it('.has()', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice' });
-			expect(people.has('alice')).toBe(true);
-			expect(people.has('bob')).toBe(false);
+	describe('keys/values/entries', () => {
+		it('returns keys', () => {
+			const map = person.createMap([
+				['alice', { firstName: 'Alice' }],
+				['bob', { firstName: 'Bob' }],
+			]);
+			expect(map.keys()).toEqual(['alice', 'bob']);
 		});
 
-		it('.keys()', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice' });
-			people.set('bob', { firstName: 'Bob' });
-			expect(people.keys()).toEqual(['alice', 'bob']);
+		it('returns values', () => {
+			const map = person.createMap([['alice', { firstName: 'Alice' }]]);
+			expect(map.values()).toHaveLength(1);
 		});
 
-		it('.values()', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice' });
-			expect(people.values()).toHaveLength(1);
-			expect(people.values()[0]!.get('firstName')).toBe('Alice');
-		});
-
-		it('.entries()', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice' });
-			const entries = people.entries();
+		it('returns entries', () => {
+			const map = person.createMap([['alice', { firstName: 'Alice' }]]);
+			const entries = map.entries();
 			expect(entries).toHaveLength(1);
 			expect(entries[0]![0]).toBe('alice');
-			expect(entries[0]![1].get('firstName')).toBe('Alice');
-		});
-
-		it('.clear() removes all entries', () => {
-			const people = person.createMap();
-			people.set('alice', { firstName: 'Alice' });
-			people.set('bob', { firstName: 'Bob' });
-			people.clear();
-			expect(people.size).toBe(0);
 		});
 	});
 
-	describe('lifecycle', () => {
-		it('fires onDestroy when deleting an entry', () => {
-			const onDestroy = vi.fn();
-			const scope = valueScope({ x: value<number>(0) }, { onDestroy });
-			const coll = scope.createMap();
-			coll.set('a', { x: 1 });
-			coll.delete('a');
-			expect(onDestroy).toHaveBeenCalledOnce();
-		});
-
-		it('fires onDestroy for each entry on clear()', () => {
-			const onDestroy = vi.fn();
-			const scope = valueScope({ x: value<number>(0) }, { onDestroy });
-			const coll = scope.createMap();
-			coll.set('a', { x: 1 });
-			coll.set('b', { x: 2 });
-			coll.clear();
-			expect(onDestroy).toHaveBeenCalledTimes(2);
-		});
-
-		it('fires onInit when adding an entry', () => {
-			const onInit = vi.fn();
-			const scope = valueScope({ x: value<number>(0) }, { onInit });
-			const coll = scope.createMap();
-			coll.set('a', { x: 1 });
-			expect(onInit).toHaveBeenCalledOnce();
+	describe('clear', () => {
+		it('removes all instances', () => {
+			const map = person.createMap([
+				['alice', { firstName: 'Alice' }],
+				['bob', { firstName: 'Bob' }],
+			]);
+			map.clear();
+			expect(map.size).toBe(0);
 		});
 	});
 
-	describe('.subscribe()', () => {
-		it('notifies when collection changes (add/delete)', () => {
-			const people = person.createMap();
-			const calls: (string | number)[][] = [];
-			people.subscribe((keys) => calls.push(keys));
-			people.set('alice', { firstName: 'Alice' });
-			expect(calls).toHaveLength(1);
-			expect(calls[0]).toEqual(['alice']);
+	describe('subscribe', () => {
+		it('notifies on add', () => {
+			const map = person.createMap();
+			const subscriber = vi.fn();
+			map.subscribe(subscriber);
+			map.set('alice', { firstName: 'Alice' });
+			expect(subscriber).toHaveBeenCalledWith(['alice']);
 		});
 
-		it('returns unsubscribe', () => {
-			const people = person.createMap();
-			const calls: (string | number)[][] = [];
-			const unsub = people.subscribe((keys) => calls.push(keys));
+		it('notifies on delete', () => {
+			const map = person.createMap([
+				['alice', { firstName: 'Alice' }],
+				['bob', { firstName: 'Bob' }],
+			]);
+			const subscriber = vi.fn();
+			map.subscribe(subscriber);
+			map.delete('alice');
+			expect(subscriber).toHaveBeenCalledWith(['bob']);
+		});
+
+		it('unsubscribe stops notifications', () => {
+			const map = person.createMap();
+			const subscriber = vi.fn();
+			const unsub = map.subscribe(subscriber);
 			unsub();
-			people.set('alice', { firstName: 'Alice' });
-			expect(calls).toHaveLength(0);
+			map.set('alice', { firstName: 'Alice' });
+			expect(subscriber).not.toHaveBeenCalled();
 		});
 	});
 });

@@ -1,81 +1,90 @@
 import { describe, it, expect, vi } from 'vitest';
-import { value, valueScope } from '../index.js';
+import { value } from '../core/value.js';
+import { valueScope } from '../core/value-scope.js';
 
-const person = valueScope({
-	firstName: value<string>(),
-	lastName: value<string>(),
-	fullName: ({ use }) => `${use('firstName')} ${use('lastName')}`,
-});
-
-describe('.extend()', () => {
-	it('creates a new scope with additional values', () => {
-		const tracked = person.extend({
-			lastUpdated: value<number>(0),
+describe('extend', () => {
+	it('adds new fields to the scope', () => {
+		const person = valueScope({
+			firstName: value<string>(),
+			lastName: value<string>(),
 		});
-		const inst = tracked.create({ firstName: 'Bob', lastName: 'Jones' });
-		expect(inst.get('firstName')).toBe('Bob');
-		expect(inst.get('lastUpdated')).toBe(0);
+		const employee = person.extend({
+			department: value<string>(),
+		});
+		const bob = employee.create({
+			firstName: 'Bob',
+			lastName: 'Jones',
+			department: 'Engineering',
+		});
+		expect(bob.firstName.get()).toBe('Bob');
+		expect(bob.department.get()).toBe('Engineering');
 	});
 
-	it('creates a new scope with additional derivations', () => {
-		const extended = person.extend({
-			greeting: ({ use }) => `Hello, ${use('fullName')}!`,
+	it('overrides fields from the base', () => {
+		const base = valueScope({
+			name: value<string>('default'),
 		});
-		const inst = extended.create({ firstName: 'Bob', lastName: 'Jones' });
-		expect(inst.get('greeting')).toBe('Hello, Bob Jones!');
+		const extended = base.extend({
+			name: value<string>('overridden'),
+		});
+		const instance = extended.create();
+		expect(instance.name.get()).toBe('overridden');
 	});
 
-	it('extended derivations can reference original values', () => {
-		const extended = person.extend({
-			initials: ({ use }) => {
-				const f = (use('firstName') as string)?.[0] ?? '';
-				const l = (use('lastName') as string)?.[0] ?? '';
-				return `${f}${l}`;
-			},
+	it('removes fields with undefined', () => {
+		const base = valueScope({
+			name: value<string>(),
+			age: value<number>(),
 		});
-		const inst = extended.create({ firstName: 'Bob', lastName: 'Jones' });
-		expect(inst.get('initials')).toBe('BJ');
+		const stripped = base.extend({ age: undefined });
+		const instance = stripped.create({ name: 'Bob' });
+		expect(instance.name.get()).toBe('Bob');
+		expect((instance as any).age).toBeUndefined();
 	});
 
-	it('does not modify the original scope', () => {
-		const tracked = person.extend({
-			lastUpdated: value<number>(0),
-		});
-		const original = person.create({ firstName: 'Alice' });
-		const extended = tracked.create({ firstName: 'Bob' });
+	it('merges lifecycle hooks (both fire)', () => {
+		const baseCreate = vi.fn();
+		const extCreate = vi.fn();
 
-		expect(original.get('firstName')).toBe('Alice');
-		expect(extended.get('firstName')).toBe('Bob');
-		expect(extended.get('lastUpdated')).toBe(0);
-		// original should not have lastUpdated
-		expect((original as any).get('lastUpdated')).toBeUndefined();
-	});
-
-	it('accepts lifecycle hooks in extend', async () => {
-		const onChange = vi.fn();
-		const tracked = person.extend(
-			{
-				changeCount: value<number>(0),
-			},
-			{
-				onChange: ({ set }) => {
-					onChange();
-					set('changeCount', (prev: number) => prev + 1);
-				},
-			},
+		const base = valueScope(
+			{ name: value<string>() },
+			{ onCreate: baseCreate },
 		);
-		const inst = tracked.create({ firstName: 'Bob', lastName: 'Jones' });
-		inst.set('firstName', 'Robert');
-		await Promise.resolve();
-		expect(onChange).toHaveBeenCalledOnce();
-		expect(inst.get('changeCount')).toBe(1);
+		const extended = base.extend(
+			{ role: value<string>() },
+			{ onCreate: extCreate },
+		);
+
+		extended.create({ name: 'Bob', role: 'admin' });
+		expect(baseCreate).toHaveBeenCalledOnce();
+		expect(extCreate).toHaveBeenCalledOnce();
 	});
 
-	it('preserves original lifecycle hooks', () => {
-		const onInit = vi.fn();
-		const base = valueScope({ x: value<number>(0) }, { onInit });
-		const extended = base.extend({ y: value<number>(0) });
-		extended.create();
-		expect(onInit).toHaveBeenCalledOnce();
+	it('merges onDestroy hooks', () => {
+		const order: string[] = [];
+		const base = valueScope(
+			{ name: value<string>() },
+			{ onDestroy: () => order.push('base') },
+		);
+		const extended = base.extend({}, { onDestroy: () => order.push('ext') });
+		const instance = extended.create({ name: 'Bob' });
+		instance.$destroy();
+		expect(order).toEqual(['base', 'ext']);
+	});
+
+	it('adds derivations referencing base fields', () => {
+		const base = valueScope({
+			firstName: value<string>(),
+			lastName: value<string>(),
+		});
+		const extended = base.extend({
+			fullName: ({ scope }: { scope: any }) =>
+				`${scope.firstName.use()} ${scope.lastName.use()}`,
+		});
+		const bob = extended.create({
+			firstName: 'Bob',
+			lastName: 'Jones',
+		});
+		expect(bob.fullName.get()).toBe('Bob Jones');
 	});
 });

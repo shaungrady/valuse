@@ -1,9 +1,8 @@
 /**
  * Dependency-injection bridge for React integration.
  *
- * @remarks
  * Importing `valuse/react` installs `useSyncExternalStore` here as a side-effect.
- * Core classes call {@link getReactHooks} in their `.use()` methods — if installed,
+ * Core classes call {@link getReactHooks} in their `.use()` methods; if installed,
  * they use `useSyncExternalStore` for concurrent-safe subscriptions.
  * If not installed, `.use()` falls back to a non-reactive snapshot.
  *
@@ -21,7 +20,7 @@ export interface ReactHooks {
 let _reactHooks: ReactHooks | undefined;
 
 /**
- * Install React hooks into the bridge. Called once by `valuse/react` on import.
+ * Install React hooks into the bridge. Called once by the React entry on import.
  * @param hooks - the React hooks to install
  * @internal
  */
@@ -70,7 +69,7 @@ export function stableSubscribe(
 }
 
 // --- Version-based snapshot for collection types ---
-// ScopeInstance and ScopeMap don't have a single value to snapshot —
+// Scope instances and ScopeMap don't have a single value to snapshot;
 // we use a version counter that increments on each notification.
 
 /** @internal */
@@ -83,7 +82,7 @@ const versionCache = new WeakMap<object, VersionedAdapter>();
 
 /**
  * Returns a version-based subscribe/getSnapshot pair for use with `useSyncExternalStore`.
- * Used for types that don't have a single snapshotable value (e.g., {@link ScopeInstance}).
+ * Used for types that don't have a single snapshotable value (e.g., scope instances).
  * A version counter increments on each change, triggering React re-renders.
  *
  * @param instance - the reactive object to cache against
@@ -111,4 +110,39 @@ export function versionedAdapter(
 		versionCache.set(instance, cachedAdapter);
 	}
 	return cachedAdapter;
+}
+
+// --- Per-key subscribe cache ---
+// For ValueMap.use(key), we need a stable subscribe function per (instance, key) pair
+// so that only changes to that specific key trigger re-renders.
+
+const perKeySubscribeCache = new WeakMap<object, Map<unknown, SubscribeFn>>();
+
+/**
+ * Returns a stable subscribe function scoped to a specific key of a reactive instance.
+ * Only fires when the value at that key changes.
+ *
+ * @param instance - the reactive map instance
+ * @param key - the key to track
+ * @param createSubscription - factory that sets up a key-filtered subscription
+ * @returns a cached subscribe function suitable for `useSyncExternalStore`
+ *
+ * @internal
+ */
+export function perKeySubscribe(
+	instance: object,
+	key: unknown,
+	createSubscription: (onChange: () => void) => () => void,
+): SubscribeFn {
+	let keyMap = perKeySubscribeCache.get(instance);
+	if (!keyMap) {
+		keyMap = new Map();
+		perKeySubscribeCache.set(instance, keyMap);
+	}
+	let cachedFn = keyMap.get(key);
+	if (!cachedFn) {
+		cachedFn = (onChange: () => void) => createSubscription(onChange);
+		keyMap.set(key, cachedFn);
+	}
+	return cachedFn;
 }

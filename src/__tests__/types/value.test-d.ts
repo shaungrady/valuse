@@ -1,18 +1,13 @@
 import { expectTypeOf } from 'expect-type';
-import { value } from '../../index.js';
-import type { Setter } from '../../index.js';
+import { value } from '../../core/value.js';
+import type { Setter } from '../../core/types.js';
 
 // --- value<T>() without default: T | undefined ---
 
 const noDefault = value<string>();
 
-// .get() returns string | undefined when no default provided
 expectTypeOf(noDefault.get()).toEqualTypeOf<string | undefined>();
-
-// .set() accepts a string
 expectTypeOf(noDefault.set).toBeCallableWith('hello');
-
-// .set() also accepts a callback (prev is string | undefined)
 expectTypeOf(noDefault.set).toBeCallableWith(
 	(_prev: string | undefined) => 'hello',
 );
@@ -21,67 +16,61 @@ expectTypeOf(noDefault.set).toBeCallableWith(
 
 const withDefault = value<string>('hello');
 
-// .get() returns string (not string | undefined) when default provided
 expectTypeOf(withDefault.get()).toEqualTypeOf<string>();
-
-// .set() accepts string
 expectTypeOf(withDefault.set).toBeCallableWith('world');
-
-// .set() callback receives string (not undefined)
 expectTypeOf(withDefault.set).toBeCallableWith((_prev: string) => 'world');
 
-// --- .pipe() preserves the type and is chainable ---
+// --- .pipe() same-type preserves type ---
 
 const piped = value<string>('').pipe((v) => v.trim());
-
-// Still a Value<string> with default — .get() returns string
 expectTypeOf(piped.get()).toEqualTypeOf<string>();
 
-// Chaining multiple pipes
 const multiPiped = value<string>('')
 	.pipe((v) => v.trim())
 	.pipe((v) => v.toLowerCase());
 expectTypeOf(multiPiped.get()).toEqualTypeOf<string>();
 
-// Pipe transform must be T => T
-// @ts-expect-error - pipe transform must return same type
-value<string>('').pipe((_v) => 42);
+// --- .pipe() type-changing: In stays, Out changes ---
 
-// --- .pipe() on value without default: transform receives T | undefined ---
+const typeChanging = value<string>('42').pipe((v) => parseInt(v));
+expectTypeOf(typeChanging.get()).toEqualTypeOf<number>();
+// set() still accepts the original In type (string)
+expectTypeOf(typeChanging.set).toBeCallableWith('100');
 
-const pipedNoDefault = value<string>().pipe((v) => v?.trim());
-expectTypeOf(pipedNoDefault.get()).toEqualTypeOf<string | undefined>();
+// Chained type change
+const chained = value<string>('  42  ')
+	.pipe((v) => v.trim())
+	.pipe((v) => parseInt(v));
+expectTypeOf(chained.get()).toEqualTypeOf<number>();
+expectTypeOf(chained.set).toBeCallableWith('  100  ');
 
-// --- .compareUsing() preserves the type and is chainable ---
+// --- .compareUsing() preserves the type ---
 
 const compared = value<string>('hello').compareUsing((a, b) => a === b);
 expectTypeOf(compared.get()).toEqualTypeOf<string>();
 
-// compareUsing on no-default: comparator receives string | undefined
-const comparedNoDefault = value<string>().compareUsing((a, b) => a === b);
-expectTypeOf(comparedNoDefault.get()).toEqualTypeOf<string | undefined>();
-
-// Chaining pipe and compareUsing
-const chained = value<string>('')
-	.pipe((v) => v.trim())
+// compareUsing on type-changed value: comparator receives Out type
+const comparedTypeChanged = value<string>('42')
+	.pipe((v) => parseInt(v))
 	.compareUsing((a, b) => a === b);
-expectTypeOf(chained.get()).toEqualTypeOf<string>();
+expectTypeOf(comparedTypeChanged.get()).toEqualTypeOf<number>();
 
-// --- .subscribe() returns unsubscribe ---
+// --- .subscribe() with prev value ---
 
-const unsub = withDefault.subscribe((_v) => {});
+const unsub = withDefault.subscribe((_value, _prev) => {});
 expectTypeOf(unsub).toEqualTypeOf<() => void>();
 
-// subscribe callback receives the value type
-withDefault.subscribe((v) => {
-	expectTypeOf(v).toEqualTypeOf<string>();
+withDefault.subscribe((current, previous) => {
+	expectTypeOf(current).toEqualTypeOf<string>();
+	expectTypeOf(previous).toEqualTypeOf<string>();
 });
 
-noDefault.subscribe((v) => {
-	expectTypeOf(v).toEqualTypeOf<string | undefined>();
+noDefault.subscribe((current, previous) => {
+	expectTypeOf(current).toEqualTypeOf<string | undefined>();
+	expectTypeOf(previous).toEqualTypeOf<string | undefined>();
 });
 
-// --- .use() returns [T, Setter<T>] tuple ---
+// --- .use() returns [Out, Setter<In>] tuple ---
 
 const useResult = withDefault.use();
 expectTypeOf(useResult).toEqualTypeOf<[string, Setter<string>]>();
@@ -91,6 +80,12 @@ expectTypeOf(useNoDefault).toEqualTypeOf<
 	[string | undefined, Setter<string | undefined>]
 >();
 
+// Type-changing: use() returns [Out, Setter<In>]
+const useTypeChanged = value<string>('42')
+	.pipe((v) => parseInt(v))
+	.use();
+expectTypeOf(useTypeChanged).toEqualTypeOf<[number, Setter<string>]>();
+
 // --- value() infers type from default ---
 
 const inferred = value(42);
@@ -98,9 +93,3 @@ expectTypeOf(inferred.get()).toEqualTypeOf<number>();
 
 const inferredString = value('hello');
 expectTypeOf(inferredString.get()).toEqualTypeOf<string>();
-
-// --- number value with pipe ---
-
-const clamped = value<number>(0).pipe((v) => Math.max(0, Math.min(100, v)));
-expectTypeOf(clamped.get()).toEqualTypeOf<number>();
-expectTypeOf(clamped.set).toBeCallableWith(50);

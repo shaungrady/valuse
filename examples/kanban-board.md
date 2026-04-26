@@ -3,7 +3,10 @@
 A kanban board with columns containing cards. Cards have fixed fields plus
 user-defined custom fields per board. This showcases async derivations for data
 fetching, `allowUndeclaredProperties` for dynamic card metadata, `extend()` for
-card type specialization, and `createMap()` for both collections.
+card type specialization, and `createMap()` for both collections. See
+[Async Derivations](../docs/async-derivations.md),
+[Extending Scopes](../docs/extending.md), and [Scope Map](../docs/scope-map.md)
+for the underlying APIs.
 
 ## The model
 
@@ -27,9 +30,9 @@ const card = valueScope(
     isSelected: value<boolean>(false),
   },
   {
-    onInit: ({ set, get }) => {
+    onCreate: ({ scope }) => {
       // Only set if not already provided (e.g., hydrated from API)
-      if (!get('createdAt')) set('createdAt', Date.now());
+      if (!scope.createdAt.get()) scope.createdAt.set(Date.now());
     },
     // Boards can attach arbitrary fields (priority, story points, due date, etc.)
     allowUndeclaredProperties: true,
@@ -44,14 +47,14 @@ const bugCard = card.extend({
   severity: value<'low' | 'medium' | 'high' | 'critical'>('medium'),
   stepsToReproduce: value<string>(''),
 
-  isCritical: ({ use }) => use('severity') === 'critical',
+  isCritical: ({ scope }) => scope.severity.use() === 'critical',
 });
 
 const featureCard = card.extend({
   storyPoints: value<number>(0),
   acceptanceCriteria: value<string>(''),
 
-  isEstimated: ({ use }) => use('storyPoints') > 0,
+  isEstimated: ({ scope }) => scope.storyPoints.use() > 0,
 });
 ```
 
@@ -64,8 +67,8 @@ const column = valueScope({
   // ordered list of unique card IDs in this column
   cardIds: value<string[]>([]).pipe((ids) => [...new Set(ids)]),
 
-  cardCount: ({ use }) => use('cardIds').length,
-  isEmpty: ({ use }) => use('cardIds').length === 0,
+  cardCount: ({ scope }) => scope.cardIds.use().length,
+  isEmpty: ({ scope }) => scope.cardIds.use().length === 0,
 });
 ```
 
@@ -85,32 +88,35 @@ const board = valueScope(
     cards: valueRef(() => card.createMap()),
     columns: valueRef(() => column.createMap()),
 
-    // Async derivation — fetches board data when boardId changes.
+    // Async derivation: fetches board data when boardId changes.
     // Aborts the previous fetch automatically.
-    data: async ({ use, signal }) => {
-      const id = use('boardId');
+    data: async ({ scope, signal }) => {
+      const id = scope.boardId.use();
       const res = await fetch(`/api/boards/${id}`, { signal });
       return res.json();
     },
 
-    // Sync derivations — read the async data without knowing it's async.
-    name: ({ use }) => use('data')?.name ?? 'Loading...',
-    columnOrder: ({ use }) => use('data')?.columns?.map((c) => c.id) ?? [],
+    // Sync derivations read the async data without knowing it's async.
+    name: ({ scope }) => scope.data.use()?.name ?? 'Loading...',
+    columnOrder: ({ scope }) =>
+      scope.data.use()?.columns?.map((c: any) => c.id) ?? [],
 
     // Derivation reacts to column map key changes
-    columnCount: ({ use }) => use('columns').size,
+    columnCount: ({ scope }) => scope.columns.use().size,
   },
   {
-    onChange: {
-      data: ({ to, get }) => {
-        if (!to) return;
-        const columns = get('columns');
-        const cards = get('cards');
+    onChange: ({ scope, changes }) => {
+      const dataChanged = [...changes].some((c) => c.path === 'data');
+      if (!dataChanged) return;
+      const data = scope.data.get();
+      if (!data) return;
 
-        // Hydrate collections from fetched data
-        for (const col of to.columns) columns.set(col.id, col);
-        for (const c of to.cards) cards.set(c.id, c);
-      },
+      const columns = scope.columns.get();
+      const cards = scope.cards.get();
+
+      // Hydrate collections from fetched data
+      for (const col of data.columns) columns.set(col.id, col);
+      for (const c of data.cards) cards.set(c.id, c);
     },
   },
 );
@@ -130,7 +136,7 @@ function initBoard(boardId: string) {
 }
 ```
 
-Cards from the API arrive with `createdAt` already set, so `onInit` preserves
+Cards from the API arrive with `createdAt` already set, so `onCreate` preserves
 it. New cards created client-side get `Date.now()` as the fallback. If `boardId`
 changes later, the previous request is aborted and a new fetch starts
 automatically.
@@ -147,24 +153,24 @@ function moveCard(
   toColumnId: string,
   toIndex: number,
 ) {
-  const columns = boardInstance.get('columns');
-  const cards = boardInstance.get('cards');
+  const columns = boardInstance.columns.get();
+  const cards = boardInstance.cards.get();
   const fromCol = columns.get(fromColumnId);
   const toCol = columns.get(toColumnId);
   if (!fromCol || !toCol) return;
 
   // Remove from source
-  fromCol.set('cardIds', (ids) => ids.filter((id) => id !== cardId));
+  fromCol.cardIds.set((ids) => ids.filter((id) => id !== cardId));
 
   // Insert at position in destination
-  toCol.set('cardIds', (ids) => {
+  toCol.cardIds.set((ids) => {
     const next = [...ids];
     next.splice(toIndex, 0, cardId);
     return next;
   });
 
   // Update the card's column reference
-  cards.get(cardId)?.set('columnId', toColumnId);
+  cards.get(cardId)?.columnId.set(toColumnId);
 }
 ```
 
@@ -174,18 +180,28 @@ and card is untouched.
 ## React components
 
 ```tsx
-import { value, valueScope } from 'valuse/react';
+import 'valuse/react';
 
-// Pull collections from the board — no module-level variables needed
-const columns = boardInstance.get('columns');
-const cards = boardInstance.get('cards');
+// Pull collections from the board
+const columns = boardInstance.columns.get();
+const cards = boardInstance.cards.get();
 
 function Board() {
-  const [columnOrder] = boardInstance.use('columnOrder');
+  const [columnOrder] = boardInstance.columnOrder.use();
+  // useAsync() on the board's async `data` derivation gives us loading
+  // and error state, separately from the hydrated `columns` map.
+  const [, dataState] = boardInstance.data.useAsync();
+
+  if (dataState.status === 'setting' && !dataState.hasValue) {
+    return <BoardSkeleton />;
+  }
+  if (dataState.status === 'error') {
+    return <BoardError error={dataState.error} />;
+  }
 
   return (
     <div className="board">
-      {columnOrder.map((colId) => (
+      {columnOrder.map((colId: string) => (
         <Column key={colId} id={colId} />
       ))}
     </div>
@@ -193,14 +209,17 @@ function Board() {
 }
 
 function Column({ id }: { id: string }) {
-  const [getColumn] = columns.use(id);
+  const col = columns.get(id)!;
+  const [name] = col.name.use();
+  const [cardCount] = col.cardCount.use();
+  const [cardIds] = col.cardIds.use();
 
   return (
     <div className="column">
       <h2>
-        {getColumn('name')} ({getColumn('cardCount')})
+        {name} ({cardCount})
       </h2>
-      {getColumn('cardIds').map((cardId) => (
+      {cardIds.map((cardId) => (
         <Card key={cardId} id={cardId} />
       ))}
     </div>
@@ -208,23 +227,20 @@ function Column({ id }: { id: string }) {
 }
 
 function Card({ id }: { id: string }) {
-  const [getCard, setCard] = cards.use(id);
+  const cardInstance = cards.get(id)!;
+  const [title] = cardInstance.title.use();
+  const [assignee] = cardInstance.assignee.use();
+  const [isDragging, setIsDragging] = cardInstance.isDragging.use();
 
   return (
     <div
       draggable
-      onDragStart={() => setCard('isDragging', true)}
-      onDragEnd={() => setCard('isDragging', false)}
-      style={{ opacity: getCard('isDragging') ? 0.5 : 1 }}
+      onDragStart={() => setIsDragging(true)}
+      onDragEnd={() => setIsDragging(false)}
+      style={{ opacity: isDragging ? 0.5 : 1 }}
     >
-      <h3>{getCard('title')}</h3>
-      <span>{getCard('assignee') ?? 'Unassigned'}</span>
-
-      {/* Custom fields from allowUndeclaredProperties */}
-      {getCard('severity') && (
-        <span className="badge">{getCard('severity')}</span>
-      )}
-      {getCard('storyPoints') && <span>{getCard('storyPoints')} pts</span>}
+      <h3>{title}</h3>
+      <span>{assignee ?? 'Unassigned'}</span>
     </div>
   );
 }
@@ -248,7 +264,7 @@ cards.set('card-1', {
   dueDate: '2026-04-15',
 } as any);
 
-cards.get('card-1')?.get('priority'); // "high"
+cards.get('card-1')?.priority.get(); // "high"
 ```
 
 If a dynamic field later needs reactivity or derived state, promote it with
@@ -257,7 +273,8 @@ If a dynamic field later needs reactivity or derived state, promote it with
 ```ts
 const prioritizedCard = card.extend({
   priority: value<'low' | 'medium' | 'high'>('medium'),
-  isUrgent: ({ use }) => use('priority') === 'high' && use('assignee') === null,
+  isUrgent: ({ scope }) =>
+    scope.priority.use() === 'high' && scope.assignee.use() === null,
 });
 ```
 
@@ -268,15 +285,16 @@ drilling or context:
 
 ```tsx
 function FilteredCard({ id }: { id: string }) {
-  const [getCard] = cards.use(id);
-  const [filterAssignee] = boardInstance.use('filterAssignee');
+  const cardInstance = cards.get(id)!;
+  const [assignee] = cardInstance.assignee.use();
+  const [title] = cardInstance.title.use();
+  const [filterAssignee] = boardInstance.filterAssignee.use();
 
-  const dimmed =
-    filterAssignee !== null && getCard('assignee') !== filterAssignee;
+  const dimmed = filterAssignee !== null && assignee !== filterAssignee;
 
   return (
     <div style={{ opacity: dimmed ? 0.3 : 1 }}>
-      <h3>{getCard('title')}</h3>
+      <h3>{title}</h3>
     </div>
   );
 }
@@ -293,10 +311,13 @@ const card = valueScope(
     /* ...fields from above... */
   },
   {
-    onChange: ({ changes, get, getSnapshot }) => {
-      // Skip UI-only changes
-      if (changes.has('isDragging') || changes.has('isSelected')) return;
-      debounce(() => saveCard(get('id'), getSnapshot()), 500);
+    onChange: ({ scope, changes }) => {
+      // Persist only when a non-UI field changed
+      const shouldPersist = [...changes].some(
+        (c) => c.path !== 'isDragging' && c.path !== 'isSelected',
+      );
+      if (!shouldPersist) return;
+      debounce(() => saveCard(scope.id.get(), scope.$getSnapshot()), 500);
     },
   },
 );

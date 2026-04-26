@@ -1,101 +1,37 @@
 import { expectTypeOf } from 'expect-type';
-import {
-	value,
-	valueRef,
-	valueSet,
-	valueMap,
-	valueScope,
-} from '../../index.js';
+import { value } from '../../core/value.js';
+import { valueRef, ValueRef } from '../../core/value-ref.js';
+import { valueSet } from '../../core/value-set.js';
+import { valueMap } from '../../core/value-map.js';
 
-// --- valueRef() infers T from the source ---
+// ── Ref to Value ────────────────────────────────────────────────────
 
-const strRef = valueRef(value('hello'));
-expectTypeOf(strRef.get()).toEqualTypeOf<string>();
+const name = value('Alice');
+const nameRef = valueRef(name);
+expectTypeOf(nameRef).toEqualTypeOf<ValueRef<string>>();
+expectTypeOf(nameRef.get()).toEqualTypeOf<string>();
 
-const setRef = valueRef(valueSet<string>(['a']));
-expectTypeOf(setRef.get()).toEqualTypeOf<Set<string>>();
+// ── Ref to ValueSet ─────────────────────────────────────────────────
 
-const mapRef = valueRef(valueMap<string, number>());
-expectTypeOf(mapRef.get()).toEqualTypeOf<Map<string, number>>();
+const tags = valueSet(['a', 'b']);
+const tagsRef = valueRef(tags);
+expectTypeOf(tagsRef).toEqualTypeOf<ValueRef<Set<string>>>();
+expectTypeOf(tagsRef.get()).toEqualTypeOf<Set<string>>();
 
-// --- Refs are read-only in scopes (not in ValueKeys) ---
+// ── Ref to ValueMap ─────────────────────────────────────────────────
 
-const scope = valueScope({
-	name: value<string>(),
-	tags: valueRef(valueSet<string>()),
-	doubled: ({ use }) => use('name'),
-});
+const scores = valueMap<string, number>([['alice', 95]]);
+const scoresRef = valueRef(scores);
+expectTypeOf(scoresRef).toEqualTypeOf<ValueRef<Map<string, number>>>();
+expectTypeOf(scoresRef.get()).toEqualTypeOf<Map<string, number>>();
 
-const inst = scope.create();
+// ── Ref from factory ────────────────────────────────────────────────
 
-// get() works on all keys
-expectTypeOf(inst.get('name')).toEqualTypeOf<string | undefined>();
-expectTypeOf(inst.get('tags')).toEqualTypeOf<Set<string>>();
+const factoryRef = valueRef(() => value('factory'));
+expectTypeOf(factoryRef.factory).not.toBeUndefined();
 
-// set() only works on value keys — not refs or derivations
-expectTypeOf(inst.set<'name'>).toBeCallableWith('name', 'Alice');
+// ── Ref to plain reactive source ────────────────────────────────────
 
-// @ts-expect-error - cannot set a ref key
-inst.set('tags', new Set(['x']));
-
-// @ts-expect-error - cannot set a derivation key
-inst.set('doubled', 'foo');
-
-// --- CreateInput excludes ref keys ---
-
-// create() only accepts value keys
-scope.create({ name: 'Alice' });
-
-// @ts-expect-error - cannot provide ref key in create input
-scope.create({ tags: new Set(['x']) });
-
-// --- Ref with value that has no default ---
-
-const optRef = valueRef(value<string>());
-expectTypeOf(optRef.get()).toEqualTypeOf<string | undefined>();
-
-// --- use() get/set tuple: get reads refs, set excludes refs ---
-
-const [get, set] = inst.use();
-expectTypeOf(get('tags')).toEqualTypeOf<Set<string>>();
-expectTypeOf(set<'name'>).toBeCallableWith('name', 'Bob');
-
-// --- ScopeInstance refs: chained .get()/.set() with full type flow ---
-
-const addressScope = valueScope({
-	street: value<string>(),
-	city: value('NYC'),
-	full: ({ use }) => `${use('street')}, ${use('city')}`,
-});
-const addressInst = addressScope.create({ street: '123 Main' });
-
-// valueRef(scopeInstance) → ValueRef<ScopeInstance<Def>>
-const addrRef = valueRef(addressInst);
-const addrFromRef = addrRef.get();
-
-// Chained get is typed
-expectTypeOf(addrFromRef.get('street')).toEqualTypeOf<string | undefined>();
-expectTypeOf(addrFromRef.get('city')).toEqualTypeOf<string>();
-expectTypeOf(addrFromRef.get('full')).toEqualTypeOf<string>();
-
-// Chained set is typed (only value keys)
-expectTypeOf(addrFromRef.set<'street'>).toBeCallableWith('street', '456 Oak');
-
-// @ts-expect-error - cannot set a derivation on the referenced scope
-addrFromRef.set('full', 'nope');
-
-// In a parent scope: get("address") returns the typed ScopeInstance
-const personScope = valueScope({
-	name: value<string>(),
-	address: valueRef(addressInst),
-});
-const personInst = personScope.create({ name: 'Alice' });
-
-// get("address") returns the full ScopeInstance type
-const addr = personInst.get('address');
-expectTypeOf(addr.get('street')).toEqualTypeOf<string | undefined>();
-expectTypeOf(addr.get('city')).toEqualTypeOf<string>();
-
-// set("address", ...) is a type error — refs are read-only
-// @ts-expect-error - cannot set a ref key
-personInst.set('address', addressInst);
+const plainRef = valueRef({ get: () => 42 });
+expectTypeOf(plainRef).toEqualTypeOf<ValueRef<number>>();
+expectTypeOf(plainRef.get()).toEqualTypeOf<number>();

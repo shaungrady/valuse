@@ -1,64 +1,55 @@
 import { expectTypeOf } from 'expect-type';
-import { value, valueScope } from '../../index.js';
-import type { ScopeInstance } from '../../core/value-scope.js';
+import { value } from '../../core/value.js';
+import { valueScope } from '../../core/value-scope.js';
+import type { ScopeMap } from '../../core/scope-map.js';
+import type { ScopeInstance } from '../../core/scope-types.js';
+import type { FieldValue } from '../../core/field-value.js';
+import type { Unsubscribe } from '../../core/types.js';
 
-const person = valueScope({
-	firstName: value<string>(),
-	lastName: value<string>(),
-	role: value<string>('viewer'),
-	fullName: ({ use }) =>
-		`${use('firstName') as string} ${use('lastName') as string}`,
-});
+// ── createMap() returns ScopeMap<K, Def> ────────────────────────────
 
-const people = person.createMap();
+const def = {
+	name: value<string>(),
+	score: value(0),
+};
 
-// --- .get() returns ScopeInstance | undefined ---
+const userMap = valueScope(def).createMap<number>();
+expectTypeOf(userMap).toMatchTypeOf<ScopeMap<number, typeof def>>();
 
-const bob = people.get('bob');
-expectTypeOf(bob).toEqualTypeOf<
-	ScopeInstance<(typeof person)['definition']> | undefined
->();
+// ── get() returns ScopeInstance<Def> | undefined ────────────────────
 
-// --- .set() returns ScopeInstance ---
+const instance = userMap.get(1);
+expectTypeOf(instance).toEqualTypeOf<ScopeInstance<typeof def> | undefined>();
 
-const inst = people.set('bob', { firstName: 'Bob', lastName: 'Jones' });
-expectTypeOf(inst).toEqualTypeOf<
-	ScopeInstance<(typeof person)['definition']>
->();
+if (instance) {
+	expectTypeOf(instance.name).toEqualTypeOf<
+		FieldValue<string | undefined, string | undefined>
+	>();
+	expectTypeOf(instance.score).toEqualTypeOf<FieldValue<number, number>>();
+	expectTypeOf(instance.$destroy).toEqualTypeOf<() => void>();
+}
 
-// --- .use(key) returns [get, set] ---
+// ── set() accepts Partial<ValueInputOf<Def>> ────────────────────────
 
-const [get, scopeSet] = people.use('bob');
-expectTypeOf(get('firstName')).toEqualTypeOf<string | undefined>();
-expectTypeOf(get('role')).toEqualTypeOf<string>();
-expectTypeOf(get('fullName')).toEqualTypeOf<string>();
-scopeSet('firstName', 'Robert');
+userMap.set(1, { name: 'Alice', score: 100 });
+userMap.set(2, { name: 'Bob' });
+userMap.set(3, {});
 
-// --- .use(key, field) returns [value, setter] for value keys ---
+// ── keys/values/entries ─────────────────────────────────────────────
 
-const [firstName, setFirstName] = people.use('bob', 'firstName');
-expectTypeOf(firstName).toEqualTypeOf<string | undefined>();
-expectTypeOf(setFirstName).toBeFunction();
+expectTypeOf(userMap.keys()).toEqualTypeOf<number[]>();
+expectTypeOf(userMap.values()).toEqualTypeOf<ScopeInstance<typeof def>[]>();
 
-const [role, setRole] = people.use('bob', 'role');
-expectTypeOf(role).toEqualTypeOf<string>();
-expectTypeOf(setRole).toBeFunction();
+// ── subscribe ───────────────────────────────────────────────────────
 
-// --- .use(key, field) returns [value] for derivations ---
+const unsub = userMap.subscribe(() => {});
+expectTypeOf(unsub).toEqualTypeOf<Unsubscribe>();
 
-const [fullName] = people.use('bob', 'fullName');
-expectTypeOf(fullName).toEqualTypeOf<string>();
+// ── size ────────────────────────────────────────────────────────────
 
-// --- .keys() returns (string | number)[] ---
+expectTypeOf(userMap.size).toEqualTypeOf<number>();
 
-expectTypeOf(people.keys()).toEqualTypeOf<(string | number)[]>();
+// ── has / delete ────────────────────────────────────────────────────
 
-// --- .useKeys() returns (string | number)[] ---
-
-expectTypeOf(people.useKeys()).toEqualTypeOf<(string | number)[]>();
-
-// --- narrowed key type ---
-
-const numbered = person.createMap<number>();
-expectTypeOf(numbered.keys()).toEqualTypeOf<number[]>();
-expectTypeOf(numbered.useKeys()).toEqualTypeOf<number[]>();
+expectTypeOf(userMap.has(1)).toEqualTypeOf<boolean>();
+expectTypeOf(userMap.delete(1)).toEqualTypeOf<boolean>();

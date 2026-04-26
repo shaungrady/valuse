@@ -1,241 +1,181 @@
 import { signal, effect, type Signal } from './signal.js';
 import { draftSet } from './draft.js';
-import { getReactHooks, stableSubscribe } from './react-bridge.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
-
-/**
- * Setter for a {@link ValueSet}. Accepts a new Set or a draft mutate callback.
- *
- * @example
- * ```ts
- * const [tags, setTags] = tags.use();
- * setTags(new Set(["a", "b"]));
- * setTags((draft) => draft.add("c"));
- * ```
- */
-export type ValueSetSetter<T> = (
-	value: Set<T> | ((draft: Set<T>) => void),
-) => void;
+import { getReactHooks, stableSubscribe } from './react-bridge.js';
 
 /**
  * Reactive wrapper around a `Set<T>`.
  *
- * Supports draft-based mutations, transforms, custom comparison,
- * subscriptions, and an optional React hook via `.use()`.
+ * @remarks
+ * `ValueSet` provides a reactive interface for a collection of unique items.
+ * It supports draft-based mutations, transforms, custom comparison, and subscriptions.
  *
- * @typeParam T - the element type
+ * @typeParam T - the element type.
  *
  * @example
  * ```ts
- * const tags = valueSet<string>(["admin", "active"]);
- * tags.has("admin");               // true
- * tags.set((draft) => draft.add("editor"));
- * tags.add("superuser");
- * tags.delete("admin");
+ * const tags = valueSet(["react", "signals"]);
+ * tags.add("valuse");
+ * tags.has("valuse"); // true
  * ```
- *
- * @see {@link valueSet} factory function for creating instances
- * @see {@link Value} for scalar reactive state
- * @see {@link ValueMap} for reactive Maps
  */
 export class ValueSet<T> {
-	private _signal: Signal<Set<T>>;
-	private readonly _transforms: Transform<Set<T>>[] = [];
-	private _comparator: Comparator<Set<T>> | undefined;
-	private readonly _disposers: (() => void)[] = [];
+	#signal: Signal<Set<T>>;
+	readonly #transforms: Transform<Set<T>>[] = [];
+	#comparator: Comparator<Set<T>> | undefined;
+	readonly #disposers = new Set<() => void>();
 
-	/** @param initial - the initial Set */
+	/** @internal */
 	constructor(initial: Set<T>) {
-		this._signal = signal(initial);
+		this.#signal = signal(initial);
 	}
 
 	/**
-	 * Read the current Set.
-	 * @returns the current Set
+	 * Read the current `Set`.
+	 * @returns the current `Set` instance.
 	 */
 	get(): Set<T> {
-		return this._signal.value;
+		return this.#signal.value;
 	}
 
 	/**
 	 * Replace the set, or mutate it via a draft callback.
 	 *
-	 * @remarks
-	 * Draft callbacks receive an Immer-style proxy. Mutations are recorded,
-	 * then applied to produce a new immutable Set. If nothing changed, the
-	 * original Set is kept (no notification).
-	 *
-	 * @param valueOrFn - a new Set, or a callback that mutates a draft
+	 * @param valueOrFn - a new `Set` instance, or a function that receives a draft
+	 * for in-place mutation.
 	 *
 	 * @example
 	 * ```ts
 	 * tags.set(new Set(["a", "b"]));
-	 * tags.set((draft) => draft.add("c"));
+	 * tags.set(draft => {
+	 *   draft.add("c");
+	 *   draft.delete("a");
+	 * });
 	 * ```
 	 */
 	set(valueOrFn: Set<T> | ((draft: Set<T>) => void)): void {
 		const previous = this.get();
-
 		let next: Set<T>;
 		if (typeof valueOrFn === 'function') {
 			next = draftSet(previous, valueOrFn as (draft: Set<T>) => void);
 		} else {
 			next = valueOrFn;
 		}
-
-		next = this._applyTransforms(next);
-
-		if (next === previous) {
-			return;
-		}
-
-		if (this._comparator && this._comparator(previous, next)) {
-			return;
-		}
-
-		this._signal.value = next;
+		next = this.#applyTransforms(next);
+		if (next === previous) return;
+		if (this.#comparator && this.#comparator(previous, next)) return;
+		this.#signal.value = next;
 	}
 
 	/**
 	 * Check if the set contains a value.
-	 * @param value - the value to check for
-	 * @returns `true` if the value is in the set
+	 * @param value - the value to check.
+	 * @returns `true` if the value exists.
 	 */
 	has(value: T): boolean {
 		return this.get().has(value);
 	}
 
-	/** Number of elements in the set. */
+	/** Number of elements. */
 	get size(): number {
 		return this.get().size;
 	}
 
 	/**
-	 * Return the set's values as an array.
-	 * @returns an array of all elements
+	 * Return all elements as an array.
+	 * @returns the current elements.
 	 */
 	values(): T[] {
 		return [...this.get()];
 	}
 
-	/** Remove all elements from the set. */
+	/** Remove all elements. */
 	clear(): void {
-		this._signal.value = new Set<T>();
+		this.#signal.value = new Set<T>();
 	}
 
 	/**
 	 * Delete an element from the set.
-	 * @param value - the element to remove
-	 * @returns `true` if the element was present and removed
+	 * @param value - the value to remove.
+	 * @returns `true` if the value was present.
 	 */
 	delete(value: T): boolean {
 		const previous = this.get();
 		if (!previous.has(value)) return false;
 		const next = new Set(previous);
 		next.delete(value);
-		this._signal.value = next;
+		this.#signal.value = next;
 		return true;
 	}
 
 	/**
 	 * Add an element to the set. No-op if already present.
-	 * @param value - the element to add
-	 * @returns `this` for chaining
+	 * @param value - the value to add.
+	 * @returns `this` for chaining.
 	 */
 	add(value: T): this {
 		const previous = this.get();
 		if (previous.has(value)) return this;
 		const next = new Set(previous);
 		next.add(value);
-		this._signal.value = next;
+		this.#signal.value = next;
 		return this;
 	}
 
 	/**
-	 * Listen for changes. The callback fires on every update after subscription.
+	 * Subscribe to set changes.
 	 *
-	 * @param fn - called with the new Set on each change
-	 * @returns an {@link Unsubscribe} function to stop listening
-	 *
-	 * @example
-	 * ```ts
-	 * const unsub = tags.subscribe((set) => console.log(set.size));
-	 * tags.add("new");  // logs 3
-	 * unsub();
-	 * ```
+	 * @param fn - callback fired with the new and previous sets on each change.
+	 * @returns an {@link Unsubscribe} function.
 	 */
-	subscribe(fn: (value: Set<T>) => void): Unsubscribe {
+	subscribe(fn: (value: Set<T>, previous: Set<T>) => void): Unsubscribe {
 		let isFirstRun = true;
+		let previousValue = this.#signal.peek();
 		const dispose = effect(() => {
-			const currentValue = this._signal.value;
+			const currentValue = this.#signal.value;
 			if (isFirstRun) {
 				isFirstRun = false;
 				return;
 			}
-			fn(currentValue);
+			const prev = previousValue;
+			previousValue = currentValue;
+			fn(currentValue, prev);
 		});
-		this._disposers.push(dispose);
+		this.#disposers.add(dispose);
 		return () => {
 			dispose();
-			const index = this._disposers.indexOf(dispose);
-			if (index !== -1) this._disposers.splice(index, 1);
+			this.#disposers.delete(dispose);
 		};
 	}
 
 	/**
-	 * Add a transform that runs on every `.set()` call. Chainable.
-	 *
-	 * @param transform - a function that receives and returns a Set
-	 * @returns `this` for chaining
-	 *
-	 * @example
-	 * ```ts
-	 * const tags = valueSet<string>().pipe(
-	 *   (s) => new Set([...s].map((t) => t.toLowerCase())),
-	 * );
-	 * ```
+	 * Add a transform that runs on every `set()` call.
+	 * @param transform - function that receives and returns a set.
+	 * @returns `this` for chaining.
 	 */
 	pipe(transform: Transform<Set<T>>): this {
-		this._transforms.push(transform);
-		this._signal.value = this._applyTransforms(this._signal.value);
+		this.#transforms.push(transform);
+		this.#signal.value = this.#applyTransforms(this.#signal.value);
 		return this;
 	}
 
 	/**
 	 * Override the default identity comparison. When the comparator returns
 	 * `true`, the update is skipped and subscribers are not notified.
-	 *
-	 * @param comparator - returns `true` to skip the update
-	 * @returns `this` for chaining
-	 *
-	 * @example
-	 * ```ts
-	 * const tags = valueSet<string>(["a"]).compareUsing(
-	 *   (a, b) => a.size === b.size,
-	 * );
-	 * ```
+	 * @param comparator - function that returns `true` if two sets are equal.
+	 * @returns `this` for chaining.
 	 */
 	compareUsing(comparator: Comparator<Set<T>>): this {
-		this._comparator = comparator;
+		this.#comparator = comparator;
 		return this;
 	}
 
 	/**
-	 * React hook. Returns `[Set<T>, setter]`.
-	 * Re-renders the component when the set changes.
-	 *
-	 * @remarks
-	 * Requires `valuse/react` to be imported. Outside React, returns a non-reactive snapshot.
-	 *
-	 * @returns a `[Set<T>, setter]` tuple
-	 *
-	 * @example
-	 * ```tsx
-	 * const [tags, setTags] = tags.use();
-	 * setTags((draft) => draft.add("editor"));
-	 * ```
+	 * React hook. Returns `[set, setter]`.
+	 * Re-renders the component on any set change.
+	 * @returns a `[Set, setter]` tuple.
 	 */
-	use(): [Set<T>, ValueSetSetter<T>] {
+	use(): [Set<T>, (value: Set<T> | ((draft: Set<T>) => void)) => void] {
 		const hooks = getReactHooks();
 		if (hooks) {
 			const subscribe = stableSubscribe(this, (onChange) =>
@@ -259,18 +199,14 @@ export class ValueSet<T> {
 		];
 	}
 
-	/**
-	 * Dispose all active subscriptions created via `.subscribe()`.
-	 * The set remains readable but will no longer notify subscribers.
-	 */
+	/** Dispose all subscriptions. */
 	destroy(): void {
-		for (const dispose of this._disposers) dispose();
-		this._disposers.length = 0;
+		for (const dispose of this.#disposers) dispose();
+		this.#disposers.clear();
 	}
 
-	/** @internal */
-	private _applyTransforms(value: Set<T>): Set<T> {
-		return this._transforms.reduce(
+	#applyTransforms(value: Set<T>): Set<T> {
+		return this.#transforms.reduce(
 			(current, transform) => transform(current),
 			value,
 		);
@@ -278,17 +214,11 @@ export class ValueSet<T> {
 }
 
 /**
- * Create a reactive set, optionally from an array or existing Set.
+ * Create a reactive set.
  *
- * @typeParam T - the element type
- * @param initial - optional initial elements as an array or Set
- * @returns a new {@link ValueSet}
- *
- * @example
- * ```ts
- * const tags = valueSet<string>(["admin", "active"]);
- * const empty = valueSet<number>();
- * ```
+ * @param initial - optional initial items as an array or Set.
+ * @typeParam T - the element type.
+ * @returns a new {@link ValueSet} instance.
  */
 export function valueSet<T>(initial?: T[] | Set<T>): ValueSet<T> {
 	return new ValueSet(new Set(initial));

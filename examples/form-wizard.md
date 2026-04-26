@@ -1,110 +1,79 @@
 # Example: Multi-Step Form Wizard
 
-A multi-step form with per-field validation, cross-field rules, and a dynamic
-schema-driven step. This showcases `extend()`, per-field `onChange`, and
-`allowUndeclaredProperties`.
+A multi-step form with schema validation, cross-field rules, and step
+composition. This showcases `valueSchema` for per-field validation, `extend()`
+for step variants, and `validate` for cross-field rules.
+
+See [Schema Validation](../docs/schema-validation.md) for the full `valueSchema`
+API.
 
 ## The model
 
-Start with a base field scope. Every field tracks its value, touched state, and
-validation:
+Each field uses `valueSchema` with a Standard Schema validator. Validation state
+is tracked automatically, including per-field issues and a scope-wide
+`$getIsValid()` check.
 
 ```ts
-import { value, valueScope } from 'valuse';
+import { type } from 'arktype';
+import type { StandardSchemaV1 } from '@standard-schema/spec';
+import { value, valueSchema, valueScope, valueRef } from 'valuse';
 
-const field = <T>(initial: T, validate: (v: T) => string | null) =>
-  valueScope(
-    {
-      value: value<T>(initial),
-      initialValue: value<T>(initial),
-      isTouched: value<boolean>(false),
-      error: value<string | null>(null),
-
-      isDirty: ({ use }) => use('value') !== use('initialValue'),
-    },
-    {
-      onInit: ({ set, get }) => {
-        set('initialValue', get('value'));
-      },
-      // Per-field onChange — only fires when `value` changes,
-      // ignores isTouched, error, etc.
-      onChange: {
-        value: ({ to, set }) => {
-          set('error', validate(to));
-        },
-      },
-    },
-  );
-```
-
-Now define each step of the wizard by composing fields:
-
-```ts
 // Step 1: Account info
-const accountStep = valueScope({
-  email: field('', (v) => (!v.includes('@') ? 'Invalid email' : null)),
-  password: field('', (v) => (v.length < 8 ? 'Min 8 characters' : null)),
-  confirmPassword: field('', () => null), // cross-field validation below
-});
+const accountStep = valueScope(
+  {
+    email: valueSchema(type('string.email'), ''),
+    password: valueSchema(type('string >= 8'), ''),
+    confirmPassword: valueSchema(type('string >= 8'), ''),
+  },
+  {
+    validate: ({ scope }) => {
+      const issues: StandardSchemaV1.Issue[] = [];
+      if (scope.password.use() !== scope.confirmPassword.use()) {
+        issues.push({
+          message: 'Passwords must match',
+          path: ['confirmPassword'],
+        });
+      }
+      return issues;
+    },
+  },
+);
 
 // Step 2: Personal info
 const personalStep = valueScope({
-  firstName: field('', (v) => (!v.trim() ? 'Required' : null)),
-  lastName: field('', (v) => (!v.trim() ? 'Required' : null)),
-  phone: field('', (v) =>
-    v && !/^\+?\d{10,}$/.test(v) ? 'Invalid phone' : null,
+  firstName: valueSchema(type('string > 0'), ''),
+  lastName: valueSchema(type('string > 0'), ''),
+  phone: valueSchema(
+    type('string').pipe((v) => {
+      if (v && !/^\+?\d{10,}$/.test(v)) return type.errors('Invalid phone');
+      return v;
+    }),
+    '',
   ),
 });
 
-// Step 3: Preferences — schema-driven, dynamic fields
-const prefsStep = valueScope(
-  {
-    theme: field<'light' | 'dark'>('light', () => null),
-    notifications: field(true, () => null),
-  },
-  {
-    // Extra fields can come from a CMS or feature flags
-    allowUndeclaredProperties: true,
-  },
-);
+// Step 3: Preferences
+const prefsStep = valueScope({
+  theme: valueSchema(type("'light' | 'dark'"), 'light'),
+  notifications: value<boolean>(true),
+});
 ```
 
 ### The wizard itself
 
 ```ts
-const wizard = valueScope(
-  {
-    currentStep: value<number>(0),
-    account: valueRef(accountStep.create()),
-    personal: valueRef(personalStep.create()),
-    prefs: valueRef(prefsStep.create()),
+const wizard = valueScope({
+  currentStep: value<number>(0),
+  account: valueRef(accountStep),
+  personal: valueRef(personalStep),
+  prefs: valueRef(prefsStep),
 
-    stepCount: () => 3,
+  stepCount: () => 3,
 
-    canGoBack: ({ use }) => use('currentStep') > 0,
-    canGoForward: ({ use }) => use('currentStep') < use('stepCount') - 1,
-
-    // Aggregate validation across all steps
-    isValid: ({ use }) => {
-      const steps = [use('account'), use('personal'), use('prefs')];
-
-      // Each step is a ScopeInstance — check its fields for errors
-      return steps.every((step) =>
-        Object.keys(step.getSnapshot()).every((key) => {
-          const field = step.get(key);
-          return !field?.get?.('error');
-        }),
-      );
-    },
-  },
-  {
-    onChange: {
-      currentStep: () => {
-        saveDraft();
-      },
-    },
-  },
-);
+  canGoBack: ({ scope }) => scope.currentStep.use() > 0,
+  canGoForward: ({ scope }) =>
+    scope.currentStep.use() < scope.stepCount.use() - 1,
+});
 ```
 
 ## React components
@@ -113,26 +82,21 @@ const wizard = valueScope(
 
 ```tsx
 import { useEffect } from 'react';
-import { value } from 'valuse/react';
+import { value } from 'valuse';
 
-// Infer the instance type from the field factory
-type WizardForm = ReturnType<typeof wizard.create>;
-type FieldInstance = ReturnType<ReturnType<typeof field>['create']>;
-
-// Shared reactive reference to the form instance.
-// Other components import this instead of receiving it as a prop.
-export const wizardForm = value<WizardForm>();
+// Shared reactive reference to the form instance
+export const wizardForm = value<ReturnType<typeof wizard.create>>();
 
 export function Wizard() {
   useEffect(() => {
     wizardForm.set(wizard.create());
-    return () => wizardForm.set(undefined);
+    return () => wizardForm.get()?.$destroy();
   }, []);
 
   const [form] = wizardForm.use();
   if (!form) return null;
 
-  const [currentStep] = form.use('currentStep');
+  const [currentStep] = form.currentStep.use();
 
   return (
     <div>
@@ -148,24 +112,22 @@ export function Wizard() {
 ### AccountStep.tsx
 
 ```tsx
-import { wizardForm, type WizardForm, type FieldInstance } from './Wizard';
+import { wizardForm } from './Wizard';
 
 function AccountStep() {
-  // Plain read, not a subscription — this component doesn't re-render
-  // on form changes. It just resolves the refs and passes field instances
-  // to FormField, which subscribes via field.use().
   const form = wizardForm.get();
   if (!form) return null;
 
-  const account = form.get('account');
+  const account = form.account.get();
 
   return (
     <div>
       <h2>Account</h2>
-      <FormField field={account.get('email')} label="Email" type="email" />
-      <FormField
-        field={account.get('password')}
-        label="Password"
+      <SchemaField field={account.email} label="Email" type="email" />
+      <SchemaField field={account.password} label="Password" type="password" />
+      <SchemaField
+        field={account.confirmPassword}
+        label="Confirm Password"
         type="password"
       />
     </div>
@@ -182,15 +144,10 @@ function WizardNav() {
   const form = wizardForm.get();
   if (!form) return null;
 
-  // Per-field use() — only re-renders when these specific fields change,
-  // not when unrelated fields (like account.email) change.
-  // Derived fields return [value]
-  const [canGoBack] = form.use('canGoBack'); // [boolean] — derived
-  const [canGoForward] = form.use('canGoForward'); // [boolean] — derived
-  const [stepCount] = form.use('stepCount'); // [number] — derived
-
-  // Value fields return [value, setter].
-  const [currentStep, setStep] = form.use('currentStep'); // [number, setter]
+  const [canGoBack] = form.canGoBack.use();
+  const [canGoForward] = form.canGoForward.use();
+  const [stepCount] = form.stepCount.use();
+  const [currentStep, setStep] = form.currentStep.use();
 
   return (
     <div>
@@ -208,35 +165,38 @@ function WizardNav() {
 }
 ```
 
-### FormField.tsx
+### SchemaField.tsx
+
+A reusable field component that reads validation state from `valueSchema`:
 
 ```tsx
-import type { FieldInstance } from './Wizard';
+import type { FieldValueSchema } from 'valuse';
 
-function FormField({
+function SchemaField({
   field,
   label,
   type = 'text',
 }: {
-  field: FieldInstance;
+  field: FieldValueSchema<string, string>;
   label: string;
   type?: string;
 }) {
-  // Fully typed ScopeInstance —
-  // get("value"), get("error"), set("isTouched") are all type-checked
-  const [getField, setField] = field.use();
+  const [fieldValue, setField, validation] = field.useValidation();
 
   return (
     <div>
       <label>{label}</label>
       <input
         type={type}
-        value={getField('value')}
-        onChange={(e) => setField('value', e.target.value)}
-        onBlur={() => setField('isTouched', true)}
+        value={fieldValue}
+        onChange={(e) => setField(e.target.value)}
       />
-      {getField('isTouched') && getField('error') && (
-        <span className="error">{getField('error')}</span>
+      {!validation.isValid && (
+        <ul className="errors">
+          {validation.issues.map((issue, i) => (
+            <li key={i}>{issue.message}</li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -249,61 +209,35 @@ Say some users see an "Organization" step between Account and Personal. Use
 `extend()` to add fields without duplicating the base:
 
 ```ts
-const orgStep = personalStep.extend(
-  {
-    orgName: field('', (v) => (!v.trim() ? 'Required' : null)),
-    orgSize: field<'small' | 'medium' | 'large'>('small', () => null),
-    taxId: field('', (v) => (v && v.length < 9 ? 'Invalid tax ID' : null)),
-  },
-  {
-    onChange: {
-      orgSize: ({ to, get }) => {
-        // When org size changes, adjust required fields
-        // e.g., large orgs require taxId
-      },
-    },
-  },
-);
+const orgStep = personalStep.extend({
+  orgName: valueSchema(type('string > 0'), ''),
+  orgSize: valueSchema(type("'small' | 'medium' | 'large'"), 'small'),
+  taxId: valueSchema(
+    type('string').pipe((v) => {
+      if (v && v.length < 9) return type.errors('Invalid tax ID');
+      return v;
+    }),
+    '',
+  ),
+});
 ```
 
 `orgStep` has all of `personalStep`'s fields (firstName, lastName, phone) plus
-the org-specific ones. Lifecycle hooks from both are merged — `personalStep`'s
-onChange runs first, then `orgStep`'s.
-
-## allowUndeclaredProperties for dynamic forms
-
-The preferences step has a fixed set of known fields, but a CMS might add more
-at runtime:
-
-```ts
-// API returns extra preference fields
-const extraPrefs = await fetch('/api/user-prefs-schema');
-// { newsletter: true, betaFeatures: false, language: "en" }
-
-const prefsInstance = prefsStep.create({
-  theme: userTheme,
-  notifications: true,
-  // Dynamic fields from API — preserved as passthrough
-  ...extraPrefs,
-});
-
-// Read them back
-prefsInstance.get('newsletter'); // true
-prefsInstance.get('language'); // "en"
-```
-
-The known fields (`theme`, `notifications`) are reactive — changing them
-triggers `onChange` and re-renders. The dynamic fields are preserved and
-accessible but non-reactive. This is the sweet spot for forms where the schema
-comes from an external source.
+the org-specific ones. `$getIsValid()` checks all fields from both the base and
+extension. See [Extending Scopes](../docs/extending.md) for more.
 
 ## Submission
 
 ```ts
 async function submit() {
+  const form = wizardForm.get()!;
+
+  // Walk the wizard + all step refs in one call
+  if (!form.$getIsValid({ deep: true })) return;
+
   await fetch('/api/register', {
     method: 'POST',
-    body: JSON.stringify(wizardForm.get()!.getSnapshot()),
+    body: JSON.stringify(form.$getSnapshot()),
   });
 }
 ```
@@ -312,14 +246,13 @@ async function submit() {
 
 **Zustand**: A multi-step form either lives in one giant store (every field in a
 flat namespace) or multiple stores that can't easily share validation state. No
-`extend()` — adding an org step means duplicating the personal step's logic.
+`extend()` means adding an org step duplicates the personal step's logic.
 
 **Jotai**: Each field is an atom. Cross-field validation (password ===
 confirmPassword) requires derived atoms that watch multiple sources. There's no
-"step" as a unit — it's atoms all the way down. Dynamic fields from an API?
-You'd need `atomFamily` with dynamic keys and manual cleanup.
+"step" as a unit. Dynamic fields from an API require `atomFamily` with dynamic
+keys and manual cleanup.
 
-**ValUse**: Each field is a scope. Each step is a scope of field-scopes. The
-wizard is a scope of step-refs. Validation lives in `onChange`. Dynamic fields
-use `allowUndeclaredProperties`. Step variants use `extend()`. It's scopes all
-the way down — and every level has the same API.
+**ValUse**: Each field is a `valueSchema` with automatic validation. Each step
+is a scope. The wizard is a scope of step-refs. Cross-field rules use
+`validate`. Step variants use `extend()`. `$getIsValid()` aggregates everything.

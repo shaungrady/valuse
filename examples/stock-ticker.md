@@ -2,7 +2,9 @@
 
 A live stock price table where each row subscribes to real-time data only while
 visible. This showcases async derivations with WebSocket streams and the
-transitive lifecycle that activates them.
+transitive lifecycle that activates them. See
+[Async Derivations](../docs/async-derivations.md) and
+[Lifecycle](../docs/lifecycle.md) for the underlying APIs.
 
 ## The problem
 
@@ -33,9 +35,9 @@ const stock = valueScope({
   // Async derivation — opens a WebSocket, pushes price updates via set().
   // When symbol changes, the previous WebSocket is cleaned up and a new one opens.
   // When the instance is destroyed, onCleanup fires automatically.
-  price: async ({ use, set, onCleanup }) => {
-    const sym = use('symbol');
-    const ws = new WebSocket(`wss://feed.example.com/stocks/${sym}`);
+  price: async ({ scope, set, onCleanup }) => {
+    const symbol = scope.symbol.use();
+    const ws = new WebSocket(`wss://feed.example.com/stocks/${symbol}`);
     onCleanup(() => ws.close());
 
     ws.onmessage = (event) => {
@@ -46,20 +48,21 @@ const stock = valueScope({
     // No return — value comes from set() via WebSocket messages
   },
 
-  // Sync derivations — don't know or care that price is async.
+  // Sync derivations don't know or care that price is async.
   // They see number | undefined and recompute when price resolves.
-  change: ({ use }) => {
-    const price = use('price');
-    return price != null ? price - use('prevClose') : 0;
+  change: ({ scope }) => {
+    const price = scope.price.use();
+    return price != null ? price - scope.prevClose.use() : 0;
   },
-  changePercent: ({ use }) => {
-    const prev = use('prevClose');
-    const price = use('price');
-    if (!prev || price == null) return 0;
-    return ((price - prev) / prev) * 100;
+  changePercent: ({ scope }) => {
+    const prevClose = scope.prevClose.use();
+    const price = scope.price.use();
+    if (!prevClose || price == null) return 0;
+    return ((price - prevClose) / prevClose) * 100;
   },
-  isUp: ({ use }) => use('change') >= 0,
-  isTrading: ({ use }) => use('isMarketOpen') && use('price') != null,
+  isUp: ({ scope }) => scope.change.use() >= 0,
+  isTrading: ({ scope }) =>
+    scope.isMarketOpen.use() && scope.price.use() != null,
 });
 
 // The watchlist
@@ -70,7 +73,7 @@ const watchlist = stock.createMap();
 
 | Event                                                        | What happens                                            |
 | ------------------------------------------------------------ | ------------------------------------------------------- |
-| Component mounts, calls `watchlist.use("AAPL")`              | Async derivation runs, WebSocket opens                  |
+| Component mounts, subscribes to AAPL fields                  | Async derivation runs, WebSocket opens                  |
 | Second component also subscribes to AAPL                     | Nothing — already connected                             |
 | First component unmounts                                     | Nothing — still one subscriber                          |
 | Last component unmounts                                      | `onCleanup` fires, WebSocket closes                     |
@@ -82,7 +85,8 @@ The view doesn't know about WebSockets. The model doesn't know about React.
 ## React components
 
 ```tsx
-import { value, valueScope } from 'valuse/react';
+import 'valuse/react';
+import { value } from 'valuse';
 
 function WatchlistTable() {
   const symbols = watchlist.useKeys();
@@ -106,22 +110,38 @@ function WatchlistTable() {
 }
 
 function StockRow({ symbol }: { symbol: string }) {
-  // This subscription activates the async derivation via transitive lifecycle
-  const [getStock] = watchlist.use(symbol);
+  // Subscribing to fields activates the async derivation via transitive lifecycle
+  const stock = watchlist.get(symbol)!;
 
-  const price = getStock('price');
-  const change = getStock('change');
-  const pct = getStock('changePercent');
+  // useAsync() returns [value, AsyncState] — status covers
+  // 'unset' | 'setting' | 'set' | 'error', so we can show a connecting
+  // spinner until the first tick arrives and a badge if the feed dies.
+  const [price, priceState] = stock.price.useAsync();
+  const [change] = stock.change.use();
+  const [changePercent] = stock.changePercent.use();
+  const [isUp] = stock.isUp.use();
+
+  const isConnecting = priceState.status === 'setting' && !priceState.hasValue;
+  const isErrored = priceState.status === 'error';
 
   return (
     <tr>
-      <td>{symbol}</td>
-      <td>{price != null ? `$${price.toFixed(2)}` : '—'}</td>
-      <td style={{ color: getStock('isUp') ? 'green' : 'red' }}>
+      <td>
+        {symbol}
+        {isErrored && <span className="badge error">reconnecting…</span>}
+      </td>
+      <td>
+        {isConnecting ?
+          <Spinner />
+        : price != null ?
+          `$${price.toFixed(2)}`
+        : '—'}
+      </td>
+      <td style={{ color: isUp ? 'green' : 'red' }}>
         {price != null ?
           <>
             {change >= 0 ? '+' : ''}
-            {change.toFixed(2)} ({pct.toFixed(2)}%)
+            {change.toFixed(2)} ({changePercent.toFixed(2)}%)
           </>
         : '—'}
       </td>

@@ -1,330 +1,166 @@
-import {
-	ScopeInstance,
-	type ScopeConfig,
-	type ScopeEntry,
-	type ValueKeys,
-	type GetType,
-	type SetValue,
-	type CreateInput,
-	type SetInput,
-} from './value-scope.js';
-import { getReactHooks, versionedAdapter } from './react-bridge.js';
+import { ScopeTemplate } from './value-scope.js';
+import { signal, type Signal } from './signal.js';
 import type { Unsubscribe } from './types.js';
+import type { ScopeInstance, ValueInputOf } from './scope-types.js';
+import { getReactHooks, versionedAdapter } from './react-bridge.js';
 
 /**
  * A keyed collection of scope instances sharing the same definition.
  *
- * Created via {@link ScopeTemplate.createMap | template.createMap()}. Each entry
- * is an independent reactive {@link ScopeInstance}. The key list itself is
- * observable via {@link ScopeMap.subscribe | subscribe()} and
- * {@link ScopeMap.useKeys | useKeys()}.
+ * @remarks
+ * Each entry in a `ScopeMap` is an independent reactive scope instance created from
+ * the same template. The key list itself is observable, triggering updates when
+ * instances are added or removed.
  *
- * @typeParam Def - the scope definition record
- * @typeParam K - the key type (defaults to `string | number`)
+ * @typeParam K - the key type (defaults to `string | number`).
+ * @typeParam Def - the scope definition record.
  *
  * @example
  * ```ts
- * const people = person.createMap(new Map([
- *   ["alice", { first: "Alice", last: "Smith" }],
- *   ["bob", { first: "Bob", last: "Jones" }],
- * ]));
- * people.get("alice")?.get("full"); // "Alice Smith"
- * people.set("charlie", { first: "Charlie" });
- * people.keys(); // ["alice", "bob", "charlie"]
+ * const users = userTemplate.createMap<number>();
+ * users.set(1, { name: "Alice" });
+ * users.get(1)?.name.get(); // "Alice"
  * ```
- *
- * @see {@link ScopeTemplate.createMap} for creation
- * @see {@link ScopeInstance} for the per-instance API
  */
 export class ScopeMap<
-	Def extends Record<string, ScopeEntry>,
 	K extends string | number = string | number,
+	Def extends Record<string, unknown> = Record<string, unknown>,
 > {
-	private readonly _instances = new Map<K, ScopeInstance<Def>>();
-	private readonly _definition: Def;
-	private readonly _config: ScopeConfig<Def> | undefined;
-	private readonly _listeners = new Set<(keys: K[]) => void>();
+	readonly #template: ScopeTemplate<Def>;
+	readonly #instances = new Map<K, ScopeInstance<Def>>();
+	readonly #listeners = new Set<(keys: K[]) => void>();
+	readonly #keyVersion: Signal<number> = signal(0);
 
-	/**
-	 * @param definition - the scope definition record
-	 * @param config - optional lifecycle hooks for created instances
-	 */
-	constructor(definition: Def, config?: ScopeConfig<Def>) {
-		this._definition = definition;
-		this._config = config;
+	/** @internal */
+	constructor(template: ScopeTemplate<Def>) {
+		this.#template = template;
 	}
 
 	/**
 	 * Number of instances in the collection.
-	 * @returns the count of entries
+	 * @returns the count of entries.
 	 */
 	get size(): number {
-		return this._instances.size;
+		return this.#instances.size;
 	}
 
 	/**
 	 * Check if a key exists in the collection.
-	 * @param key - the key to check for
-	 * @returns `true` if the key exists
+	 * @param key - the key to check.
+	 * @returns `true` if the key exists.
 	 */
 	has(key: K): boolean {
-		return this._instances.has(key);
+		return this.#instances.has(key);
 	}
 
 	/**
 	 * Get a scope instance by key.
-	 * @param key - the key to look up
-	 * @returns the {@link ScopeInstance}, or `undefined` if not found
+	 * @param key - the key to look up.
+	 * @returns the {@link ScopeInstance}, or `undefined` if not found.
 	 */
 	get(key: K): ScopeInstance<Def> | undefined {
-		return this._instances.get(key);
+		return this.#instances.get(key);
 	}
 
 	/**
-	 * Add or update an instance. If the key exists, the provided fields
-	 * are set on the existing instance. If not, a new instance is created.
+	 * Add or update an instance.
 	 *
-	 * @param key - the key to add or update
-	 * @param data - optional initial/update values for writable fields
-	 * @returns the new or existing {@link ScopeInstance}
+	 * @remarks
+	 * If the key exists, updates the instance via `$setSnapshot`.
+	 * If not, creates a new instance from the template.
 	 *
-	 * @example
-	 * ```ts
-	 * people.set("alice", { first: "Alice", last: "Smith" });
-	 * people.set("alice", { first: "Alicia" }); // updates existing
-	 * ```
+	 * @param key - the key to add or update.
+	 * @param data - optional initial or update values for the instance.
+	 * @returns the new or existing {@link ScopeInstance}.
 	 */
-	set(key: K, data?: CreateInput<Def>): ScopeInstance<Def> {
-		const existing = this._instances.get(key);
+	set(key: K, data?: Partial<ValueInputOf<Def>>): ScopeInstance<Def> {
+		const existing = this.#instances.get(key);
 		if (existing) {
 			if (data) {
-				for (const [fieldKey, fieldValue] of Object.entries(data)) {
-					existing.set(fieldKey as never, fieldValue as never);
-				}
+				existing.$setSnapshot(data);
 			}
 			return existing;
 		}
 
-		const instance = new ScopeInstance(this._definition, data, this._config);
-		this._instances.set(key, instance);
-		this._notifyListeners();
+		const instance = this.#template.create(data);
+		this.#instances.set(key, instance);
+		this.#notifyListeners();
 		return instance;
 	}
 
 	/**
-	 * Remove an instance by key. Calls {@link ScopeInstance.destroy | destroy()} on it.
-	 * @param key - the key to remove
-	 * @returns `true` if the key was found and removed
+	 * Remove an instance from the collection.
+	 * Calls `$destroy()` on the instance before removing it.
+	 *
+	 * @param key - the key to remove.
+	 * @returns `true` if an instance was removed.
 	 */
 	delete(key: K): boolean {
-		const instance = this._instances.get(key);
+		const instance = this.#instances.get(key);
 		if (!instance) return false;
-		instance.destroy();
-		this._instances.delete(key);
-		this._notifyListeners();
+		instance.$destroy();
+		this.#instances.delete(key);
+		this.#notifyListeners();
 		return true;
 	}
 
 	/**
 	 * Return all keys as an array.
-	 * @returns an array of all keys in insertion order
+	 * @returns an array of all keys in the collection.
 	 */
 	keys(): K[] {
-		return [...this._instances.keys()];
+		return [...this.#instances.keys()];
 	}
 
 	/**
 	 * Return all instances as an array.
-	 * @returns an array of all {@link ScopeInstance}s
+	 * @returns an array of all {@link ScopeInstance}s in the collection.
 	 */
 	values(): ScopeInstance<Def>[] {
-		return [...this._instances.values()];
+		return [...this.#instances.values()];
 	}
 
 	/**
 	 * Return all entries as `[key, instance]` tuples.
-	 * @returns an array of `[K, ScopeInstance]` pairs
+	 * @returns an array of entries.
 	 */
 	entries(): [K, ScopeInstance<Def>][] {
-		return [...this._instances.entries()];
+		return [...this.#instances.entries()];
 	}
 
 	/**
-	 * Remove all instances. Calls {@link ScopeInstance.destroy | destroy()} on each one.
-	 * Notifies key-list subscribers.
+	 * Remove all instances from the collection.
+	 * Calls `$destroy()` on each instance.
 	 */
 	clear(): void {
-		for (const instance of this._instances.values()) {
-			instance.destroy();
+		for (const instance of this.#instances.values()) {
+			instance.$destroy();
 		}
-		this._instances.clear();
-		this._notifyListeners();
+		this.#instances.clear();
+		this.#notifyListeners();
 	}
 
 	/**
-	 * Listen for changes to a single field of an instance.
+	 * Subscribe to key-list changes (adding or removing instances).
 	 *
-	 * @param key - the instance key
-	 * @param field - the field name to subscribe to
-	 * @param fn - called with `(value, previousValue)` on each change
-	 * @returns an {@link Unsubscribe} function to stop listening
+	 * @remarks
+	 * This does not fire when individual fields within an instance change.
 	 *
-	 * @example
-	 * ```ts
-	 * const unsub = people.subscribe("alice", "email", (value, prev) => {
-	 *   console.log(`email: ${prev} → ${value}`);
-	 * });
-	 * ```
+	 * @param fn - callback called with the new list of keys.
+	 * @returns an {@link Unsubscribe} function.
 	 */
-	subscribe<F extends string & keyof Def>(
-		key: K,
-		field: F,
-		fn: (value: GetType<Def, F>, previousValue: GetType<Def, F>) => void,
-	): Unsubscribe;
-	/**
-	 * Listen for changes to the key list (add/remove).
-	 * Does not fire when individual instance fields change.
-	 *
-	 * @param fn - called with the full key list on each add/remove
-	 * @returns an {@link Unsubscribe} function to stop listening
-	 *
-	 * @example
-	 * ```ts
-	 * const unsub = people.subscribe((keys) => console.log(keys));
-	 * people.set("dave", { first: "Dave" }); // logs ["alice", "bob", "dave"]
-	 * unsub();
-	 * ```
-	 */
-	subscribe(fn: (keys: K[]) => void): Unsubscribe;
-	subscribe<F extends string & keyof Def>(
-		keyOrFn: K | ((keys: K[]) => void),
-		field?: F,
-		fn?: (value: GetType<Def, F>, previousValue: GetType<Def, F>) => void,
-	): Unsubscribe {
-		// Per-field delegation
-		if (typeof keyOrFn !== 'function') {
-			const instance = this._instances.get(keyOrFn);
-			if (!instance) return () => {};
-			return instance.subscribe(
-				field as string & keyof Def,
-				fn as (
-					value: GetType<Def, string & keyof Def>,
-					previousValue: GetType<Def, string & keyof Def>,
-				) => void,
-			);
-		}
-
-		// Key-list subscription
-		const listener = keyOrFn as (keys: K[]) => void;
-		this._listeners.add(listener);
+	subscribe(fn: (keys: K[]) => void): Unsubscribe {
+		this.#listeners.add(fn);
 		return () => {
-			this._listeners.delete(listener);
+			this.#listeners.delete(fn);
 		};
 	}
 
 	/**
-	 * React hook — whole instance. Returns `[get, set]` for the instance,
-	 * subscribing to all of its fields.
-	 *
-	 * @remarks
-	 * Requires `valuse/react` to be imported. Outside React, returns a non-reactive snapshot.
-	 *
-	 * @param key - the key of the instance to subscribe to
-	 * @returns a `[get, set]` tuple with typed accessors
-	 *
-	 * @example
-	 * ```tsx
-	 * const [get, set] = people.use("alice");
-	 * return <span>{get("full")}</span>;
-	 * ```
-	 */
-	use(key: K): [
-		<F extends string & keyof Def>(field: F) => GetType<Def, F>,
-		{
-			<F extends string & ValueKeys<Def>>(
-				field: F,
-				value: SetValue<Def, F>,
-			): void;
-			(values: SetInput<Def>): void;
-		},
-	];
-	/**
-	 * React hook — single writable field of an instance. Returns `[value, setter]`.
-	 * Only re-renders when this specific field changes.
-	 *
-	 * @param key - the key of the instance
-	 * @param field - the value field to subscribe to
-	 * @returns a `[value, setter]` tuple
-	 *
-	 * @example
-	 * ```tsx
-	 * const [first, setFirst] = people.use("alice", "first");
-	 * ```
-	 */
-	use<F extends string & ValueKeys<Def>>(
-		key: K,
-		field: F,
-	): [GetType<Def, F>, (value: SetValue<Def, F>) => void];
-	/**
-	 * React hook — single read-only field of an instance (derivation or ref).
-	 * Returns `[value]`. Only re-renders when this specific field changes.
-	 *
-	 * @param key - the key of the instance
-	 * @param field - the derivation or ref field to subscribe to
-	 * @returns a `[value]` tuple
-	 *
-	 * @example
-	 * ```tsx
-	 * const [fullName] = people.use("alice", "full");
-	 * ```
-	 */
-	use<F extends string & keyof Def>(key: K, field: F): [GetType<Def, F>];
-	use(key: K, field?: string): unknown {
-		const instance = this._instances.get(key);
-
-		if (field !== undefined) {
-			// Per-field subscription — delegate to the instance's per-field use()
-			return instance?.use(field as never) ?? [undefined];
-		}
-
-		// Whole-instance subscription
-		const hooks = getReactHooks();
-		if (hooks && instance) {
-			const adapter = versionedAdapter(instance, (onChange) =>
-				instance.subscribe(() => {
-					onChange();
-				}),
-			);
-			hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
-		}
-
-		return [
-			(fieldKey: string) => instance?.get(fieldKey as never),
-			(keyOrValues: string | Record<string, unknown>, fieldValue?: unknown) => {
-				if (typeof keyOrValues === 'object') {
-					instance?.set(keyOrValues as SetInput<Def>);
-				} else {
-					instance?.set(keyOrValues as never, fieldValue as never);
-				}
-			},
-		];
-	}
-
-	/**
 	 * React hook. Returns the current list of keys.
-	 * Re-renders on add/remove, not on individual instance field changes.
+	 * Re-renders the component when instances are added or removed.
 	 *
-	 * @remarks
-	 * Requires `valuse/react` to be imported.
-	 *
-	 * @returns an array of all keys
-	 *
-	 * @example
-	 * ```tsx
-	 * const keys = people.useKeys();
-	 * // Re-renders when an instance is added or removed
-	 * return keys.map((k) => <PersonRow key={k} id={k} />);
-	 * ```
+	 * @returns an array of keys.
 	 */
 	useKeys(): K[] {
 		const hooks = getReactHooks();
@@ -339,10 +175,20 @@ export class ScopeMap<
 		return this.keys();
 	}
 
-	/** @internal */
-	private _notifyListeners(): void {
+	/**
+	 * Register a dependency on the key list for the enclosing Preact computed.
+	 * Used by the derivation-scope ref wrapper so `scope.<mapRef>.use()` inside
+	 * a sync derivation re-runs when keys are added, removed, or cleared.
+	 * @internal
+	 */
+	_trackKeys(): void {
+		void this.#keyVersion.value;
+	}
+
+	#notifyListeners(): void {
+		this.#keyVersion.value++;
 		const keys = this.keys();
-		for (const listener of this._listeners) {
+		for (const listener of this.#listeners) {
 			listener(keys);
 		}
 	}

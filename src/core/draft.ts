@@ -13,81 +13,65 @@ export function draftSet<T>(
 	source: Set<T>,
 	mutator: (draft: Set<T>) => void,
 ): Set<T> {
-	const added: T[] = [];
-	const deleted: T[] = [];
+	const added = new Set<T>();
+	const deleted = new Set<T>();
+
+	function* draftValues(): IterableIterator<T> {
+		for (const value of source) {
+			if (!deleted.has(value)) yield value;
+		}
+		for (const value of added) {
+			yield value;
+		}
+	}
 
 	const draft: Set<T> = {
-		[Symbol.iterator]: () => source[Symbol.iterator](),
+		[Symbol.iterator]: () => draftValues(),
 		[Symbol.toStringTag]: 'Set',
 		get size() {
-			return source.size + added.length - deleted.length;
+			return source.size + added.size - deleted.size;
 		},
-		has: (v: T) => (added.includes(v) || source.has(v)) && !deleted.includes(v),
-		add(v: T) {
-			if (!source.has(v) && !added.includes(v)) {
-				added.push(v);
-			}
+		has: (value: T) =>
+			(added.has(value) || source.has(value)) && !deleted.has(value),
+		add(value: T) {
+			if (!source.has(value)) added.add(value);
+			deleted.delete(value);
 			return draft;
 		},
-		delete(v: T) {
-			if (source.has(v) && !deleted.includes(v)) {
-				deleted.push(v);
+		delete(value: T) {
+			if (added.has(value)) {
+				added.delete(value);
+				return true;
+			}
+			if (source.has(value) && !deleted.has(value)) {
+				deleted.add(value);
 				return true;
 			}
 			return false;
 		},
 		clear() {
-			for (const v of source) {
-				if (!deleted.includes(v)) {
-					deleted.push(v);
-				}
-			}
-			added.length = 0;
+			for (const value of source) deleted.add(value);
+			added.clear();
 		},
 		forEach: (fn: (value: T, key: T, set: Set<T>) => void) => {
-			for (const v of source) {
-				if (!deleted.includes(v)) fn(v, v, draft);
-			}
-			for (const v of added) {
-				fn(v, v, draft);
-			}
+			for (const value of draftValues()) fn(value, value, draft);
 		},
-		keys: () => draft.values(),
-		values: () => {
-			const result: T[] = [];
-			for (const v of source) {
-				if (!deleted.includes(v)) result.push(v);
-			}
-			for (const v of added) {
-				result.push(v);
-			}
-			return result[Symbol.iterator]();
-		},
-		entries: () => {
-			const result: [T, T][] = [];
-			for (const v of source) {
-				if (!deleted.includes(v)) result.push([v, v]);
-			}
-			for (const v of added) {
-				result.push([v, v]);
-			}
-			return result[Symbol.iterator]();
+		keys: () => draftValues(),
+		values: () => draftValues(),
+		entries: function* () {
+			for (const value of draftValues()) yield [value, value] as [T, T];
 		},
 	} as Set<T>;
 
 	mutator(draft);
 
-	if (added.length === 0 && deleted.length === 0) {
+	if (added.size === 0 && deleted.size === 0) {
 		return source;
 	}
 
 	const result = new Set(source);
-	for (const v of deleted) {
-		result.delete(v);
-	}
-	for (const v of added) {
-		result.add(v);
-	}
+	for (const value of deleted) result.delete(value);
+	for (const value of added) result.add(value);
 	return result;
 }
 
@@ -109,15 +93,24 @@ export function draftMap<K, V>(
 	const pendingPuts = new Map<K, V>();
 	const pendingDeletes = new Set<K>();
 
+	function* draftEntries(): IterableIterator<[K, V]> {
+		for (const [key, value] of source) {
+			if (pendingDeletes.has(key)) continue;
+			yield [key, pendingPuts.has(key) ? (pendingPuts.get(key) as V) : value];
+		}
+		for (const [key, value] of pendingPuts) {
+			if (!source.has(key)) yield [key, value];
+		}
+	}
+
 	const draft: Map<K, V> = {
-		[Symbol.iterator]: () => draft.entries(),
+		[Symbol.iterator]: () => draftEntries(),
 		[Symbol.toStringTag]: 'Map',
 		get size() {
-			let count = source.size;
+			let count = source.size - pendingDeletes.size;
 			for (const key of pendingPuts.keys()) {
 				if (!source.has(key)) count++;
 			}
-			count -= pendingDeletes.size;
 			return count;
 		},
 		has: (key: K) =>
@@ -142,51 +135,18 @@ export function draftMap<K, V>(
 		},
 		clear() {
 			pendingPuts.clear();
-			for (const key of source.keys()) {
-				pendingDeletes.add(key);
-			}
+			for (const key of source.keys()) pendingDeletes.add(key);
 		},
 		forEach: (fn: (value: V, key: K, map: Map<K, V>) => void) => {
-			for (const [key, value] of source) {
-				if (!pendingDeletes.has(key))
-					fn(pendingPuts.get(key) ?? value, key, draft);
-			}
-			for (const [key, value] of pendingPuts) {
-				if (!source.has(key)) fn(value, key, draft);
-			}
+			for (const [key, value] of draftEntries()) fn(value, key, draft);
 		},
-		keys: () => {
-			const result: K[] = [];
-			for (const key of source.keys()) {
-				if (!pendingDeletes.has(key)) result.push(key);
-			}
-			for (const key of pendingPuts.keys()) {
-				if (!source.has(key)) result.push(key);
-			}
-			return result[Symbol.iterator]();
+		keys: function* () {
+			for (const [key] of draftEntries()) yield key;
 		},
-		values: () => {
-			const result: V[] = [];
-			for (const [key, value] of source) {
-				if (!pendingDeletes.has(key))
-					result.push(pendingPuts.get(key) ?? value);
-			}
-			for (const [key, value] of pendingPuts) {
-				if (!source.has(key)) result.push(value);
-			}
-			return result[Symbol.iterator]();
+		values: function* () {
+			for (const [, value] of draftEntries()) yield value;
 		},
-		entries: () => {
-			const result: [K, V][] = [];
-			for (const [key, value] of source) {
-				if (!pendingDeletes.has(key))
-					result.push([key, pendingPuts.get(key) ?? value]);
-			}
-			for (const [key, value] of pendingPuts) {
-				if (!source.has(key)) result.push([key, value]);
-			}
-			return result[Symbol.iterator]();
-		},
+		entries: () => draftEntries(),
 	} as Map<K, V>;
 
 	mutator(draft);
@@ -196,11 +156,7 @@ export function draftMap<K, V>(
 	}
 
 	const result = new Map(source);
-	for (const key of pendingDeletes) {
-		result.delete(key);
-	}
-	for (const [key, value] of pendingPuts) {
-		result.set(key, value);
-	}
+	for (const key of pendingDeletes) result.delete(key);
+	for (const [key, value] of pendingPuts) result.set(key, value);
 	return result;
 }

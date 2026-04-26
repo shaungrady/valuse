@@ -1,17 +1,19 @@
 /**
  * Metadata for an async derivation's current state.
  *
- * @typeParam T - the resolved value type
+ * @typeParam T - the resolved value type.
  *
  * @example
  * ```ts
- * const state = inst.getAsync('user');
- * if (state.status === 'set') console.log(state.value);
- * if (state.status === 'error') console.error(state.error);
+ * const state = instance.userData.getAsync();
+ * if (state.status === 'set') {
+ *   console.log('Value:', state.value);
+ * } else if (state.status === 'setting') {
+ *   console.log('Loading...');
+ * } else if (state.status === 'error') {
+ *   console.error('Failed:', state.error);
+ * }
  * ```
- *
- * @see {@link ScopeInstance.getAsync} for non-tracking access
- * @see {@link ScopeInstance.useAsync} for reactive (React) access
  */
 export interface AsyncState<T> {
 	/** The current resolved value, or `undefined` if none yet. */
@@ -38,11 +40,6 @@ export function initialAsyncState<T>(): AsyncState<T> {
 		status: 'unset',
 		error: undefined,
 	};
-}
-
-/** Wrap a sync value as a fully-resolved async state. @internal */
-export function syncAsyncState<T>(value: T): AsyncState<T> {
-	return { value, hasValue: true, status: 'set', error: undefined };
 }
 
 /** Transition to 'setting' while preserving the previous value. @internal */

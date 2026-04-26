@@ -1,83 +1,47 @@
 import { expectTypeOf } from 'expect-type';
-import { valueMap } from '../../index.js';
-import type { Unsubscribe } from '../../index.js';
+import { valueMap, ValueMap } from '../../core/value-map.js';
+import type { Unsubscribe } from '../../core/types.js';
 
-// --- valueMap<K, V>() creates an empty map ---
+// ── Construction ────────────────────────────────────────────────────
 
-const empty = valueMap<string, number>();
-expectTypeOf(empty.get()).toEqualTypeOf<Map<string, number>>();
+const scores = valueMap<string, number>([['alice', 95]]);
+expectTypeOf(scores).toEqualTypeOf<ValueMap<string, number>>();
 
-// --- valueMap<K, V>(entries) with initial entries ---
+const empty = valueMap<string, boolean>();
+expectTypeOf(empty).toEqualTypeOf<ValueMap<string, boolean>>();
 
-const withInit = valueMap<string, number>([
-	['alice', 95],
-	['bob', 82],
-]);
-expectTypeOf(withInit.get()).toEqualTypeOf<Map<string, number>>();
+// ── get() ───────────────────────────────────────────────────────────
 
-// --- .get(key) returns V | undefined ---
+// Whole map
+expectTypeOf(scores.get()).toEqualTypeOf<Map<string, number>>();
 
-expectTypeOf(withInit.get('alice')).toEqualTypeOf<number | undefined>();
+// Single key
+expectTypeOf(scores.get('alice')).toEqualTypeOf<number | undefined>();
 
-// --- .set() accepts a new Map (replacement) ---
+// ── set() ───────────────────────────────────────────────────────────
 
-expectTypeOf(withInit.set).toBeCallableWith(new Map([['alice', 100]]));
+// Replace the whole map
+scores.set(new Map([['bob', 100]]));
 
-// --- .set() accepts a draft callback ---
-
-expectTypeOf(withInit.set).toBeCallableWith(
-	(_draft: Map<string, number>) => {},
-);
-
-// --- .pipe() preserves type and is chainable ---
-
-const piped = valueMap<string, number>().pipe(
-	(m) => new Map([...m].map(([k, v]) => [k, Math.max(0, v)])),
-);
-expectTypeOf(piped.get()).toEqualTypeOf<Map<string, number>>();
-
-// @ts-expect-error - pipe transform must return Map<K, V>
-valueMap<string, number>().pipe((_m) => [1, 2, 3]);
-
-// --- .compareUsing() preserves type and is chainable ---
-
-const compared = valueMap<string, number>().compareUsing(
-	(a, b) => a.size === b.size,
-);
-expectTypeOf(compared.get()).toEqualTypeOf<Map<string, number>>();
-
-// --- .subscribe() returns unsubscribe ---
-
-const unsub = withInit.subscribe((_v) => {});
-expectTypeOf(unsub).toEqualTypeOf<Unsubscribe>();
-
-withInit.subscribe((v) => {
-	expectTypeOf(v).toEqualTypeOf<Map<string, number>>();
+// Draft callback
+scores.set((draft) => {
+	expectTypeOf(draft).toEqualTypeOf<Map<string, number>>();
+	draft.set('carol', 88);
 });
 
-// --- .use() returns [Map<K,V>, setter] ---
+// @ts-expect-error — wrong value type
+scores.set(new Map([['bob', 'high']]));
 
-const [current, set] = withInit.use();
-expectTypeOf(current).toEqualTypeOf<Map<string, number>>();
-expectTypeOf(set).toBeCallableWith(new Map([['alice', 100]]));
-expectTypeOf(set).toBeCallableWith((_draft: Map<string, number>) => {});
+// ── delete / has ────────────────────────────────────────────────────
 
-// --- .use(key) returns [value, setter] tuple ---
+expectTypeOf(scores.delete('alice')).toEqualTypeOf<boolean>();
+expectTypeOf(scores.has('alice')).toEqualTypeOf<boolean>();
 
-const [aliceScore, setAlice] = withInit.use('alice');
-expectTypeOf(aliceScore).toEqualTypeOf<number | undefined>();
-expectTypeOf(setAlice).toBeCallableWith(100);
+// ── keys / values / entries ─────────────────────────────────────────
 
-// --- .useKeys() returns array of keys ---
+expectTypeOf(scores.keys()).toEqualTypeOf<string[]>();
 
-const keys = withInit.useKeys();
-expectTypeOf(keys).toEqualTypeOf<string[]>();
+// ── subscribe ───────────────────────────────────────────────────────
 
-// --- Map-like methods ---
-
-expectTypeOf(withInit.size).toEqualTypeOf<number>();
-expectTypeOf(withInit.has('alice')).toEqualTypeOf<boolean>();
-expectTypeOf(withInit.keys()).toEqualTypeOf<string[]>();
-expectTypeOf(withInit.values()).toEqualTypeOf<number[]>();
-expectTypeOf(withInit.entries()).toEqualTypeOf<[string, number][]>();
-expectTypeOf(withInit.delete('alice')).toEqualTypeOf<boolean>();
+const unsub = scores.subscribe(() => {});
+expectTypeOf(unsub).toEqualTypeOf<Unsubscribe>();

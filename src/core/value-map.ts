@@ -1,71 +1,57 @@
 import { signal, effect, type Signal } from './signal.js';
 import { draftMap } from './draft.js';
-import { getReactHooks, stableSubscribe } from './react-bridge.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
-
-// Per-key subscribe cache: WeakMap<ValueMap, Map<key, SubscribeFn>>
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const perKeySubscribeCache = new WeakMap<object, Map<any, any>>();
-
-/**
- * Setter for a {@link ValueMap}. Accepts a new Map or a draft mutate callback.
- *
- * @example
- * ```ts
- * const [scores, setScores] = scores.use();
- * setScores(new Map([["alice", 100]]));
- * setScores((draft) => draft.set("bob", 82));
- * ```
- */
-export type ValueMapSetter<K, V> = (
-	value: Map<K, V> | ((draft: Map<K, V>) => void),
-) => void;
+import {
+	getReactHooks,
+	stableSubscribe,
+	versionedAdapter,
+	perKeySubscribe,
+} from './react-bridge.js';
 
 /**
  * Reactive wrapper around a `Map<K, V>`.
  *
- * Supports draft-based mutations, per-key subscriptions, transforms,
- * custom comparison, and an optional React hook via `.use()`.
+ * @remarks
+ * `ValueMap` provides a reactive interface for a collection of key-value pairs.
+ * It supports draft-based mutations, transforms, custom comparison, and both
+ * whole-map and per-key subscriptions.
  *
- * @typeParam K - the key type
- * @typeParam V - the value type
+ * @typeParam K - the key type.
+ * @typeParam V - the value type.
  *
  * @example
  * ```ts
- * const scores = valueMap<string, number>([["alice", 95]]);
- * scores.get("alice");                        // 95
- * scores.set((draft) => draft.set("bob", 82));
- * const [alice, setAlice] = scores.use("alice");
+ * const scores = valueMap([["alice", 95], ["bob", 87]]);
+ * scores.set(draft => draft.set("carol", 91));
+ * scores.get("carol"); // 91
  * ```
  *
- * @see {@link valueMap} factory function for creating instances
- * @see {@link Value} for scalar reactive state
- * @see {@link ValueSet} for reactive Sets
+ * @see {@link valueMap} factory function for creating instances.
  */
 export class ValueMap<K, V> {
-	private _signal: Signal<Map<K, V>>;
-	private readonly _transforms: Transform<Map<K, V>>[] = [];
-	private _comparator: Comparator<Map<K, V>> | undefined;
-	private readonly _disposers: (() => void)[] = [];
+	#signal: Signal<Map<K, V>>;
+	readonly #transforms: Transform<Map<K, V>>[] = [];
+	#comparator: Comparator<Map<K, V>> | undefined;
+	readonly #disposers = new Set<() => void>();
 
-	/** @param initial - the initial Map */
+	/** @internal */
 	constructor(initial: Map<K, V>) {
-		this._signal = signal(initial);
+		this.#signal = signal(initial);
 	}
 
 	/**
 	 * Read the entire map.
-	 * @returns the current Map
+	 * @returns the current `Map` instance.
 	 */
 	get(): Map<K, V>;
 	/**
 	 * Read a single key's value.
-	 * @param key - the key to look up
-	 * @returns the value, or `undefined` if not found
+	 * @param key - the key to look up.
+	 * @returns the value associated with the key, or `undefined` if not found.
 	 */
 	get(key: K): V | undefined;
 	get(key?: K): Map<K, V> | V | undefined {
-		const map = this._signal.value;
+		const map = this.#signal.value;
 		if (arguments.length === 0) return map;
 		return map.get(key as K);
 	}
@@ -73,180 +59,155 @@ export class ValueMap<K, V> {
 	/**
 	 * Replace the map, or mutate it via a draft callback.
 	 *
-	 * @remarks
-	 * Draft callbacks receive an Immer-style proxy. Mutations are recorded,
-	 * then applied to produce a new immutable Map. If nothing changed, the
-	 * original Map is kept (no notification).
-	 *
-	 * @param valueOrFn - a new Map, or a callback that mutates a draft
+	 * @param valueOrFn - a new `Map` instance, or a function that receives a draft
+	 * for in-place mutation.
 	 *
 	 * @example
 	 * ```ts
-	 * scores.set(new Map([["alice", 100]]));
-	 * scores.set((draft) => draft.set("alice", 100));
+	 * registry.set(new Map([["x", 10]]));
+	 * registry.set(draft => {
+	 *   draft.set("y", 20);
+	 *   draft.delete("x");
+	 * });
 	 * ```
 	 */
 	set(valueOrFn: Map<K, V> | ((draft: Map<K, V>) => void)): void {
-		const previous = this._signal.value;
-
+		const previous = this.#signal.value;
 		let next: Map<K, V>;
 		if (typeof valueOrFn === 'function') {
 			next = draftMap(previous, valueOrFn as (draft: Map<K, V>) => void);
 		} else {
 			next = valueOrFn;
 		}
-
-		next = this._applyTransforms(next);
-
+		next = this.#applyTransforms(next);
 		if (next === previous) return;
-		if (this._comparator && this._comparator(previous, next)) return;
-
-		this._signal.value = next;
+		if (this.#comparator && this.#comparator(previous, next)) return;
+		this.#signal.value = next;
 	}
 
 	/**
 	 * Delete a key from the map.
-	 * @param key - the key to remove
-	 * @returns `true` if the key was present and removed
+	 * @param key - the key to remove.
+	 * @returns `true` if the key was present.
 	 */
 	delete(key: K): boolean {
-		const previous = this._signal.value;
+		const previous = this.#signal.value;
 		if (!previous.has(key)) return false;
 		const next = new Map(previous);
 		next.delete(key);
-		this._signal.value = next;
+		this.#signal.value = next;
 		return true;
 	}
 
 	/**
 	 * Check if the map contains a key.
-	 * @param key - the key to check for
-	 * @returns `true` if the key exists
+	 * @param key - the key to check.
+	 * @returns `true` if the key exists.
 	 */
 	has(key: K): boolean {
-		return this._signal.value.has(key);
+		return this.#signal.value.has(key);
 	}
 
 	/** Number of entries in the map. */
 	get size(): number {
-		return this._signal.value.size;
+		return this.#signal.value.size;
 	}
 
 	/**
 	 * Return all keys as an array.
-	 * @returns an array of all keys
+	 * @returns the current key list.
 	 */
 	keys(): K[] {
-		return [...this._signal.value.keys()];
+		return [...this.#signal.value.keys()];
 	}
 
 	/**
 	 * Return all values as an array.
-	 * @returns an array of all values
+	 * @returns the current value list.
 	 */
 	values(): V[] {
-		return [...this._signal.value.values()];
+		return [...this.#signal.value.values()];
 	}
 
 	/**
-	 * Return all entries as an array of `[key, value]` tuples.
-	 * @returns an array of `[K, V]` pairs
+	 * Return all entries as `[key, value]` tuples.
+	 * @returns an array of entries.
 	 */
 	entries(): [K, V][] {
-		return [...this._signal.value.entries()];
+		return [...this.#signal.value.entries()];
 	}
 
-	/** Remove all entries from the map. */
+	/** Remove all entries. */
 	clear(): void {
-		this._signal.value = new Map();
+		this.#signal.value = new Map();
 	}
 
 	/**
-	 * Listen for changes. The callback fires on every update after subscription.
+	 * Subscribe to map changes.
 	 *
-	 * @param fn - called with the new Map on each change
-	 * @returns an {@link Unsubscribe} function to stop listening
-	 *
-	 * @example
-	 * ```ts
-	 * const unsub = scores.subscribe((map) => console.log(map.size));
-	 * scores.set((d) => d.set("charlie", 90));  // logs 3
-	 * unsub();
-	 * ```
+	 * @param fn - callback fired with the new and previous maps on each change.
+	 * @returns an {@link Unsubscribe} function.
 	 */
-	subscribe(fn: (value: Map<K, V>) => void): Unsubscribe {
+	subscribe(fn: (value: Map<K, V>, previous: Map<K, V>) => void): Unsubscribe {
 		let isFirstRun = true;
+		let previousValue = this.#signal.peek();
 		const dispose = effect(() => {
-			const currentValue = this._signal.value;
+			const currentValue = this.#signal.value;
 			if (isFirstRun) {
 				isFirstRun = false;
 				return;
 			}
-			fn(currentValue);
+			const prev = previousValue;
+			previousValue = currentValue;
+			fn(currentValue, prev);
 		});
-		this._disposers.push(dispose);
+		this.#disposers.add(dispose);
 		return () => {
 			dispose();
-			const index = this._disposers.indexOf(dispose);
-			if (index !== -1) this._disposers.splice(index, 1);
+			this.#disposers.delete(dispose);
 		};
 	}
 
 	/**
-	 * Add a transform that runs on every `.set()` call. Chainable.
-	 *
-	 * @param transform - a function that receives and returns a Map
-	 * @returns `this` for chaining
+	 * Add a transform that runs on every `set()` call.
+	 * @param transform - function that receives and returns a map.
+	 * @returns `this` for chaining.
 	 */
 	pipe(transform: Transform<Map<K, V>>): this {
-		this._transforms.push(transform);
-		this._signal.value = this._applyTransforms(this._signal.value);
+		this.#transforms.push(transform);
+		this.#signal.value = this.#applyTransforms(this.#signal.value);
 		return this;
 	}
 
 	/**
 	 * Override the default identity comparison. When the comparator returns
 	 * `true`, the update is skipped and subscribers are not notified.
-	 *
-	 * @param comparator - returns `true` to skip the update
-	 * @returns `this` for chaining
+	 * @param comparator - function that returns `true` if two maps are equal.
+	 * @returns `this` for chaining.
 	 */
 	compareUsing(comparator: Comparator<Map<K, V>>): this {
-		this._comparator = comparator;
+		this.#comparator = comparator;
 		return this;
 	}
 
 	/**
-	 * React hook for the whole map. Returns `[Map<K,V>, setter]`.
-	 * Re-renders the component on any change to the map.
-	 *
-	 * @remarks
-	 * Requires `valuse/react` to be imported. Outside React, returns a non-reactive snapshot.
-	 *
-	 * @returns a `[Map<K,V>, setter]` tuple
-	 *
-	 * @example
-	 * ```tsx
-	 * const [scores, setScores] = scores.use();
-	 * ```
+	 * React hook for the whole map. Returns `[map, setter]`.
+	 * Re-renders the component on any map change.
+	 * @returns a `[Map, setter]` tuple.
 	 */
-	use(): [Map<K, V>, ValueMapSetter<K, V>];
+	use(): [Map<K, V>, (value: Map<K, V> | ((draft: Map<K, V>) => void)) => void];
 	/**
 	 * React hook for a single key. Returns `[value, setter]`.
-	 * Only re-renders when this specific key's value changes.
-	 *
-	 * @param key - the key to subscribe to
-	 * @returns a `[V | undefined, setter]` tuple
-	 *
-	 * @example
-	 * ```tsx
-	 * const [aliceScore, setAlice] = scores.use("alice");
-	 * ```
+	 * Re-renders only when the value at `key` changes.
+	 * @param key - the key to track.
+	 * @returns a `[value, setter]` tuple.
 	 */
 	use(key: K): [V | undefined, (value: V) => void];
 	use(
 		key?: K,
-	): [Map<K, V>, ValueMapSetter<K, V>] | [V | undefined, (value: V) => void] {
+	):
+		| [Map<K, V>, (value: Map<K, V> | ((draft: Map<K, V>) => void)) => void]
+		| [V | undefined, (value: V) => void] {
 		const hooks = getReactHooks();
 		if (hooks) {
 			if (arguments.length === 0) {
@@ -265,31 +226,20 @@ export class ValueMap<K, V> {
 					},
 				];
 			}
-
-			// Per-key subscription: only notify React when this key's value changes
-			const targetKey = key as K;
-			let subscribersByKey = perKeySubscribeCache.get(this) as
-				| Map<K, (onChange: () => void) => () => void>
-				| undefined;
-			if (!subscribersByKey) {
-				subscribersByKey = new Map();
-				perKeySubscribeCache.set(this, subscribersByKey);
-			}
-			let keySubscribeFn = subscribersByKey.get(targetKey);
-			if (!keySubscribeFn) {
-				keySubscribeFn = (onChange: () => void) => {
-					let previousValue = this.get(targetKey);
-					return this.subscribe(() => {
-						const currentValue = this.get(targetKey);
-						if (currentValue !== previousValue) {
-							previousValue = currentValue;
-							onChange();
-						}
-					});
-				};
-				subscribersByKey.set(targetKey, keySubscribeFn);
-			}
-			hooks.useSyncExternalStore(keySubscribeFn, () => this.get(targetKey));
+			// Per-key: only re-render when this specific key's value changes
+			const k = key as K;
+			const subscribe = perKeySubscribe(this, k, (onChange) =>
+				this.subscribe((current, previous) => {
+					if (current.get(k) !== previous.get(k)) onChange();
+				}),
+			);
+			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get(k));
+			return [
+				snapshot,
+				(newValue: V) => {
+					this.set((draft) => draft.set(k, newValue));
+				},
+			];
 		}
 		if (arguments.length === 0) {
 			return [
@@ -302,53 +252,39 @@ export class ValueMap<K, V> {
 		return [
 			this.get(key as K),
 			(newValue: V) => {
-				this.set((draft) => {
-					draft.set(key as K, newValue);
-				});
+				this.set((draft) => draft.set(key as K, newValue));
 			},
 		];
 	}
 
 	/**
 	 * React hook. Returns the current list of keys.
-	 * Re-renders when entries are added or removed.
-	 *
-	 * @remarks
-	 * Requires `valuse/react` to be imported.
-	 *
-	 * @returns an array of all keys
-	 *
-	 * @example
-	 * ```tsx
-	 * const keys = scores.useKeys();
-	 * // Re-renders when a key is added or removed, but not when a value changes
-	 * ```
+	 * Re-renders when keys are added or removed.
+	 * @returns an array of keys.
 	 */
 	useKeys(): K[] {
 		const hooks = getReactHooks();
 		if (hooks) {
-			const subscribe = stableSubscribe(this, (onChange) =>
+			// keys() returns a new array each call; use versionedAdapter so the
+			// snapshot (a version number) is referentially stable between changes.
+			const adapter = versionedAdapter(this, (onChange) =>
 				this.subscribe(() => {
 					onChange();
 				}),
 			);
-			hooks.useSyncExternalStore(subscribe, () => this.get());
+			hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
 		}
 		return this.keys();
 	}
 
-	/**
-	 * Dispose all active subscriptions created via `.subscribe()`.
-	 * The map remains readable but will no longer notify subscribers.
-	 */
+	/** Dispose all subscriptions. */
 	destroy(): void {
-		for (const dispose of this._disposers) dispose();
-		this._disposers.length = 0;
+		for (const dispose of this.#disposers) dispose();
+		this.#disposers.clear();
 	}
 
-	/** @internal */
-	private _applyTransforms(value: Map<K, V>): Map<K, V> {
-		return this._transforms.reduce(
+	#applyTransforms(value: Map<K, V>): Map<K, V> {
+		return this.#transforms.reduce(
 			(current, transform) => transform(current),
 			value,
 		);
@@ -356,18 +292,12 @@ export class ValueMap<K, V> {
 }
 
 /**
- * Create a reactive map, optionally from entries or an existing Map.
+ * Create a reactive map.
  *
- * @typeParam K - the key type
- * @typeParam V - the value type
- * @param entries - optional initial entries as `[K, V][]` or a `Map<K, V>`
- * @returns a new {@link ValueMap}
- *
- * @example
- * ```ts
- * const scores = valueMap<string, number>([["alice", 95], ["bob", 82]]);
- * const empty = valueMap<string, number>();
- * ```
+ * @param entries - optional initial entries as an array of tuples or a Map.
+ * @typeParam K - the key type.
+ * @typeParam V - the value type.
+ * @returns a new {@link ValueMap} instance.
  */
 export function valueMap<K, V>(entries?: [K, V][] | Map<K, V>): ValueMap<K, V> {
 	return new ValueMap(new Map(entries));

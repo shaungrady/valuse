@@ -15,16 +15,21 @@ const todo = valueScope(
     completed: value<boolean>(false),
     createdAt: value<number>(0),
 
-    label: ({ use }) =>
-      use('completed') ? `[x] ${use('text')}` : `[ ] ${use('text')}`,
+    label: ({ scope }) =>
+      scope.completed.use() ?
+        `[x] ${scope.text.use()}`
+      : `[ ] ${scope.text.use()}`,
   },
   {
-    onInit: ({ set, get }) => {
+    onCreate: ({ scope }) => {
       // Only set if not already provided (e.g., hydrated from localStorage)
-      if (!get('createdAt')) set('createdAt', Date.now());
+      if (!scope.createdAt.get()) scope.createdAt.set(Date.now());
     },
-    onChange: ({ get, getSnapshot }) => {
-      localStorage.setItem(`todo:${get('id')}`, JSON.stringify(getSnapshot()));
+    onChange: ({ scope }) => {
+      localStorage.setItem(
+        `todo:${scope.id.get()}`,
+        JSON.stringify(scope.$getSnapshot()),
+      );
     },
   },
 );
@@ -49,10 +54,15 @@ updates the existing one if it does. No `addTodo` action needed.
 ## React components
 
 ```tsx
-import { value, valueScope } from 'valuse/react';
+import { value, valueScope } from 'valuse';
+import { pipeEnum } from 'valuse/utils';
 
-// Filter lives outside the collection — it's app-level state
-const filter = value<'all' | 'active' | 'completed'>('all');
+// Filter lives outside the collection, it's app-level state.
+// pipeEnum narrows to the allowed set and falls back to the first entry
+// if something invalid comes in from the URL or stored state.
+const filter = value('all').pipe(
+  pipeEnum(['all', 'active', 'completed'] as const),
+);
 
 function TodoList() {
   // Re-renders when the key list or filter changes,
@@ -62,8 +72,8 @@ function TodoList() {
 
   const visible = keys.filter((id) => {
     const todo = todos.get(id)!;
-    if (currentFilter === 'active') return !todo.get('completed');
-    if (currentFilter === 'completed') return todo.get('completed');
+    if (currentFilter === 'active') return !todo.completed.get();
+    if (currentFilter === 'completed') return todo.completed.get();
     return true;
   });
 
@@ -77,23 +87,25 @@ function TodoList() {
 }
 
 function TodoItem({ id }: { id: string }) {
-  // todos.use(id) subscribes to this single todo's scope instance.
+  // Each field subscription is independent.
   // Editing todo-2 never re-renders todo-1.
-  const [getTodo, setTodo] = todos.use(id);
+  const todo = todos.get(id)!;
+  const [completed, setCompleted] = todo.completed.use();
+  const [text] = todo.text.use();
 
   return (
     <li>
       <input
         type="checkbox"
-        checked={getTodo('completed')}
-        onChange={() => setTodo('completed', (prev) => !prev)}
+        checked={completed}
+        onChange={() => setCompleted((prev) => !prev)}
       />
       <span
         style={{
-          textDecoration: getTodo('completed') ? 'line-through' : 'none',
+          textDecoration: completed ? 'line-through' : 'none',
         }}
       >
-        {getTodo('text')}
+        {text}
       </span>
     </li>
   );
@@ -124,7 +136,7 @@ function Footer() {
   const [currentFilter, setFilter] = filter.use();
 
   const activeCount = keys.filter(
-    (id) => !todos.get(id)!.get('completed'),
+    (id) => !todos.get(id)!.completed.get(),
   ).length;
 
   return (
@@ -145,39 +157,43 @@ No context providers, no store setup, no boilerplate. Import, define, use.
 ```ts
 // Mark all as completed
 for (const todo of todos.values()) {
-  todo.set('completed', true);
+  todo.completed.set(true);
 }
 
 // Clear completed
 for (const [id, todo] of todos.entries()) {
-  if (todo.get('completed')) {
+  if (todo.completed.get()) {
     todos.delete(id);
   }
 }
 ```
 
-## Persistence with onChange
+## Persistence
 
-The `onChange` in the model above persists per-todo via `getSnapshot()`. For
-bulk save/load of the whole collection:
+The `onChange` in the model above shows the primitive: a per-todo key derived
+from `id`, written on every change. That pattern works for any per-instance
+storage scheme (a row per todo in IndexedDB, say).
+
+For single-scope persistence (not per-item), the shipped `withPersistence`
+middleware handles it end-to-end, including hydration on create, throttled
+writes, and cross-tab sync:
 
 ```ts
-function saveTodos() {
-  const data: Record<string, unknown> = {};
-  for (const [id, todo] of todos.entries()) {
-    data[id] = todo.getSnapshot();
-  }
-  localStorage.setItem('todos', JSON.stringify(data));
-}
+import { withPersistence, localStorageAdapter } from 'valuse/middleware';
 
-function loadTodos() {
-  const raw = localStorage.getItem('todos');
-  if (!raw) return;
-  for (const [id, fields] of Object.entries(JSON.parse(raw))) {
-    todos.set(id, fields as any);
-  }
-}
+const appState = withPersistence(
+  valueScope({
+    filter: value('all').pipe(
+      pipeEnum(['all', 'active', 'completed'] as const),
+    ),
+    lastViewedId: value<string | null>(null),
+  }),
+  { key: 'todo-app', adapter: localStorageAdapter, throttle: 200 },
+);
 ```
+
+See [docs/persistence.md](../docs/persistence.md) for adapters (localStorage,
+sessionStorage, IndexedDB) and options.
 
 ## Why not Zustand?
 

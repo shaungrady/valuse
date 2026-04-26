@@ -2,11 +2,14 @@
 
 ValUse scopes compose via `extend()`. Since `extend()` takes a scope and returns
 a scope, middleware is just a function that adds state and behavior. This
-example shows two middleware patterns applied to the [todo app](./todo-app.md).
+example builds a custom `withSoftDelete` middleware, then shows how the shipped
+middleware (`withHistory`, `withPersistence`, `withDevtools`) stack on top.
 
-## Soft delete
+All examples build on the [todo app](./todo-app.md).
 
-Don't remove todos immediately — mark them as deleted so users can undo:
+## Writing custom middleware with extend()
+
+Don't remove todos immediately, mark them as deleted so users can undo:
 
 ```ts
 import { value, valueScope, type ScopeTemplate } from 'valuse';
@@ -18,7 +21,7 @@ const withSoftDelete = <T extends ScopeTemplate<any>>(scope: T) =>
   });
 
 // Apply to the todo scope.
-// `todo` is fully typed — has all base fields plus isDeleted, deletedAt.
+// `todo` is fully typed, has all base fields plus isDeleted, deletedAt.
 const todo = withSoftDelete(
   valueScope({
     id: value<string>(),
@@ -35,21 +38,21 @@ Now "deleting" a todo is a field change, not a collection removal:
 ```ts
 function softDelete(id: string) {
   const todo = todos.get(id);
-  // Bulk set merges — only touches the provided keys.
-  // text, completed, id are untouched.
-  todo?.set({ isDeleted: true, deletedAt: Date.now() });
+  todo?.isDeleted.set(true);
+  todo?.deletedAt.set(Date.now());
 }
 
 function restore(id: string) {
   const todo = todos.get(id);
-  todo?.set({ isDeleted: false, deletedAt: null });
+  todo?.isDeleted.set(false);
+  todo?.deletedAt.set(null);
 }
 
 // Actually purge after 30 days
 function purgeOld() {
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   for (const [id, todo] of todos.entries()) {
-    if (todo.get('isDeleted') && (todo.get('deletedAt') ?? 0) < cutoff) {
+    if (todo.isDeleted.get() && (todo.deletedAt.get() ?? 0) < cutoff) {
       todos.delete(id);
     }
   }
@@ -61,7 +64,7 @@ In React, filter them out of the visible list:
 ```tsx
 function TodoList() {
   const keys = todos.useKeys();
-  const visible = keys.filter((id) => !todos.get(id)!.get('isDeleted'));
+  const visible = keys.filter((id) => !todos.get(id)!.isDeleted.get());
 
   return (
     <ul>
@@ -73,110 +76,46 @@ function TodoList() {
 }
 ```
 
-## Undo/redo history
+That's the whole pattern: a middleware is any function
+`(scope) => scope.extend(...)`.
 
-This one is more interesting. The history itself shouldn't live inside the scope
-— if it did, `getSnapshot()` would capture the history array, and restoring a
-snapshot would overwrite the history. Instead, history wraps the instance from
-the outside:
+## Undo/redo with shipped `withHistory`
 
-```ts
-interface History<T> {
-  undo: () => void;
-  redo: () => void;
-  canUndo: () => boolean;
-  canRedo: () => boolean;
-  /** The wrapped instance — use normally */
-  instance: T;
-}
-
-function withHistory<Def extends Record<string, any>>(
-  instance: ScopeInstance<Def>,
-): History<ScopeInstance<Def>> {
-  const snapshots: ReturnType<typeof instance.getSnapshot>[] = [];
-  let index = -1;
-  let restoring = false;
-
-  // Capture initial state
-  snapshots.push(instance.getSnapshot());
-  index = 0;
-
-  // On every change, push a new snapshot
-  instance.subscribe(() => {
-    if (restoring) return; // Don't record history during undo/redo
-
-    // Discard any redo stack
-    snapshots.length = index + 1;
-    snapshots.push(instance.getSnapshot());
-    index++;
-  });
-
-  return {
-    instance,
-    undo: () => {
-      if (index <= 0) return;
-      index--;
-      restoring = true;
-      instance.setSnapshot(snapshots[index]);
-      restoring = false;
-    },
-    redo: () => {
-      if (index >= snapshots.length - 1) return;
-      index++;
-      restoring = true;
-      instance.setSnapshot(snapshots[index]);
-      restoring = false;
-    },
-    canUndo: () => index > 0,
-    canRedo: () => index < snapshots.length - 1,
-  };
-}
-```
-
-### Usage
+`withHistory` ships in `valuse/middleware`. Like any middleware it takes a scope
+template and returns a new one, so it composes cleanly with `withSoftDelete`:
 
 ```ts
-const todo = valueScope({
-  text: value<string>(),
-  completed: value<boolean>(false),
-});
+import { withHistory } from 'valuse/middleware';
 
-const inst = todo.create({ text: 'Buy milk' });
-const { instance, undo, redo } = withHistory(inst);
+const todoWithHistory = withHistory(
+  withSoftDelete(
+    valueScope({
+      id: value<string>(),
+      text: value<string>().pipe((v) => v.trim()),
+      completed: value<boolean>(false),
+    }),
+  ),
+  { maxDepth: 50, batchMs: 300 },
+);
 
-instance.set('text', 'Buy oat milk');
-instance.set('completed', true);
-
-undo();
-instance.get('completed'); // false
-instance.get('text'); // "Buy oat milk"
-
-undo();
-instance.get('text'); // "Buy milk"
-
-redo();
-instance.get('text'); // "Buy oat milk"
+const todos = todoWithHistory.createMap();
 ```
 
-### In React
+Each instance now exposes `undo()`, `redo()`, `clearHistory()`, and reactive
+`canUndo` / `canRedo`:
 
 ```tsx
 function TodoEditor({ id }: { id: string }) {
   const todo = todos.get(id)!;
-  const history = useMemo(() => withHistory(todo), [todo]);
-
-  const [getTodo, setTodo] = history.instance.use();
+  const [text, setText] = todo.text.use();
 
   return (
     <div>
-      <input
-        value={getTodo('text')}
-        onChange={(e) => setTodo('text', e.target.value)}
-      />
-      <button disabled={!history.canUndo()} onClick={history.undo}>
+      <input value={text} onChange={(e) => setText(e.target.value)} />
+      <button disabled={!todo.canUndo} onClick={todo.undo}>
         Undo
       </button>
-      <button disabled={!history.canRedo()} onClick={history.redo}>
+      <button disabled={!todo.canRedo} onClick={todo.redo}>
         Redo
       </button>
     </div>
@@ -184,56 +123,64 @@ function TodoEditor({ id }: { id: string }) {
 }
 ```
 
-### Why history is a wrapper, not extend()
+Notable options:
 
-`extend()` is great when the new state is part of the model — soft delete,
-timestamps, flags. History is different: it's _about_ the model, not _in_ it. If
-history lived inside the scope:
+- `maxDepth` — cap the history stack (default `50`).
+- `batchMs` — collapse changes landing within N ms into a single entry, so
+  typing produces one undo step per pause rather than per keystroke.
+- `fields` — restrict tracking to a subset of fields.
 
-- `getSnapshot()` would include the history array — snapshots containing
-  snapshots
-- Restoring via `setSnapshot()` would overwrite the history itself
-- `onChange` would fire for history bookkeeping, polluting the change log
+See [docs/history.md](../docs/history.md) for the full API.
 
-The wrapper pattern keeps history orthogonal. The instance doesn't know it's
-being tracked. This is the right boundary: **`extend()` for domain state,
-wrappers for meta-behavior.**
+## Persistence with `withPersistence`
 
-## Composing middleware
-
-Stack them:
+`withPersistence` syncs state to a storage adapter. Adapters ship for
+localStorage, sessionStorage, and IndexedDB:
 
 ```ts
-const todo = withSoftDelete(
-  valueScope({
-    id: value<string>(),
-    text: value<string>().pipe((v) => v.trim()),
-    completed: value<boolean>(false),
-  }),
+import {
+  withHistory,
+  withPersistence,
+  localStorageAdapter,
+} from 'valuse/middleware';
+
+const todo = withPersistence(
+  withHistory(
+    withSoftDelete(
+      valueScope({
+        id: value<string>(),
+        text: value<string>().pipe((v) => v.trim()),
+        completed: value<boolean>(false),
+      }),
+    ),
+  ),
+  { key: 'todos', adapter: localStorageAdapter, throttle: 250 },
 );
-
-const todos = todo.createMap();
-
-// Per-instance history on a specific todo
-const bobTodo = todos.get('bob')!;
-const { instance, undo, redo } = withHistory(bobTodo);
 ```
 
-Or apply history to the whole collection by wrapping each instance on creation:
+Ordering matters: persistence wraps history wraps soft-delete. Each layer sees
+the fields added by the layers below, so hydration and undo both see
+`isDeleted`/`deletedAt`. See [docs/persistence.md](../docs/persistence.md).
+
+## Redux DevTools with `withDevtools`
 
 ```ts
-const histories = new Map<string, History<ScopeInstance<typeof todo>>>();
+import { withDevtools } from 'valuse/middleware';
 
-function addTodo(id: string, text: string) {
-  todos.set(id, { id, text });
-  histories.set(id, withHistory(todos.get(id)!));
-}
-
-function undoTodo(id: string) {
-  histories.get(id)?.undo();
-}
+const todo = withDevtools(todoWithHistory, { name: 'todos' });
 ```
 
-This is intentionally explicit. Undo/redo is a UI concern — not every instance
-needs it, and the granularity (per-field? per-instance? per-collection?) depends
-on the product. ValUse gives you the primitives; you choose the scope.
+Every change shows up in the Redux DevTools timeline with time-travel support.
+See [docs/devtools.md](../docs/devtools.md).
+
+## When to ship middleware vs. compose inline
+
+The shipped middleware exist because undo, persistence, and devtools show up in
+nearly every app and each has subtle correctness details (batching, hydration
+suppression, action naming). Custom middleware via `extend()` is the right
+choice when the behavior is domain-specific, like `withSoftDelete`,
+`withTracking`, `withAuditLog`.
+
+The rule of thumb: if the behavior is _about_ the model (history, persistence,
+debugging), reach for shipped middleware. If it's _part of_ the model (flags,
+timestamps, derived state), write it with `extend()`.

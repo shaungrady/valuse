@@ -39,7 +39,8 @@ const user = valueScope({
   lastName: value<string>(),
   email: value<string>(),
   role: value<string>('viewer'),
-  displayName: ({ use }) => `${use('firstName')} ${use('lastName')}`,
+  displayName: ({ scope }) =>
+    `${scope.firstName.use()} ${scope.lastName.use()}`,
 });
 ```
 
@@ -120,8 +121,8 @@ Track `lastUpdated` whenever any field changes.
 const user = valueScope(
   { /* ...fields... */ lastUpdated: value<number>(0) },
   {
-    onChange: ({ set }) => {
-      set('lastUpdated', Date.now());
+    onChange: ({ scope }) => {
+      scope.lastUpdated.set(Date.now());
     },
   },
 );
@@ -157,17 +158,13 @@ remembering to add it to the reaction list too.
 
 Editing one user's email must not re-render other rows.
 
-**ValUse** — automatic:
+**ValUse** — automatic. Each field `.use()` subscribes to that field only:
 
 ```tsx
 function UserRow({ id }: { id: string }) {
-  const [getUser, setUser] = users.use(id);
-  return (
-    <input
-      value={getUser('email')}
-      onChange={(e) => setUser('email', e.target.value)}
-    />
-  );
+  const user = users.get(id)!;
+  const [email, setEmail] = user.email.use();
+  return <input value={email} onChange={(e) => setEmail(e.target.value)} />;
 }
 ```
 
@@ -202,8 +199,8 @@ Fetch a user's profile by email. Abort the previous request when email changes.
 ```ts
 const user = valueScope({
   email: value<string>(),
-  profile: async ({ use, signal }) => {
-    const res = await fetch(`/api/users/${use('email')}`, { signal });
+  profile: async ({ scope, signal }) => {
+    const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
     return res.json();
   },
 });
@@ -264,7 +261,7 @@ Derive `avatarUrl` from the async `profile`.
 promise:
 
 ```ts
-avatarUrl: ({ use }) => use('profile')?.avatar ?? '/default-avatar.png',
+avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
 ```
 
 **MobX** — computed getter reads the observable, but you must handle the loading
@@ -316,13 +313,13 @@ does out of the box.
 
 ## Type safety
 
-**ValUse** — string keys are fully type-checked:
+**ValUse** — field access is fully type-checked via dot-access on the instance:
 
 ```ts
-getUser('email'); // string
-getUser('displayName'); // string
-getUser('emal'); // TS error — typo caught
-setUser('displayName'); // TS error — it's derived, not settable
+user.email.get(); // string
+user.displayName.get(); // string
+user.emal; // TS error — typo caught
+user.displayName.set('x'); // TS error — derived fields have no set()
 ```
 
 **MobX** — direct property access is fully typed:
@@ -335,9 +332,10 @@ user.displayName = 'x'; // TS error if using getter
 ```
 
 MobX has excellent type safety via direct property access. This is one area
-where MobX and ValUse are on equal footing. The tradeoff is that MobX requires
-class definitions and `makeAutoObservable` to get there, while ValUse uses
-string keys with inferred types from a plain object definition.
+where MobX and ValUse are on equal footing. Both use dot-access with inferred
+types. The tradeoff is that MobX requires class definitions and
+`makeAutoObservable` to get there, while ValUse infers types from a plain object
+definition.
 
 ---
 
@@ -356,9 +354,9 @@ const withTracking = (scope) =>
       changeCount: value<number>(0),
     },
     {
-      onChange: ({ changes, set }) => {
-        set('lastUpdated', Date.now());
-        set('changeCount', (prev) => prev + changes.size);
+      onChange: ({ scope, changes }) => {
+        scope.lastUpdated.set(Date.now());
+        scope.changeCount.set((prev) => prev + changes.size);
       },
     },
   );
@@ -424,7 +422,7 @@ composes across the hierarchy.
 Create a WebSocket on init, announce presence when observed, clean up on
 destroy.
 
-**ValUse** — four hooks, declared alongside the model:
+**ValUse** — two hooks with scoped `onCleanup`, declared alongside the model:
 
 ```ts
 const chatRoom = valueScope(
@@ -433,24 +431,21 @@ const chatRoom = valueScope(
     ws: value<WebSocket | null>(null),
   },
   {
-    onInit: ({ set, get }) => {
-      set('ws', new WebSocket(`/rooms/${get('roomId')}`));
+    onCreate: ({ scope, onCleanup }) => {
+      const ws = new WebSocket(`/rooms/${scope.roomId.get()}`);
+      scope.ws.set(ws);
+      onCleanup(() => ws.close());
     },
-    onUsed: ({ get }) => {
-      get('ws')?.send(JSON.stringify({ type: 'join' }));
-    },
-    onUnused: ({ get }) => {
-      get('ws')?.send(JSON.stringify({ type: 'leave' }));
-    },
-    onDestroy: ({ get }) => {
-      get('ws')?.close();
+    onUsed: ({ scope, onCleanup }) => {
+      scope.ws.get()?.send(JSON.stringify({ type: 'join' }));
+      onCleanup(() => scope.ws.get()?.send(JSON.stringify({ type: 'leave' })));
     },
   },
 );
 
 const rooms = chatRoom.createMap();
-rooms.set('room-1', { roomId: 'room-1' }); // onInit fires
-rooms.delete('room-1'); // onDestroy fires, WebSocket closes
+rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
+rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
 ```
 
 **MobX** — constructor for init, `onBecomeObserved`/`onBecomeUnobserved` for
@@ -516,8 +511,8 @@ const person = valueScope({
   tags: valueSet<string>(),
   specialTags: valueRef(globalTags),
 
-  hasSpecialTag: ({ use }) =>
-    use('tags').some((t) => use('specialTags').has(t)),
+  hasSpecialTag: ({ scope }) =>
+    scope.tags.use().some((t) => scope.specialTags.use().has(t)),
 });
 
 // Per-instance ref — each board gets its own column map
@@ -526,7 +521,7 @@ const column = valueScope({ id: value<string>(), name: value<string>() });
 const board = valueScope({
   boardId: value<string>(),
   columns: valueRef(() => column.createMap()),
-  columnCount: ({ use }) => use('columns').size,
+  columnCount: ({ scope }) => scope.columns.use().size,
 });
 
 const a = board.create({ boardId: 'a' });
@@ -590,18 +585,20 @@ const user = valueScope(
     role: value<string>('viewer'),
     lastUpdated: value<number>(0),
 
-    displayName: ({ use }) => `${use('firstName')} ${use('lastName')}`,
+    displayName: ({ scope }) =>
+      `${scope.firstName.use()} ${scope.lastName.use()}`,
 
-    profile: async ({ use, signal }) => {
-      const res = await fetch(`/api/users/${use('email')}`, { signal });
+    profile: async ({ scope, signal }) => {
+      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
       return res.json();
     },
 
-    avatarUrl: ({ use }) => use('profile')?.avatar ?? '/default-avatar.png',
+    avatarUrl: ({ scope }) =>
+      scope.profile.use()?.avatar ?? '/default-avatar.png',
   },
   {
-    onChange: ({ set }) => {
-      set('lastUpdated', Date.now());
+    onChange: ({ scope }) => {
+      scope.lastUpdated.set(Date.now());
     },
   },
 );
@@ -625,21 +622,22 @@ function UserTable() {
 }
 
 function UserRow({ id }: { id: string }) {
-  const [getUser, setUser] = users.use(id);
+  const user = users.get(id)!;
+  const [displayName] = user.displayName.use();
+  const [avatarUrl] = user.avatarUrl.use();
+  const [email, setEmail] = user.email.use();
+  const [role] = user.role.use();
 
   return (
     <tr>
-      <td>{getUser('displayName')}</td>
+      <td>{displayName}</td>
       <td>
-        <img src={getUser('avatarUrl')} />
+        <img src={avatarUrl} />
       </td>
       <td>
-        <input
-          value={getUser('email')}
-          onChange={(e) => setUser('email', e.target.value)}
-        />
+        <input value={email} onChange={(e) => setEmail(e.target.value)} />
       </td>
-      <td>{getUser('role')}</td>
+      <td>{role}</td>
     </tr>
   );
 }

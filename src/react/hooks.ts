@@ -1,6 +1,17 @@
+/**
+ * React integration entry point for valuse.
+ *
+ * Import `valuse/react` as a side-effect to enable `.use()` hooks
+ * on all reactive types (`Value`, `FieldValue`, `ValueArray`, etc.).
+ *
+ * @example
+ * ```ts
+ * import 'valuse/react';
+ * ```
+ *
+ * @module
+ */
 import { useSyncExternalStore } from 'react';
 import { installReact } from '../core/react-bridge.js';
 
-// Side-effect: install React's useSyncExternalStore into the bridge.
-// This enables .use() hooks on all reactive types.
 installReact({ useSyncExternalStore });
