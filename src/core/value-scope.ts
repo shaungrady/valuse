@@ -307,11 +307,24 @@ export class ScopeTemplate<
 		if (Array.isArray(data) && keyFieldOrFn !== undefined) {
 			// Array + field name or callback
 			const items = data as Partial<ValueInputOf<Def>>[];
-			for (const item of items) {
-				const key =
+			for (let i = 0; i < items.length; i++) {
+				const item = items[i]!;
+				const key: K | undefined =
 					typeof keyFieldOrFn === 'function' ?
 						keyFieldOrFn(item)
-					:	(item[keyFieldOrFn as keyof typeof item] as K);
+					:	(item[keyFieldOrFn as keyof typeof item] as K | undefined);
+				if (key === undefined) {
+					// Without this check, every item with a missing key would
+					// collapse onto the same `undefined` slot and N items
+					// would become 1 entry, silently.
+					const where =
+						typeof keyFieldOrFn === 'function' ?
+							`key callback returned undefined`
+						:	`keyField "${keyFieldOrFn}" is missing`;
+					throw new Error(
+						`createMap: ${where} for item at index ${String(i)}.`,
+					);
+				}
 				map.set(key, item);
 			}
 		} else if (data instanceof Map) {
@@ -440,6 +453,15 @@ function createScopeInstance(
 	// shared refs just attach the existing source.
 	// Must happen before derivation setup so derivations can reference refs.
 	const factoryRefInstances: Record<string, unknown>[] = [];
+	// Factory-created reactive primitives (Value / ValueSet / ValueMap /
+	// ValueArray) expose `.destroy()` rather than `$destroy`. They were
+	// previously leaked on parent destroy because the propagation block only
+	// looked for `$destroy`. Track them here so they can be torn down too.
+	const factoryRefDestroyables: { destroy: () => void }[] = [];
+	// Refs that participate in transitive onUsed/onUnused — i.e. anything
+	// with a `$subscribe` (scope instances), shared or factory-created.
+	// Plain Value/Set/Map refs aren't lifecycle owners and are skipped.
+	const transitiveLifecycleRefs: Record<string, unknown>[] = [];
 	const resolvedRefs = new Map<string, unknown>();
 	for (const [path, ref] of definition.refEntries) {
 		let resolved: unknown;
@@ -452,9 +474,24 @@ function createScopeInstance(
 				'$destroy' in resolved
 			) {
 				factoryRefInstances.push(resolved as Record<string, unknown>);
+			} else if (
+				typeof resolved === 'object' &&
+				resolved !== null &&
+				'destroy' in resolved &&
+				typeof (resolved as { destroy: unknown }).destroy === 'function'
+			) {
+				factoryRefDestroyables.push(resolved as { destroy: () => void });
 			}
 		} else {
 			resolved = ref.source;
+		}
+		if (
+			typeof resolved === 'object' &&
+			resolved !== null &&
+			'$subscribe' in resolved &&
+			typeof (resolved as { $subscribe: unknown }).$subscribe === 'function'
+		) {
+			transitiveLifecycleRefs.push(resolved as Record<string, unknown>);
 		}
 		resolvedRefs.set(path, resolved);
 		// Attach to derivation scope for use in derivations. Wrap with a
@@ -477,14 +514,25 @@ function createScopeInstance(
 	// Register the instance tree in the store for change tracking
 	store.registerTree(instance, nodesBySlot, nodesByGroup);
 
-	// Collect disposers to run on $destroy. Populated by the setup steps below.
-	const createCleanups: (() => void)[] = [];
+	// Two buckets of disposers. Both fire on $destroy; only `lifecycleCleanups`
+	// is replayed by `$setSnapshot(..., { recreate: true })`, which models a
+	// fresh onDestroy → onCreate cycle without rebuilding the per-instance
+	// derivation infrastructure. Mixing them caused recreate to silently kill
+	// every sync/async derivation on the instance.
+	const instanceCleanups: (() => void)[] = [];
+	const lifecycleCleanups: (() => void)[] = [];
 
 	// Set up sync derivations
-	setupSyncDerivations(definition, store, derivationScope, createCleanups);
+	setupSyncDerivations(definition, store, derivationScope, instanceCleanups);
 
 	// Set up async derivations
-	setupAsyncDerivations(definition, store, initialValues, createCleanups);
+	setupAsyncDerivations(
+		definition,
+		store,
+		initialValues,
+		resolvedRefs,
+		instanceCleanups,
+	);
 
 	// Attach static entries (must run before child groups are frozen)
 	attachStaticEntries(definition, instance);
@@ -512,9 +560,11 @@ function createScopeInstance(
 		store,
 		definition,
 		config,
-		createCleanups,
+		instanceCleanups,
+		lifecycleCleanups,
 		undeclaredProperties,
 		factoryRefInstances,
+		factoryRefDestroyables,
 	);
 
 	// Set up validate config and $getIsValid/$useIsValid
@@ -524,7 +574,7 @@ function createScopeInstance(
 		definition,
 		config,
 		derivationScope,
-		createCleanups,
+		instanceCleanups,
 		resolvedRefs,
 	);
 
@@ -579,7 +629,7 @@ function createScopeInstance(
 		};
 
 		// Clean up on destroy
-		createCleanups.push(() => {
+		instanceCleanups.push(() => {
 			for (const cleanup of usedCleanups) cleanup();
 			usedCleanups = [];
 			if (usedController) {
@@ -589,24 +639,22 @@ function createScopeInstance(
 		});
 	}
 
-	// Propagate onUsed/onUnused transitively to factory-created ref instances.
-	// This wires the parent's subscriber tracking to also count toward child scopes.
-	if (factoryRefInstances.length > 0) {
+	// Propagate onUsed/onUnused transitively to every scope-instance ref —
+	// shared or factory-created. Lifting an in-scope subscription on the
+	// parent should "use" each referenced child, matching the README's
+	// transitive-lifecycle contract.
+	if (transitiveLifecycleRefs.length > 0) {
 		const originalOnUsed = store.onUsedHook;
 		const originalOnUnused = store.onUnusedHook;
 		const childUntrackFns: (() => void)[] = [];
 
 		store.onUsedHook = () => {
 			originalOnUsed?.();
-			// Mark each factory ref child as "used" by tracking an external subscription
-			for (const refInstance of factoryRefInstances) {
-				if ('$subscribe' in refInstance) {
-					// Use a dummy subscription to increment the child's subscriber count
-					const unsub = (
-						refInstance.$subscribe as (fn: () => void) => () => void
-					)(() => {});
-					childUntrackFns.push(unsub);
-				}
+			for (const refInstance of transitiveLifecycleRefs) {
+				const unsub = (
+					refInstance.$subscribe as (fn: () => void) => () => void
+				)(() => {});
+				childUntrackFns.push(unsub);
 			}
 		};
 
@@ -618,9 +666,9 @@ function createScopeInstance(
 		};
 	}
 
-	// Create lifecycle AbortController (aborts on $destroy)
+	// Create lifecycle AbortController (aborts on $destroy or recreate)
 	const lifecycleController = new AbortController();
-	createCleanups.push(() => {
+	lifecycleCleanups.push(() => {
 		lifecycleController.abort();
 	});
 
@@ -630,7 +678,7 @@ function createScopeInstance(
 			scope: instance as GenericScopeInstance,
 			input: input ?? undefined,
 			signal: lifecycleController.signal,
-			onCleanup: (fn) => createCleanups.push(fn),
+			onCleanup: (fn) => lifecycleCleanups.push(fn),
 		});
 	}
 
@@ -916,10 +964,22 @@ function setupSyncDerivations(
 			const derivationFn = meta.derivationFn;
 			// Version signal: bump to force recomputation even when deps haven't changed
 			const version = createSignal(0);
+			const slotIndex = slot;
 			const derivedSignal: ReadonlySignal<unknown> = computed(() => {
 				void version.value; // track version for forced recompute
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-return
-				return derivationFn({ scope: derivationScope });
+				try {
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-return
+					return derivationFn({ scope: derivationScope });
+				} catch (err) {
+					// A throwing derivation would otherwise propagate out of
+					// the source `.set()` that triggered the recompute, since
+					// the computed re-runs inside Preact's endBatch. Contain
+					// the throw, log it, and keep the slot's last good value
+					// so the source write succeeds and the next non-throwing
+					// run recovers.
+					console.error('valuse: sync derivation threw', err);
+					return store.signals[slotIndex]!.peek();
+				}
 			});
 
 			// Register a recompute function that bumps the version
@@ -941,7 +1001,12 @@ function setupSyncDerivations(
 /** Per-run state for an async derivation's eager subscription model. @internal */
 interface AsyncRun {
 	controller: AbortController;
-	subscriptions: Map<number, () => void>;
+	/**
+	 * Per-run de-duplication of eager subscriptions. Numeric keys identify
+	 * slot subscriptions; string keys (`ref:<path>`) identify ref-source
+	 * subscriptions, since refs don't have slot indices.
+	 */
+	subscriptions: Map<number | string, () => void>;
 	cleanups: (() => void)[];
 }
 
@@ -956,6 +1021,7 @@ function setupAsyncDerivations(
 	definition: ScopeDefinitionMeta,
 	store: InstanceStore,
 	initialValues: Map<number, unknown>,
+	resolvedRefs: Map<string, unknown>,
 	cleanups: (() => void)[],
 ): void {
 	for (let slot = 0; slot < definition.slotCount; slot++) {
@@ -1066,6 +1132,7 @@ function setupAsyncDerivations(
 				store,
 				slot,
 				runRef,
+				resolvedRefs,
 			);
 
 			// Register recompute function
@@ -1097,15 +1164,113 @@ function buildAsyncDerivationScope(
 	store: InstanceStore,
 	derivationSlot: number,
 	runRef: AsyncRunRef,
+	resolvedRefs: Map<string, unknown>,
 ): Record<string, unknown> {
 	const rootGroup = definition.groups[0]!;
-	return buildAsyncGroupNode(
+	const tree = buildAsyncGroupNode(
 		definition,
 		store,
 		derivationSlot,
 		runRef,
 		rootGroup,
 	);
+	// Mirror the sync path (which attaches refs after the slot/group walk):
+	// async derivations must also see `scope.<ref>.use()` / `.get()`, and
+	// `.use()` must register an eager subscription on the ref's source so
+	// dep changes trigger a re-run.
+	for (const [path, resolved] of resolvedRefs) {
+		const wrapped = wrapRefForAsyncDerivation(resolved, runRef, path);
+		setNestedValue(tree, path, wrapped ?? resolved);
+	}
+	return tree;
+}
+
+/**
+ * Async counterpart to {@link wrapRefForDerivation}. The sync wrapper relies
+ * on Preact's automatic dep tracking inside `computed()`; async derivations
+ * use an eager-subscription model instead, so each ref shape registers a
+ * subscription on its source via the source's own `subscribe`/`$subscribe`.
+ * Per-run dedup is keyed by `ref:<path>` so the same ref `.use()`'d multiple
+ * times in one run only subscribes once.
+ * @internal
+ */
+function wrapRefForAsyncDerivation(
+	resolved: unknown,
+	runRef: AsyncRunRef,
+	path: string,
+): { use: () => unknown; get: () => unknown } | undefined {
+	if (typeof resolved !== 'object' || resolved === null) return undefined;
+
+	const subKey = `ref:${path}`;
+
+	const buildWrapper = (
+		subscribe: (cb: () => void) => () => void,
+		getValue: () => unknown,
+	) => ({
+		use: () => {
+			const run = runRef.current;
+			if (!run.subscriptions.has(subKey)) {
+				const unsub = subscribe(() => {
+					if (!run.controller.signal.aborted) {
+						runRef.scheduleRerun();
+					}
+				});
+				run.subscriptions.set(subKey, unsub);
+			}
+			return getValue();
+		},
+		get: getValue,
+	});
+
+	// Scope instance: `.use()` returns the instance, tracked via $subscribe
+	// (whole-scope: fires on any field change), matching the coarse-grained
+	// sync behavior backed by `_trackAll`.
+	if (
+		'$subscribe' in resolved &&
+		typeof (resolved as { $subscribe: unknown }).$subscribe === 'function'
+	) {
+		const instance = resolved as {
+			$subscribe: (cb: () => void) => () => void;
+		};
+		return buildWrapper(
+			(cb) => instance.$subscribe(cb),
+			() => instance,
+		);
+	}
+
+	// ScopeMap: subscribe fires on key-list changes only, matching `_trackKeys`.
+	if (resolved instanceof ScopeMap) {
+		const map = resolved;
+		return buildWrapper(
+			(cb) =>
+				map.subscribe(() => {
+					cb();
+				}),
+			() => map,
+		);
+	}
+
+	// Value / ValueSet / ValueMap / ValueArray — anything with .subscribe + .get.
+	if (
+		'subscribe' in resolved &&
+		typeof (resolved as { subscribe: unknown }).subscribe === 'function' &&
+		'get' in resolved &&
+		typeof (resolved as { get: unknown }).get === 'function'
+	) {
+		const source = resolved as {
+			subscribe: (cb: () => void) => () => void;
+			get: () => unknown;
+		};
+		return buildWrapper(
+			(cb) =>
+				source.subscribe(() => {
+					cb();
+				}),
+			() => source.get(),
+		);
+	}
+
+	return undefined;
 }
 
 function buildAsyncGroupNode(
@@ -1206,7 +1371,25 @@ function setupValidation(
 
 		// Run the validate function as a computed derivation
 		const derivedValidateSignal = computed(() => {
-			return validateFn({ scope: derivationScope });
+			try {
+				return validateFn({ scope: derivationScope });
+			} catch (err) {
+				// A throwing validate hook would otherwise propagate out of
+				// the source `.set()` that triggered the recompute, and
+				// leave `$getIsValid()` reporting `true` indefinitely (since
+				// the issues signal never updated). Contain the throw, log
+				// it, and synthesise a scope-level issue so the scope
+				// reports invalid until the hook recovers.
+				console.error('valuse: validate hook threw', err);
+				return [
+					{
+						message:
+							err instanceof Error ?
+								`validate threw: ${err.message}`
+							:	`validate threw: ${String(err)}`,
+					},
+				];
+			}
 		});
 
 		// Sync computed to the signal. Disposed on $destroy.
@@ -1250,18 +1433,75 @@ function setupValidation(
 			>;
 
 			const originalGetValidation = wrapper.getValidation.bind(wrapper);
+			const slotIndex = slot;
 			wrapper.getValidation = () => {
 				const baseValidation = originalGetValidation();
 				const routedIssues = getRoutedIssuesForField(meta.fieldName);
 				if (routedIssues.length === 0) return baseValidation;
 
-				// Merge issues: if base was valid but we have routed issues, it's now invalid
+				// Merge issues. The `ValidationState<In, Out>` union flips on
+				// `isValid`: `value` is `Out` (parsed) when valid, `In` (raw
+				// input) when invalid. If routed issues flip a previously
+				// valid result to invalid, swap the parsed `Out` back to the
+				// raw `In` so the discriminated union holds. This only
+				// matters for schemas that morph types (e.g. arktype
+				// `string.numeric.parse`); for pure validators where In==Out
+				// it's a no-op.
 				const allIssues = [...baseValidation.issues, ...routedIssues];
+				const value =
+					baseValidation.isValid ? store.read(slotIndex) : baseValidation.value;
 				return {
 					isValid: false,
-					value: baseValidation.value,
+					value,
 					issues: allIssues,
 				} as ValidationState<unknown, unknown>;
+			};
+
+			// `useValidation` on the field wrapper used to only subscribe to
+			// the field's own value signal and its own schema-validation
+			// state. When a cross-field `validate` hook routed an issue here
+			// via `path: ['<fieldName>']`, neither of those signals fired —
+			// only `validateIssuesSignal` did — so the React hook never
+			// re-rendered even though `getValidation()` would return updated
+			// merged issues if you read it manually. Patch the hook so it
+			// also subscribes to `validateIssuesSignal`.
+			const slotForHook = slot;
+			const originalUseValidation = wrapper.useValidation.bind(wrapper);
+			wrapper.useValidation = () => {
+				const hooks = getReactHooks();
+				if (hooks && validateIssuesSignal) {
+					const adapter = versionedAdapter(wrapper, (onChange) => {
+						const unsub1 = wrapper.subscribe(() => {
+							onChange();
+						});
+						const unsub2 = store.subscribeValidation(slotForHook, () => {
+							onChange();
+						});
+						let isFirst = true;
+						const dispose = effect(() => {
+							void (validateIssuesSignal as { value: unknown }).value;
+							if (isFirst) {
+								isFirst = false;
+								return;
+							}
+							onChange();
+						});
+						return () => {
+							unsub1();
+							unsub2();
+							dispose();
+						};
+					});
+					hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
+					return [
+						wrapper.get(),
+						(valueOrFn: unknown) => {
+							wrapper.set(valueOrFn);
+						},
+						wrapper.getValidation(),
+					] as ReturnType<typeof originalUseValidation>;
+				}
+				return originalUseValidation();
 			};
 		}
 	}
@@ -1590,21 +1830,42 @@ function attachDollarMethods(
 	store: InstanceStore,
 	definition: ScopeDefinitionMeta,
 	config: ScopeConfig | undefined,
-	createCleanups: (() => void)[],
+	instanceCleanups: (() => void)[],
+	lifecycleCleanups: (() => void)[],
 	undeclaredProperties?: Map<string, unknown>,
 	factoryRefInstances?: Record<string, unknown>[],
+	factoryRefDestroyables?: { destroy: () => void }[],
 ): void {
 	instance.$destroy = () => {
-		// Run onCreate cleanups
-		for (const cleanup of createCleanups) cleanup();
-		createCleanups.length = 0;
+		// Idempotency: a second call must be a no-op so onDestroy fires once
+		// and factory-ref children aren't re-destroyed. Naturally exercised
+		// when ScopeMap.delete (which calls $destroy internally) and a
+		// caller-held reference both reach for $destroy.
+		if (store.destroyed) return;
 
-		// Propagate $destroy to factory-created ref instances
+		// Run lifecycle disposers first (aborts the onCreate signal so user
+		// cleanups see a consistent torn-down state), then instance-level
+		// disposers (derivation effects, validation, snapshot tracking).
+		for (const cleanup of lifecycleCleanups) cleanup();
+		lifecycleCleanups.length = 0;
+		for (const cleanup of instanceCleanups) cleanup();
+		instanceCleanups.length = 0;
+
+		// Propagate $destroy to factory-created scope refs.
 		if (factoryRefInstances) {
 			for (const refInstance of factoryRefInstances) {
 				if (typeof refInstance.$destroy === 'function') {
 					(refInstance.$destroy as () => void)();
 				}
+			}
+		}
+
+		// Tear down factory-created reactive primitives (Value / ValueSet /
+		// ValueMap / ValueArray) — they expose `.destroy()` rather than
+		// `$destroy`. Without this they leaked subscribers on parent destroy.
+		if (factoryRefDestroyables) {
+			for (const ref of factoryRefDestroyables) {
+				ref.destroy();
 			}
 		}
 
@@ -1619,15 +1880,19 @@ function attachDollarMethods(
 	// Memoized snapshot: rebuilt lazily, invalidated whenever any tracked
 	// signal changes. `$use` returns this same reference across renders when
 	// nothing has changed, so React downstream can rely on Object.is equality.
+	// We also track `store._plainVersion` so plain writes invalidate the
+	// cache (keeping `$getSnapshot()` fresh) without dirtying the per-slot
+	// signal graph that `$subscribe`/derivations observe.
 	let cachedSnapshot: Record<string, unknown> | null = null;
 	let snapshotDirty = true;
 	const invalidateSnapshot = effect(() => {
 		for (let slot = 0; slot < definition.slotCount; slot++) {
 			void store.signals[slot]!.value;
 		}
+		void store._plainVersion.value;
 		snapshotDirty = true;
 	});
-	createCleanups.push(invalidateSnapshot);
+	instanceCleanups.push(invalidateSnapshot);
 
 	function getMemoizedSnapshot(): Record<string, unknown> {
 		if (snapshotDirty || cachedSnapshot === null) {
@@ -1656,17 +1921,19 @@ function attachDollarMethods(
 		setSnapshotValues(definition, store, data, '');
 
 		if (options?.recreate) {
-			// Run onDestroy then onCreate lifecycle
-			for (const cleanup of createCleanups) cleanup();
-			createCleanups.length = 0;
+			// Recreate models a fresh onDestroy → onCreate cycle. Only touch
+			// lifecycle disposers; per-instance derivation infrastructure
+			// (sync effects, async aborts, validation) stays alive so
+			// downstream behavior keeps reacting.
+			for (const cleanup of lifecycleCleanups) cleanup();
+			lifecycleCleanups.length = 0;
 
 			if (config?.onDestroy) {
 				config.onDestroy({ scope: instance as GenericScopeInstance });
 			}
 
-			// Fresh lifecycle controller for the recreated instance
 			const recreateController = new AbortController();
-			createCleanups.push(() => {
+			lifecycleCleanups.push(() => {
 				recreateController.abort();
 			});
 
@@ -1675,7 +1942,7 @@ function attachDollarMethods(
 					scope: instance as GenericScopeInstance,
 					input: data,
 					signal: recreateController.signal,
-					onCleanup: (fn) => createCleanups.push(fn),
+					onCleanup: (fn) => lifecycleCleanups.push(fn),
 				});
 			}
 		}
@@ -1694,7 +1961,11 @@ function attachDollarMethods(
 				isFirstRun = false;
 				return;
 			}
-			fn();
+			try {
+				fn();
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 
 		let disposed = false;
@@ -1791,17 +2062,22 @@ function setSnapshotValues(
 
 		// O(1) group lookup
 		const groupIndex = definition.pathToGroup.get(path);
-		if (
-			groupIndex !== undefined &&
-			typeof value === 'object' &&
-			value !== null
-		) {
-			setSnapshotValues(
-				definition,
-				store,
-				value as Record<string, unknown>,
-				path,
-			);
+		if (groupIndex !== undefined) {
+			if (typeof value === 'object' && value !== null) {
+				setSnapshotValues(
+					definition,
+					store,
+					value as Record<string, unknown>,
+					path,
+				);
+			} else {
+				// Group path with non-object value would otherwise silently
+				// drop on the floor — visible only by inspecting state.
+				console.warn(
+					`valuse: $setSnapshot received a non-object value for group path "${path}". ` +
+						'Expected a plain object matching the group shape. Skipping.',
+				);
+			}
 		}
 	}
 }

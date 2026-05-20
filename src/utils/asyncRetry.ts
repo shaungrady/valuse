@@ -14,6 +14,10 @@ export const asyncRetry = async <T>(
 	{ max = 3, backoff = 1000, signal }: AsyncRetryOptions,
 	fn: () => T | Promise<T>,
 ): Promise<T> => {
+	// A pre-aborted signal must not invoke `fn` at all — otherwise we'd
+	// either run user side effects after cancellation or, worse, return a
+	// success that the caller asked us to abandon.
+	signal.throwIfAborted();
 	let lastError: unknown;
 	for (let attempt = 0; attempt < max; attempt++) {
 		try {
@@ -21,7 +25,7 @@ export const asyncRetry = async <T>(
 		} catch (error) {
 			// Stop retrying when the consumer aborts. Throw the abort reason so
 			// callers can distinguish cancellation from the function's own errors.
-			if (signal.aborted) throw signal.reason;
+			signal.throwIfAborted();
 			lastError = error;
 			if (attempt < max - 1) {
 				await asyncDelay({ ms: backoff * (attempt + 1), signal });

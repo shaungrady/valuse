@@ -122,11 +122,22 @@ function buildSetPayload(
 	return payload;
 }
 
+interface DevtoolsState {
+	connection: DevtoolsConnection;
+	/**
+	 * Set while a DevTools-initiated time-travel restore is in flight, so
+	 * the `onChange` handler skips re-dispatching the resulting writes
+	 * back to DevTools as if they were fresh user actions. Mirrors the
+	 * `isRestoring` pattern used by `withHistory`.
+	 */
+	isRestoring: boolean;
+}
+
 /**
- * Per-instance devtools connection, keyed by scope instance.
+ * Per-instance devtools state, keyed by scope instance.
  * Using a WeakMap avoids polluting the instance with a `__devtools` property.
  */
-const connectionByInstance = new WeakMap<object, DevtoolsConnection>();
+const stateByInstance = new WeakMap<object, DevtoolsState>();
 
 // --- withDevtools ---
 
@@ -166,8 +177,8 @@ export function withDevtools<Def extends Record<string, unknown>>(
 				);
 				connection.init(initialState);
 
-				// Store connection on the scope for onChange to use
-				connectionByInstance.set(scope, connection);
+				const state: DevtoolsState = { connection, isRestoring: false };
+				stateByInstance.set(scope, state);
 
 				// Time travel support
 				connection.subscribe((message) => {
@@ -176,32 +187,43 @@ export function withDevtools<Def extends Record<string, unknown>>(
 							string,
 							unknown
 						>;
-						scope.$setSnapshot(deserialize(historicalState));
+						state.isRestoring = true;
+						try {
+							scope.$setSnapshot(deserialize(historicalState));
+						} finally {
+							// onChange is microtask-batched, so the resulting fire
+							// queues *during* this synchronous restore. Reset the
+							// flag after that microtask drains so it survives long
+							// enough to suppress the echo.
+							queueMicrotask(() => {
+								state.isRestoring = false;
+							});
+						}
 					}
 				});
 			},
 
 			onChange({ scope, changes }) {
-				const connection = connectionByInstance.get(scope);
-				if (!connection) return;
+				const state = stateByInstance.get(scope);
+				if (!state || state.isRestoring) return;
 
 				const actionName = buildActionName(changes);
 				const payload = buildSetPayload(changes);
-				const state = serialize(
+				const stateSnapshot = serialize(
 					filterSnapshot(
 						(scope as unknown as GenericScopeInstance).$getSnapshot(),
 						options.fields,
 					),
 				);
 
-				connection.send({ type: actionName, payload }, state);
+				state.connection.send({ type: actionName, payload }, stateSnapshot);
 			},
 
 			onDestroy({ scope }) {
-				const connection = connectionByInstance.get(scope);
-				if (connection) {
-					connection.unsubscribe();
-					connectionByInstance.delete(scope);
+				const state = stateByInstance.get(scope);
+				if (state) {
+					state.connection.unsubscribe();
+					stateByInstance.delete(scope);
 				}
 			},
 		},
@@ -238,6 +260,10 @@ export function connectMapDevtools<
 	});
 
 	const instanceSubscriptions = new Map<K, Unsubscribe>();
+	// Gate every `sendState` call during DevTools-initiated time travel so
+	// the `map.subscribe` / `$subscribe` echoes don't dispatch back as new
+	// actions. Same pattern as `withDevtools`.
+	let isRestoring = false;
 
 	function getMapSnapshot(): Record<string, unknown> {
 		const keys = map.keys();
@@ -261,6 +287,7 @@ export function connectMapDevtools<
 	}
 
 	function sendState(actionType: string, payload?: unknown): void {
+		if (isRestoring) return;
 		const state = getMapSnapshot();
 		connection.send(
 			{ type: actionType, ...(payload !== undefined ? { payload } : {}) },
@@ -332,26 +359,36 @@ export function connectMapDevtools<
 			const currentKeys = new Set(map.keys());
 			const targetKeys = new Set(historicalKeys);
 
-			// Remove keys not in historical state
-			for (const key of currentKeys) {
-				if (!targetKeys.has(key)) {
-					map.delete(key);
-				}
-			}
-
-			// Add missing keys and update existing
-			for (const key of historicalKeys) {
-				const data = historicalState[String(key)] as
-					| Record<string, unknown>
-					| undefined;
-				if (!currentKeys.has(key)) {
-					map.set(key, data as never);
-				} else if (data) {
-					const instance = map.get(key);
-					if (instance) {
-						instance.$setSnapshot(data as never);
+			isRestoring = true;
+			try {
+				// Remove keys not in historical state
+				for (const key of currentKeys) {
+					if (!targetKeys.has(key)) {
+						map.delete(key);
 					}
 				}
+
+				// Add missing keys and update existing
+				for (const key of historicalKeys) {
+					const data = historicalState[String(key)] as
+						| Record<string, unknown>
+						| undefined;
+					if (!currentKeys.has(key)) {
+						map.set(key, data as never);
+					} else if (data) {
+						const instance = map.get(key);
+						if (instance) {
+							instance.$setSnapshot(data as never);
+						}
+					}
+				}
+			} finally {
+				// `map.subscribe` fires synchronously, but instance `$subscribe`
+				// is microtask-batched — keep the flag set until after that
+				// microtask drains so both echo paths see it.
+				queueMicrotask(() => {
+					isRestoring = false;
+				});
 			}
 		}
 	});
@@ -394,7 +431,13 @@ export function connectDevtools<In, Out>(
 
 	connection.init({ value: val.get() });
 
+	// Suppress the echo: when DevTools time-travels by calling `val.set(...)`,
+	// the value's own `subscribe` callback used to re-dispatch the change
+	// back as a fresh `set` action.
+	let isRestoring = false;
+
 	const unsubValue = val.subscribe((current, previous) => {
+		if (isRestoring) return;
 		connection.send(
 			{ type: 'set', payload: { from: previous, to: current } },
 			{ value: current },
@@ -407,7 +450,14 @@ export function connectDevtools<In, Out>(
 			const historicalState = JSON.parse(message.state) as {
 				value: In;
 			};
-			val.set(historicalState.value);
+			isRestoring = true;
+			try {
+				val.set(historicalState.value);
+			} finally {
+				// `val.subscribe` is Preact-effect-based; effects fire
+				// synchronously on signal write, so the flag can clear here.
+				isRestoring = false;
+			}
 		}
 	});
 

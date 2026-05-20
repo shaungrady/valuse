@@ -60,6 +60,27 @@ describe('ValueMap', () => {
 			expect(map.has('a')).toBe(false);
 			expect(map.get('b')).toBe(2);
 		});
+
+		/**
+		 * Contract: a draft mutator that throws mid-way leaves the map
+		 * untouched (no partial commits). The user's error propagates out
+		 * of `.set()` rather than being swallowed.
+		 */
+		it('throwing draft mutator: no partial commits, error propagates', () => {
+			const map = valueMap([['a', 1]] as [string, number][]);
+			const subscriber = vi.fn();
+			map.subscribe(subscriber);
+			expect(() =>
+				map.set((draft) => {
+					draft.set('b', 2);
+					draft.delete('a');
+					throw new Error('mid-mutation');
+				}),
+			).toThrow('mid-mutation');
+			expect(map.has('a')).toBe(true);
+			expect(map.has('b')).toBe(false);
+			expect(subscriber).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('delete()', () => {
@@ -126,6 +147,21 @@ describe('ValueMap', () => {
 			map.clear();
 			expect(map.size).toBe(0);
 		});
+
+		/**
+		 * Bug: `clear()` used to unconditionally assign a fresh `new
+		 * Map()` to the underlying signal. When the map was already empty
+		 * that's still a new reference, so Preact fired subscribers for a
+		 * no-op state change. Users mixing `clear()` with React derivations
+		 * saw spurious re-renders.
+		 */
+		it('clear() on an already-empty map does not notify subscribers', () => {
+			const map = valueMap<string, number>();
+			const subscriber = vi.fn();
+			map.subscribe(subscriber);
+			map.clear();
+			expect(subscriber).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('subscribe()', () => {
@@ -146,6 +182,25 @@ describe('ValueMap', () => {
 			unsub();
 			map.set(new Map([['a', 1]]));
 			expect(fn).not.toHaveBeenCalled();
+		});
+
+		/**
+		 * Bug: a throwing subscriber used to propagate out of `.set()` /
+		 * mutation methods. Contract: throw is contained, siblings still
+		 * fire, the write lands, subsequent writes work.
+		 */
+		it('a throwing subscriber does not poison .set()', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const map = valueMap<string, number>([['a', 1]] as [string, number][]);
+			const after = vi.fn();
+			map.subscribe(() => {
+				throw new Error('boom');
+			});
+			map.subscribe(after);
+			expect(() => map.set((draft) => draft.set('b', 2))).not.toThrow();
+			expect(map.get('b')).toBe(2);
+			expect(after).toHaveBeenCalledOnce();
+			errSpy.mockRestore();
 		});
 	});
 
@@ -224,6 +279,26 @@ describe('ValueMap', () => {
 			map.destroy();
 			map.set(new Map([['a', 1]]));
 			expect(fn).not.toHaveBeenCalled();
+		});
+
+		it('writes after destroy are silently dropped', () => {
+			const map = valueMap<string, number>([['a', 1]] as [string, number][]);
+			map.destroy();
+			map.set(new Map([['x', 99]]));
+			map.set((draft) => draft.set('y', 2));
+			map.delete('a');
+			map.clear();
+			// Reads still return the last value.
+			expect([...map.get().entries()]).toEqual([['a', 1]]);
+		});
+
+		it('destroy() is idempotent', () => {
+			const map = valueMap<string, number>();
+			map.subscribe(() => {});
+			expect(() => {
+				map.destroy();
+				map.destroy();
+			}).not.toThrow();
 		});
 	});
 });

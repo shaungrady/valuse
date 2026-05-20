@@ -234,3 +234,89 @@ describe('ref .use() in derivations — nested', () => {
 		expect(instance.label.get()).toBe('count=1');
 	});
 });
+
+/**
+ * Bug: refs were missing from the async-derivation scope tree.
+ * `buildAsyncGroupNode` (src/core/value-scope.ts) walked `childSlots` and
+ * `childGroups` only — never `definition.refEntries`. The sync path attached
+ * resolved refs to its scope separately, so sync derivations worked while the
+ * equivalent async derivation would throw at `scope.<ref>.use()`.
+ *
+ * These tests mirror the sync ref-derivation coverage above, but with `async`
+ * derivation functions. Tracking semantics: a tracked `.use()` on a ref source
+ * must re-run the derivation when the source's `.subscribe()` would fire
+ * (whole-Value/Set/Map change, ScopeMap key-list change, scope-instance any
+ * field change).
+ */
+describe('ref .use() in async derivations', () => {
+	const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+	it('shared Value ref via .use() works the same as in a sync derivation', async () => {
+		const counter = value<number>(1);
+		const app = valueScope({
+			counter: valueRef(counter),
+			doubled: async ({ scope }: { scope: any }) => scope.counter.use() * 2,
+		});
+		const instance = app.create();
+		await flush();
+		expect(instance.doubled.get()).toBe(2);
+
+		counter.set(5);
+		await flush();
+		expect(instance.doubled.get()).toBe(10);
+	});
+
+	it('factory ref to a ScopeMap is reachable via .use()', async () => {
+		const column = valueScope({ name: value<string>() });
+		const board = valueScope({
+			columns: valueRef(() => column.createMap()),
+			columnCount: async ({ scope }: { scope: any }) =>
+				scope.columns.use().size,
+		});
+		const instance = board.create();
+		await flush();
+		expect(instance.columnCount.get()).toBe(0);
+
+		(instance as any).columns.set('a', { name: 'A' });
+		await flush();
+		expect(instance.columnCount.get()).toBe(1);
+	});
+
+	it('factory ref to a scope instance: re-runs on inner field change', async () => {
+		const user = valueScope({ name: value<string>('Alice') });
+		const app = valueScope({
+			currentUser: valueRef(() => user.create()),
+			greeting: async ({ scope }: { scope: any }) =>
+				`Hello, ${scope.currentUser.use().name.get()}`,
+		});
+		const instance = app.create();
+		await flush();
+		expect(instance.greeting.get()).toBe('Hello, Alice');
+
+		(instance as any).currentUser.name.set('Bob');
+		await flush();
+		expect(instance.greeting.get()).toBe('Hello, Bob');
+	});
+
+	it('.get() on a ref is untracked', async () => {
+		const counter = value<number>(1);
+		let runs = 0;
+		const app = valueScope({
+			counter: valueRef(counter),
+			snapshot: async ({ scope }: { scope: any }) => {
+				runs++;
+				return scope.counter.get();
+			},
+		});
+		const instance = app.create();
+		await flush();
+		expect(instance.snapshot.get()).toBe(1);
+		expect(runs).toBe(1);
+
+		counter.set(2);
+		await flush();
+		// .get() did not subscribe, so no re-run.
+		expect(runs).toBe(1);
+		expect(instance.snapshot.get()).toBe(1);
+	});
+});

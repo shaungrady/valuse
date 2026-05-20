@@ -208,9 +208,24 @@ export function withHistory<Def extends Record<string, unknown>>(
 					get: () => canRedoSignal.value,
 				});
 
+				/**
+				 * Close any open batch window so the next user write starts a
+				 * fresh history entry instead of overwriting the undone-to
+				 * state. Without this, the sequence "type → undo → type"
+				 * inside one batch window truncates and overwrites the head
+				 * of the stack, destroying prior history.
+				 */
+				function closeBatch(): void {
+					if (state.batchTimer !== null) {
+						clearTimeout(state.batchTimer);
+						state.batchTimer = null;
+					}
+				}
+
 				scope.undo = () => {
 					const p = position.value;
 					if (p <= 0) return;
+					closeBatch();
 					state.isRestoring = true;
 					try {
 						const target = stack.value[p - 1];
@@ -225,6 +240,7 @@ export function withHistory<Def extends Record<string, unknown>>(
 				scope.redo = () => {
 					const p = position.value;
 					if (p >= stack.value.length - 1) return;
+					closeBatch();
 					state.isRestoring = true;
 					try {
 						const target = stack.value[p + 1];

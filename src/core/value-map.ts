@@ -33,6 +33,7 @@ export class ValueMap<K, V> {
 	readonly #transforms: Transform<Map<K, V>>[] = [];
 	#comparator: Comparator<Map<K, V>> | undefined;
 	readonly #disposers = new Set<() => void>();
+	#destroyed = false;
 
 	/** @internal */
 	constructor(initial: Map<K, V>) {
@@ -72,6 +73,7 @@ export class ValueMap<K, V> {
 	 * ```
 	 */
 	set(valueOrFn: Map<K, V> | ((draft: Map<K, V>) => void)): void {
+		if (this.#destroyed) return;
 		const previous = this.#signal.value;
 		let next: Map<K, V>;
 		if (typeof valueOrFn === 'function') {
@@ -91,6 +93,7 @@ export class ValueMap<K, V> {
 	 * @returns `true` if the key was present.
 	 */
 	delete(key: K): boolean {
+		if (this.#destroyed) return false;
 		const previous = this.#signal.value;
 		if (!previous.has(key)) return false;
 		const next = new Map(previous);
@@ -139,6 +142,11 @@ export class ValueMap<K, V> {
 
 	/** Remove all entries. */
 	clear(): void {
+		if (this.#destroyed) return;
+		// No-op if already empty. Without this guard, `clear()` on an empty
+		// map still assigned a fresh `new Map()` and fired subscribers (and
+		// triggered React re-renders) for a state that didn't change.
+		if (this.#signal.peek().size === 0) return;
 		this.#signal.value = new Map();
 	}
 
@@ -159,7 +167,11 @@ export class ValueMap<K, V> {
 			}
 			const prev = previousValue;
 			previousValue = currentValue;
-			fn(currentValue, prev);
+			try {
+				fn(currentValue, prev);
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		this.#disposers.add(dispose);
 		return () => {
@@ -277,8 +289,15 @@ export class ValueMap<K, V> {
 		return this.keys();
 	}
 
-	/** Dispose all subscriptions. */
+	/**
+	 * Dispose all subscriptions.
+	 *
+	 * After destroy, reads still return the last value, writes are no-ops,
+	 * and existing subscribers stop firing. Idempotent.
+	 */
 	destroy(): void {
+		if (this.#destroyed) return;
+		this.#destroyed = true;
 		for (const dispose of this.#disposers) dispose();
 		this.#disposers.clear();
 	}

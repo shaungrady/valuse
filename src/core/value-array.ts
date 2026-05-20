@@ -75,7 +75,12 @@ export class ValueArray<In, Out = In> {
 		if (typeof arrayOrIndex === 'number') {
 			const index = arrayOrIndex;
 			const current = [...this.#signal.peek()];
-			current[index] = this.#transformElement(value as In);
+			// Mirror `get(index)` / `use(index)`: negative indices resolve
+			// from the end. Without this, `set(-1, ...)` would write a string
+			// property "-1" instead of replacing the last element, breaking
+			// the symmetry users get from `get` and the `use` setter.
+			const resolved = index < 0 ? current.length + index : index;
+			current[resolved] = this.#transformElement(value as In);
 			this.#commitArray(current);
 			return;
 		}
@@ -222,7 +227,11 @@ export class ValueArray<In, Out = In> {
 			}
 			const prev = previousValue;
 			previousValue = currentValue;
-			fn(currentValue, prev);
+			try {
+				fn(currentValue, prev);
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		this.#disposers.add(dispose);
 		return () => {

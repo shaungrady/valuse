@@ -2,6 +2,9 @@ import { isValueInstance } from './value.js';
 import { isValueSchemaInstance } from './value-schema.js';
 import { ValuePlain } from './value-plain.js';
 import { ValueRef } from './value-ref.js';
+import { ValueSet, valueSet } from './value-set.js';
+import { ValueMap, valueMap } from './value-map.js';
+import { ValueArray, valueArray } from './value-array.js';
 import type {
 	ScopeDefinitionMeta,
 	SlotMeta,
@@ -215,6 +218,58 @@ function walkTree(
 		if (entry instanceof ValueRef) {
 			// ValueRef: resolved per-instance in createScopeInstance
 			refEntries.set(path, entry);
+			continue;
+		}
+
+		// Bare reactive collections (`valueSet`, `valueMap`, `valueArray`)
+		// inside a scope definition: without this branch they'd fall through
+		// to `staticEntries` (frozen, shared across every instance created
+		// from the template), so e.g. `alice.hobbies.add('x')` would also
+		// mutate `bob.hobbies`. The README's documented `hobbies:
+		// valueSet<string>()` pattern relies on per-instance independence,
+		// so we wrap each collection in a factory-style `ValueRef` that
+		// rebuilds a fresh collection seeded with the definition-time
+		// contents on every `.create()`. Pipes and comparators set on the
+		// declared collection are not preserved by this clone; users who
+		// need those should wrap explicitly with
+		// `valueRef(() => valueXxx(...).pipe(...))`.
+		if (entry instanceof ValueSet) {
+			const initial = [...(entry.get() as Set<unknown>)];
+			refEntries.set(
+				path,
+				new ValueRef(
+					() => undefined,
+					undefined,
+					() => valueSet(initial),
+				),
+			);
+			continue;
+		}
+		if (entry instanceof ValueMap) {
+			const initial = [...(entry.get() as Map<unknown, unknown>).entries()] as [
+				unknown,
+				unknown,
+			][];
+			refEntries.set(
+				path,
+				new ValueRef(
+					() => undefined,
+					undefined,
+					() => valueMap(initial),
+				),
+			);
+			continue;
+		}
+		if (entry instanceof ValueArray) {
+			const initial = [...(entry.get() as readonly unknown[])];
+			refEntries.set(
+				path,
+				new ValueRef(
+					() => undefined,
+					undefined,
+					() => valueArray(initial),
+				),
+			);
 			continue;
 		}
 

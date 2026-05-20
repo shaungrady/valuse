@@ -204,6 +204,75 @@ describe('transitive lifecycle', () => {
 	});
 });
 
+/**
+ * Bug: transitive onUsed/onUnused propagation was only wired for
+ * factory refs (`valueRef(() => …)`). Shared scope-instance refs
+ * (`valueRef(someInstance)`) were skipped entirely, contradicting the
+ * README's Scaling Up → valueRef claim that "all scopes it references via
+ * valueRef() also become 'used'".
+ *
+ * The pre-existing test 'shared ref onUsed fires only once for multiple
+ * parents' in this file is a misnomer — its `shared` source is a `Value`
+ * (with no `onUsed` of its own), so it never exercised the shared-scope-ref
+ * propagation path.
+ */
+describe('transitive lifecycle for shared scope-instance refs', () => {
+	it('shared scope-instance ref fires onUsed/onUnused when a parent subscriber attaches/detaches', () => {
+		const childOnUsed = vi.fn();
+		const childOnUnused = vi.fn();
+		const child = valueScope(
+			{ name: value<string>('shared') },
+			{ onUsed: childOnUsed, onUnused: childOnUnused },
+		);
+		const sharedChild = child.create();
+
+		const parent = valueScope({
+			label: value<string>(),
+			child: valueRef(sharedChild),
+		});
+		const instance = parent.create({ label: 'p' });
+
+		expect(childOnUsed).not.toHaveBeenCalled();
+
+		const unsub = instance.label.subscribe(() => {});
+		expect(childOnUsed).toHaveBeenCalledOnce();
+
+		unsub();
+		expect(childOnUnused).toHaveBeenCalledOnce();
+	});
+
+	it('shared scope ref counts subscribers from each parent independently', () => {
+		const childOnUsed = vi.fn();
+		const childOnUnused = vi.fn();
+		const child = valueScope(
+			{ name: value<string>('shared') },
+			{ onUsed: childOnUsed, onUnused: childOnUnused },
+		);
+		const sharedChild = child.create();
+
+		const parent = valueScope({
+			label: value<string>(),
+			child: valueRef(sharedChild),
+		});
+
+		const a = parent.create({ label: 'a' });
+		const b = parent.create({ label: 'b' });
+
+		const unsubA = a.label.subscribe(() => {});
+		expect(childOnUsed).toHaveBeenCalledTimes(1);
+		const unsubB = b.label.subscribe(() => {});
+		// Already used; onUsed stays at 1.
+		expect(childOnUsed).toHaveBeenCalledTimes(1);
+
+		unsubA();
+		// Still one parent attached; onUnused has not fired.
+		expect(childOnUnused).not.toHaveBeenCalled();
+
+		unsubB();
+		expect(childOnUnused).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('shared ref to scope instance', () => {
 	it('shared scope ref is accessible and not destroyed with parent', () => {
 		const childDestroy = vi.fn();

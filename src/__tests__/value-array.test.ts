@@ -51,6 +51,28 @@ describe('valueArray', () => {
 			arr.set(0, 'Alicia');
 			expect(arr.get()).toEqual(['Alicia', 'Bob']);
 		});
+
+		/**
+		 * Bug: `get(-1)` and `use(-1)` both resolve negative indices
+		 * from the end, but `set(-1, value)` used to write a string property
+		 * named "-1" on the underlying array instead of replacing the last
+		 * element. The bug naturally surfaces through the `use(-1)` setter,
+		 * since that just delegates to `set(index, value)`.
+		 */
+		it('set(negativeIndex, value) resolves from end, like get/use', () => {
+			const arr = valueArray<string>(['a', 'b', 'c']);
+			arr.set(-1, 'C');
+			expect(arr.get()).toEqual(['a', 'b', 'C']);
+			arr.set(-3, 'A');
+			expect(arr.get()).toEqual(['A', 'b', 'C']);
+		});
+
+		it('use(negativeIndex) setter writes through to the resolved slot', () => {
+			const arr = valueArray<string>(['a', 'b', 'c']);
+			const [, setLast] = arr.use(-1);
+			setLast('Z');
+			expect(arr.get()).toEqual(['a', 'b', 'Z']);
+		});
 	});
 
 	describe('mutations', () => {
@@ -144,6 +166,25 @@ describe('valueArray', () => {
 			arr.push('Bob');
 			expect(subscriber).toHaveBeenCalledOnce();
 		});
+
+		/**
+		 * Bug: a throwing subscriber used to propagate out of `.set()` /
+		 * mutation methods. Contract: throw is contained, siblings still
+		 * fire, the write lands, subsequent writes work.
+		 */
+		it('a throwing subscriber does not poison mutations', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const arr = valueArray<string>(['Alice']);
+			const after = vi.fn();
+			arr.subscribe(() => {
+				throw new Error('boom');
+			});
+			arr.subscribe(after);
+			expect(() => arr.push('Bob')).not.toThrow();
+			expect(arr.get()).toEqual(['Alice', 'Bob']);
+			expect(after).toHaveBeenCalledOnce();
+			errSpy.mockRestore();
+		});
 	});
 
 	describe('pipeElement()', () => {
@@ -233,6 +274,26 @@ describe('valueArray', () => {
 			arr.destroy();
 			arr.push('Alice');
 			expect(subscriber).not.toHaveBeenCalled();
+		});
+
+		it('writes after destroy are silently dropped', () => {
+			const arr = valueArray<string>(['a']);
+			arr.destroy();
+			arr.set(['x', 'y']);
+			arr.push('z');
+			arr.set(0, 'A');
+			arr.splice(0, 1);
+			// Reads still return the last value.
+			expect(arr.get()).toEqual(['a']);
+		});
+
+		it('destroy() is idempotent', () => {
+			const arr = valueArray<string>();
+			arr.subscribe(() => {});
+			expect(() => {
+				arr.destroy();
+				arr.destroy();
+			}).not.toThrow();
 		});
 	});
 });

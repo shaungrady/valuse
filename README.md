@@ -569,22 +569,28 @@ const person = valueScope(
 
 ### beforeChange
 
-Fires synchronously before values are written. Use `prevent()` to block changes.
-Derivations never see prevented values:
+Fires synchronously before each value is written. Use `prevent()` to block the
+write. Derivations never see prevented values.
+
+Unlike `onChange`, `beforeChange` is **per-write, not batched**: it fires once
+for each `.set()` call with `changes.size === 1`. `batchSets` defers downstream
+effect propagation but does not collapse `beforeChange` invocations — each write
+is independently veto-able.
 
 ```ts
 {
-  beforeChange: ({ scope, changes, changesByScope, prevent }) => {
+  beforeChange: ({ scope, changes, prevent }) => {
+    // `changes` always holds exactly one change here.
+    const [change] = changes;
+
     // Prevent a specific field
-    prevent(scope.job.title);
+    if (change.path === 'job.title') prevent(change);
 
     // Prevent everything under a group
-    prevent(scope.job);
+    if (change.to === '') prevent(scope.job);
 
     // Prevent based on the change itself
-    for (const change of changes) {
-      if (change.to === '') prevent(change);
-    }
+    if (change.to === null) prevent(change);
   },
 }
 ```
@@ -885,6 +891,11 @@ const scope = valueScope(
 aborts when the last subscriber detaches, and is recreated fresh on the next
 attach.
 
+Destroy is a terminal state. After `destroy()` / `$destroy()`, reads still
+return the last value, writes (and any deferred work that crosses the boundary —
+debounced flushes, async resolutions) are silently dropped, subscribers stop
+firing, and a second call is a no-op.
+
 ### Factories
 
 Since a [scope](docs/scopes.md) is just a function return value, you can
@@ -1127,6 +1138,15 @@ isPlain(bob.metadata); // true, has .get(), .set(), no .use()
 isComputed(bob.fullName); // true, has .get(), .use(), no .set()
 isScope(bob); // true, scope instance
 ```
+
+> **Note:** a schema-validated field is also a value field, so
+> `isValue(bob.email)` returns `true` for a `valueSchema` slot. When narrowing,
+> check the more specific predicate first:
+>
+> ```ts
+> if (isSchema(field)) { ...validation-aware path... }
+> else if (isValue(field)) { ...plain reactive value... }
+> ```
 
 ---
 

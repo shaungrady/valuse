@@ -71,6 +71,49 @@ describe('value (v2)', () => {
 				[3, 2],
 			]);
 		});
+
+		/**
+		 * Bug: a subscriber that threw used to propagate the error out of
+		 * `.set()`. Sibling subscribers registered after the thrower still
+		 * fired (Preact's effect graph contains each effect), but the
+		 * source `.set()` looked broken to its caller.
+		 *
+		 * Contract: a throwing subscriber must not poison `.set()`. The
+		 * write succeeds, sibling subscribers (registered before *and*
+		 * after the thrower) all fire, and subsequent writes also work.
+		 */
+		describe('throw containment in subscribers', () => {
+			it('a throwing subscriber does not propagate out of .set()', () => {
+				const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+				const count = value(0);
+				count.subscribe(() => {});
+				count.subscribe(() => {
+					throw new Error('boom');
+				});
+				count.subscribe(() => {});
+				expect(() => count.set(1)).not.toThrow();
+				expect(count.get()).toBe(1);
+				expect(errSpy).toHaveBeenCalled();
+				errSpy.mockRestore();
+			});
+
+			it('sibling subscribers still fire when one throws', () => {
+				const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+				const count = value(0);
+				const before = vi.fn();
+				const after = vi.fn();
+				count.subscribe(before);
+				count.subscribe(() => {
+					throw new Error('boom');
+				});
+				count.subscribe(after);
+				count.set(1);
+				count.set(2);
+				expect(before).toHaveBeenCalledTimes(2);
+				expect(after).toHaveBeenCalledTimes(2);
+				errSpy.mockRestore();
+			});
+		});
 	});
 
 	describe('.pipe() — sync transforms', () => {
@@ -273,8 +316,23 @@ describe('value (v2)', () => {
 			const count = value(0);
 			count.subscribe(() => {});
 			count.destroy();
+			// Reads still return the last value; writes are silently dropped.
+			expect(count.get()).toBe(0);
 			count.set(5);
-			expect(count.get()).toBe(5);
+			expect(count.get()).toBe(0);
+		});
+
+		it('destroy() is idempotent', () => {
+			const onCleanup = vi.fn();
+			const count = value(0);
+			// Stand in for any internal disposer — exercising the second
+			// destroy() should not re-run anything.
+			count.subscribe(onCleanup);
+			count.destroy();
+			count.destroy();
+			// subscribe's internal effect disposer ran exactly once on the
+			// first destroy; the second call is a no-op.
+			expect(() => count.destroy()).not.toThrow();
 		});
 	});
 

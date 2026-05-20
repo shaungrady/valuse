@@ -217,6 +217,45 @@ describe('withHistory', () => {
 		vi.useRealTimers();
 	});
 
+	/**
+	 * Bug: an undo inside an open batch window followed by another
+	 * write used to obliterate prior history.
+	 *
+	 * Trace before the fix:
+	 *   1. set('a')  → stack=[init, a], pos=1, batchTimer ticking
+	 *   2. undo()    → setSnapshot(init), pos=0 (timer still ticking — undo
+	 *                   never cleared it)
+	 *   3. set('b')  → recordChange sees timer !== null → replaceTop, which
+	 *                  truncates to stack.slice(0, pos+1)=[init] then
+	 *                  overwrites index 0 → stack=[b], pos=0
+	 *
+	 * Net effect: 'init' and 'a' are both lost, and undo is no longer
+	 * available — destructive data loss for ordinary typing-undo-typing
+	 * flows. The fix clears the batch timer on undo/redo/clearHistory so
+	 * the next change starts a fresh batch entry instead of overwriting the
+	 * undone-to state.
+	 */
+	it('undo inside the batch window does not destroy prior history', () => {
+		vi.useFakeTimers();
+		const scope = valueScope({ text: value<string>() });
+		const undoable = withHistory(scope, { batchMs: 300 });
+		const instance = undoable.create({ text: '' });
+
+		instance.text.set('a');
+		instance.undo();
+		expect(instance.text.get()).toBe('');
+		expect(instance.canRedo).toBe(true);
+
+		// Still inside the batch window — but this write should append a new
+		// entry, not overwrite the undone-to state.
+		instance.text.set('b');
+		expect(instance.canUndo).toBe(true);
+		instance.undo();
+		expect(instance.text.get()).toBe('');
+
+		vi.useRealTimers();
+	});
+
 	it('$destroy cleans up history state', () => {
 		const scope = valueScope({ count: value<number>() });
 		const undoable = withHistory(scope);

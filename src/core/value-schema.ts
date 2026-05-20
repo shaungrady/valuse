@@ -65,7 +65,21 @@ export function runValidation<In, Out>(
 	schema: StandardSchemaV1,
 	input: In,
 ): ValidationState<In, Out> {
-	const result = schema['~standard'].validate(input);
+	let result: ReturnType<StandardSchemaV1['~standard']['validate']>;
+	try {
+		result = schema['~standard'].validate(input);
+	} catch (err) {
+		// A throwing validator (rather than one that returns issues) would
+		// otherwise propagate out of `.set()`. Surface the failure through
+		// the validation state instead — readers see `isValid: false` with
+		// the throw message as an issue, and the value still gets stored.
+		console.error('valuse: schema validator threw', err);
+		return {
+			isValid: false,
+			value: input,
+			issues: [{ message: err instanceof Error ? err.message : String(err) }],
+		};
+	}
 
 	// Guard against async schemas that slipped through at runtime
 	if (result instanceof Promise) {
@@ -110,6 +124,7 @@ export class ValueSchema<In, Out = In> {
 	/** @internal */
 	_comparator: Comparator<In> | undefined;
 	readonly #disposers: (() => void)[] = [];
+	#destroyed = false;
 
 	/** @internal */
 	constructor(
@@ -139,6 +154,7 @@ export class ValueSchema<In, Out = In> {
 	 * The value is stored regardless of validity. Validation state is updated.
 	 */
 	set(valueOrFn: In | ((prev: In) => In)): void {
+		if (this.#destroyed) return;
 		const previous = this._signal.peek();
 		const raw =
 			typeof valueOrFn === 'function' ?
@@ -179,7 +195,11 @@ export class ValueSchema<In, Out = In> {
 			}
 			const prev = previousValue;
 			previousValue = currentValue;
-			fn(currentValue, prev);
+			try {
+				fn(currentValue, prev);
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		this.#disposers.push(dispose);
 		return () => {
@@ -232,8 +252,15 @@ export class ValueSchema<In, Out = In> {
 		];
 	}
 
-	/** Dispose all active subscriptions. */
+	/**
+	 * Dispose all active subscriptions.
+	 *
+	 * After destroy, reads still return the last value, writes are no-ops,
+	 * and existing subscribers stop firing. Idempotent.
+	 */
 	destroy(): void {
+		if (this.#destroyed) return;
+		this.#destroyed = true;
 		for (const dispose of this.#disposers) dispose();
 		this.#disposers.length = 0;
 	}

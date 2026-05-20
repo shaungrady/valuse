@@ -104,6 +104,39 @@ describe('pipeFilter', () => {
 	});
 });
 
+/**
+ * Bug: chaining a factory pipe after a sync pipe used to re-run every
+ * sync pre-step against an already-transformed initial value, because
+ * `Value.pipe(<factory>)` calls `newValue.set(currentValue)` to "re-apply
+ * the initial value through the full pipeline" — but `currentValue` is the
+ * previous Value's signal value, which has already been piped. So `set()`
+ * walks the sync steps a second time. For `value(5).pipe(x => x * 2).pipe(<factory>)`
+ * the stored initial becomes 20 instead of the intended 10.
+ *
+ * Fix: in `Value.pipe(<factory>)`, hand `currentValue` directly into the
+ * first activated factory's `write`, skipping the pre-factory sync stage
+ * (those steps are already baked into `currentValue`).
+ */
+describe('sync → factory pipe ordering', () => {
+	it('sync pipe followed by a sync-style factory applies the sync only once', () => {
+		const v = value(5)
+			.pipe((x: number) => x * 2)
+			.pipe(pipeFilter((x: number) => x > 5));
+		// 5 doubled to 10; filter(>5) accepts 10. Expected: 10.
+		expect(v.get()).toBe(10);
+	});
+
+	it('subsequent writes still flow through sync → factory exactly once', () => {
+		const v = value(5)
+			.pipe((x: number) => x * 2)
+			.pipe(pipeFilter((x: number) => x > 5));
+		v.set(4); // 4 * 2 = 8 > 5 → passes
+		expect(v.get()).toBe(8);
+		v.set(2); // 2 * 2 = 4 ≤ 5 → filtered, stays at 8
+		expect(v.get()).toBe(8);
+	});
+});
+
 describe('pipeScan', () => {
 	it('accumulates values', () => {
 		const v = value(0).pipe(

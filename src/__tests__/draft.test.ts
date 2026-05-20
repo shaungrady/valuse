@@ -112,6 +112,25 @@ describe('draftSet', () => {
 		// No net change
 		expect(result).toBe(source);
 	});
+
+	/**
+	 * Contract: a throwing mutator does *not* leak partial mutations.
+	 * `draftSet` only commits the pending adds/deletes after the mutator
+	 * returns successfully, so the throw propagates out of `set()` with
+	 * the source unchanged. Pinning this so a future refactor (e.g.,
+	 * applying additions eagerly to the draft) can't quietly downgrade
+	 * to partial mutation on throw.
+	 */
+	it('a throwing mutator leaves the source untouched', () => {
+		const source = new Set([1, 2]);
+		expect(() =>
+			draftSet(source, (draft) => {
+				draft.add(99);
+				throw new Error('mid-mutation');
+			}),
+		).toThrow('mid-mutation');
+		expect([...source]).toEqual([1, 2]);
+	});
 });
 
 describe('draftMap', () => {
@@ -265,5 +284,23 @@ describe('draftMap', () => {
 				['b', 2],
 			]);
 		});
+	});
+
+	/**
+	 * Contract: a throwing mutator does *not* leak partial mutations.
+	 * `draftMap` only commits pendingPuts/pendingDeletes after the
+	 * mutator returns successfully, so the throw propagates out of
+	 * `valueMap.set(draft => …)` with the source unchanged.
+	 */
+	it('a throwing mutator leaves the source untouched', () => {
+		const source = new Map([['a', 1]]);
+		expect(() =>
+			draftMap(source, (draft) => {
+				draft.set('b', 2);
+				draft.delete('a');
+				throw new Error('mid-mutation');
+			}),
+		).toThrow('mid-mutation');
+		expect([...source.entries()]).toEqual([['a', 1]]);
 	});
 });

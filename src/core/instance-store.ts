@@ -14,6 +14,14 @@ interface ActiveFactoryPipe {
 }
 
 /**
+ * Maximum number of consecutive microtask ticks in which an `onChange`
+ * callback may write back into its own scope before the loop is broken.
+ * Crossed almost exclusively by accidental infinite loops; legitimate
+ * "auto-fill from change" chains reach a fixed point in just a few ticks.
+ */
+const ONCHANGE_RESCHEDULE_LIMIT = 50;
+
+/**
  * Per-instance data store. Holds signals and manages the write pipeline,
  * change tracking, and subscriptions. All field wrappers delegate to this.
  *
@@ -23,8 +31,33 @@ interface ActiveFactoryPipe {
  * @internal
  */
 export class InstanceStore {
-	/** One signal per reactive slot. */
+	/**
+	 * One signal per reactive slot. Plain slots also occupy a position here
+	 * (so iteration over `signals[]` stays length-aligned with `slotCount`),
+	 * but their signal is never written to after construction — plain reads
+	 * and writes are routed through {@link #plainValues} so plain fields
+	 * stay invisible to the reactive graph (`$subscribe`, derivations,
+	 * `_trackAll`). The snapshot cache is invalidated via {@link _plainVersion}.
+	 */
 	readonly signals: Signal<unknown>[];
+
+	/**
+	 * Backing storage for plain (`valuePlain`) slot values. Updated directly
+	 * by {@link _writeToSignal} so plain writes do not fire any Preact
+	 * effect — they're "inert" by docs contract. Read by {@link read} /
+	 * {@link readTracked} when the slot is plain.
+	 * @internal
+	 */
+	readonly #plainValues = new Map<number, unknown>();
+
+	/**
+	 * Coarse "any plain field changed" signal. Tracked by the snapshot
+	 * invalidator in `attachDollarMethods` so `$getSnapshot()` returns
+	 * fresh data after a plain write, while leaving every other reactive
+	 * consumer (`$subscribe`, derivations) untouched.
+	 * @internal
+	 */
+	readonly _plainVersion: Signal<number> = signal(0);
 
 	/** Async state signals, keyed by slot index. Only populated for async derivations. */
 	readonly asyncStates: Map<number, Signal<AsyncState<unknown>>>;
@@ -63,6 +96,11 @@ export class InstanceStore {
 
 	#pendingChanges: Change[] | null = null;
 	#changeBatchScheduled = false;
+	// Tracks consecutive onChange invocations where the hook scheduled
+	// another tick (i.e. wrote back into the scope synchronously). Used
+	// to detect runaway re-entry loops that would otherwise freeze the
+	// page silently in the microtask queue.
+	#consecutiveOnChangeReschedules = 0;
 
 	// --- Hooks (set by scope creation) ---
 
@@ -103,24 +141,42 @@ export class InstanceStore {
 		this.signals = new Array(definition.slotCount) as Signal<unknown>[];
 		for (let slot = 0; slot < definition.slotCount; slot++) {
 			const meta = definition.slots[slot]!;
+			const hasUserInitial = initialValues.has(slot);
 			const initial =
-				initialValues.has(slot) ? initialValues.get(slot) : meta.defaultValue;
+				hasUserInitial ? initialValues.get(slot) : meta.defaultValue;
 
 			if (meta.kind === 'asyncDerived') {
-				const hasSeed = initialValues.has(slot);
 				this.asyncStates.set(
 					slot,
-					signal(hasSeed ? resolvedAsyncState(initial) : initialAsyncState()),
+					signal(
+						hasUserInitial ? resolvedAsyncState(initial) : initialAsyncState(),
+					),
 				);
 			}
 
-			// Apply sync pipeline to initial value
+			// Whether the sync pipeline still needs to run against `initial`.
+			// User-supplied initials (from `.create({...})`) are raw, so
+			// they always go through the pipeline. The slot's `defaultValue`
+			// only needs piping when it came from a `ValuePlain` (whose
+			// `_value` is stored raw and depends on the pipeline to produce
+			// the typed output). For `value()` / `valueSchema()`, the
+			// `defaultValue` is captured from the chained Value's
+			// post-pipe signal, so re-applying the pipeline here would
+			// double-apply every sync step — e.g. `value(5).pipe(x => x*2)`
+			// would store 20 instead of 10.
+			const shouldApplyPipeline = hasUserInitial || meta.kind === 'plain';
 			const processed =
-				meta.pipeline ?
+				shouldApplyPipeline && meta.pipeline ?
 					this.#applySyncPipeline(initial, meta.pipeline)
 				:	initial;
 
 			this.signals[slot] = signal(processed);
+
+			// Plain slots also seed `#plainValues` — that's what
+			// `read`/`readTracked` actually return for plain.
+			if (meta.kind === 'plain') {
+				this.#plainValues.set(slot, processed);
+			}
 
 			// Initialize validation state for schema slots
 			if (meta.kind === 'schema' && meta.schema) {
@@ -128,6 +184,24 @@ export class InstanceStore {
 					slot,
 					signal(runValidation(meta.schema, processed)),
 				);
+			}
+		}
+
+		// Activate factory pipes for every slot whose pipeline contains a
+		// factory step. Without this, factory pipes inside scope definitions
+		// (pipeDebounce / pipeThrottle / pipeBatch / ...) are silently dead:
+		// `write()` only routes through `#factoryPipes.get(slot)` when populated,
+		// and `#applySyncPipeline` stops at the first factory — so a
+		// `value('').pipe(pipeDebounce(300))` field would fire immediately
+		// instead of debouncing. Standalone `Value.pipe(factory)` already
+		// self-activates in `value.ts`; this brings scope slots to parity.
+		for (let slot = 0; slot < definition.slotCount; slot++) {
+			const meta = definition.slots[slot]!;
+			if (
+				meta.pipeline &&
+				meta.pipeline.some((step) => step.kind === 'factory')
+			) {
+				this.activateFactoryPipes(slot);
 			}
 		}
 	}
@@ -152,9 +226,13 @@ export class InstanceStore {
 	}
 
 	/**
-	 * Read a slot's current value without tracking.
+	 * Read a slot's current value without tracking. Plain slots bypass the
+	 * signal entirely and read from {@link #plainValues}.
 	 */
 	read(slot: number): unknown {
+		if (this.definition.slots[slot]!.kind === 'plain') {
+			return this.#plainValues.get(slot);
+		}
 		return this.signals[slot]!.peek();
 	}
 
@@ -167,9 +245,14 @@ export class InstanceStore {
 
 	/**
 	 * Read a slot's current value with Preact tracking (for use inside
-	 * computed/effect).
+	 * computed/effect). Plain reads are deliberately untracked, since plain
+	 * fields are documented as inert — derivations that `.use()` a plain slot
+	 * must not re-run when the plain value changes.
 	 */
 	readTracked(slot: number): unknown {
+		if (this.definition.slots[slot]!.kind === 'plain') {
+			return this.#plainValues.get(slot);
+		}
 		return this.signals[slot]!.value;
 	}
 
@@ -206,14 +289,30 @@ export class InstanceStore {
 	/**
 	 * Write directly to a signal, running comparator and change hooks.
 	 * Used by the sync pipeline path and by factory pipe set() callbacks.
+	 *
+	 * Bug fix: `write()` already short-circuits when the store is destroyed,
+	 * but this method is *also* invoked directly by factory pipe `set`
+	 * callbacks — and some of those (notably `pipeBatch`) defer writes via
+	 * `Promise.resolve().then(...)` with no `onCleanup`. Without a guard
+	 * here, a `$destroy()` between the `.set(...)` and the deferred flush
+	 * would still mutate the disposed slot's signal and surface that
+	 * change to any consumer subscribed via a path other than the
+	 * instance's own disposers (e.g. an external `valueRef`).
 	 */
 	_writeToSignal(slot: number, value: unknown): void {
+		if (this.destroyed) return;
 		const meta = this.definition.slots[slot]!;
 		const previous = this.signals[slot]!.peek();
 
-		// Plain slots: write directly, no comparator or change tracking
+		// Plain slots: write to the non-reactive backing map and bump the
+		// coarse plain-version signal. The signal in `signals[slot]` is
+		// intentionally NOT updated, so plain writes are invisible to
+		// `$subscribe`, derivations, and `_trackAll`. Only the snapshot
+		// invalidator tracks `_plainVersion`, which keeps `$getSnapshot()`
+		// fresh without re-rendering the rest of the reactive graph.
 		if (meta.kind === 'plain') {
-			this.signals[slot]!.value = value;
+			this.#plainValues.set(slot, value);
+			this._plainVersion.value++;
 			return;
 		}
 
@@ -302,7 +401,11 @@ export class InstanceStore {
 			}
 			const prev = previousValue;
 			previousValue = currentValue;
-			fn(currentValue, prev);
+			try {
+				fn(currentValue, prev);
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 
 		let disposed = false;
@@ -388,7 +491,11 @@ export class InstanceStore {
 				isFirstRun = false;
 				return;
 			}
-			fn();
+			try {
+				fn();
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		return dispose;
 	}
@@ -415,7 +522,11 @@ export class InstanceStore {
 				isFirstRun = false;
 				return;
 			}
-			fn();
+			try {
+				fn();
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		return dispose;
 	}
@@ -572,6 +683,31 @@ export class InstanceStore {
 				changes,
 				changesByScope,
 			});
+
+			// Detect re-entry loops. If the hook wrote back into the scope,
+			// `#changeBatchScheduled` was flipped back to `true` during the
+			// call. Count consecutive ticks where that happens; after a
+			// threshold, break the loop (drop the pending writes and
+			// cancel the next scheduled tick) and log a diagnostic. The
+			// underlying signal writes have already landed — only the
+			// follow-up `onChange` call is suppressed.
+			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the onChangeHook call above can synchronously re-enter and flip this back to true
+			if (this.#changeBatchScheduled) {
+				this.#consecutiveOnChangeReschedules++;
+				if (this.#consecutiveOnChangeReschedules >= ONCHANGE_RESCHEDULE_LIMIT) {
+					console.error(
+						`valuse: onChange has scheduled itself ${String(ONCHANGE_RESCHEDULE_LIMIT)}+ ` +
+							'times in a row. This usually means an onChange callback ' +
+							'is writing back into the scope and creating an infinite loop. ' +
+							'Suppressing further onChange invocations for this loop.',
+					);
+					this.#pendingChanges = null;
+					this.#changeBatchScheduled = false;
+					this.#consecutiveOnChangeReschedules = 0;
+				}
+			} else {
+				this.#consecutiveOnChangeReschedules = 0;
+			}
 		});
 	}
 }

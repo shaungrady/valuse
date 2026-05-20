@@ -58,6 +58,71 @@ describe('valueSchema (standalone)', () => {
 		const validation = email.getValidation();
 		expect(validation.isValid).toBe(true);
 	});
+
+	/**
+	 * Bug: `runValidation` already catches async schemas explicitly, but
+	 * a synchronous `validate()` that throws (some real-world validators
+	 * raise on malformed input rather than returning issues) propagates
+	 * out of `valueSchema.set()`. The value still gets written, but the
+	 * validation state never updates — readers see the stale prior state
+	 * with no signal that validation actually failed.
+	 *
+	 * Contract: a throwing schema validator does not propagate out of
+	 * `.set()`. The validation state surfaces the failure as `isValid:
+	 * false` with a synthetic issue describing the throw, and the next
+	 * non-throwing write recovers.
+	 */
+	describe('throw containment for schema validators', () => {
+		const throwingSchema: StandardSchemaV1<string, string> = {
+			'~standard': {
+				version: 1,
+				vendor: 'test-throwing',
+				validate: (input) => {
+					if (input === 'bomb') throw new Error('kaboom in validator');
+					return { value: input as string };
+				},
+			},
+		};
+
+		it('throw inside schema.validate does not propagate out of .set()', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const name = valueSchema(throwingSchema, 'alice');
+			expect(() => name.set('bomb')).not.toThrow();
+			expect(name.get()).toBe('bomb');
+			expect(errSpy).toHaveBeenCalled();
+			errSpy.mockRestore();
+		});
+
+		it('validation state surfaces the throw as invalid', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const name = valueSchema(throwingSchema, 'alice');
+			name.set('bomb');
+			const validation = name.getValidation();
+			expect(validation.isValid).toBe(false);
+			expect(validation.value).toBe('bomb');
+			expect(validation.issues.length).toBeGreaterThan(0);
+			errSpy.mockRestore();
+		});
+
+		it('throw on initial value surfaces as invalid, not a constructor throw', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			expect(() => valueSchema(throwingSchema, 'bomb')).not.toThrow();
+			const name = valueSchema(throwingSchema, 'bomb');
+			expect(name.getValidation().isValid).toBe(false);
+			errSpy.mockRestore();
+		});
+
+		it('next non-throwing write recovers validation state', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const name = valueSchema(throwingSchema, 'alice');
+			name.set('bomb');
+			expect(name.getValidation().isValid).toBe(false);
+			name.set('carol');
+			expect(name.getValidation().isValid).toBe(true);
+			expect(name.getValidation().value).toBe('carol');
+			errSpy.mockRestore();
+		});
+	});
 });
 
 // ── Parsing morphs (In ≠ Out) ──────────────────────────────────────────
@@ -203,6 +268,36 @@ describe('valueSchema with compareUsing', () => {
 	});
 });
 
+// ── destroy semantics ──────────────────────────────────────────────────
+
+describe('valueSchema destroy()', () => {
+	it('stops all subscribers from firing', () => {
+		const email = valueSchema(Email, '');
+		const fn = vi.fn();
+		email.subscribe(fn);
+		email.destroy();
+		email.set('alice@example.com');
+		expect(fn).not.toHaveBeenCalled();
+	});
+
+	it('writes after destroy are silently dropped', () => {
+		const email = valueSchema(Email, 'initial@example.com');
+		email.destroy();
+		email.set('after-destroy@example.com');
+		// Reads still return the last value.
+		expect(email.get()).toBe('initial@example.com');
+	});
+
+	it('destroy() is idempotent', () => {
+		const email = valueSchema(Email, '');
+		email.subscribe(() => {});
+		expect(() => {
+			email.destroy();
+			email.destroy();
+		}).not.toThrow();
+	});
+});
+
 // ── $getIsValid() / $useIsValid() ──────────────────────────────────────
 
 describe('$getIsValid()', () => {
@@ -280,6 +375,36 @@ describe('$getIsValid()', () => {
 		);
 		const instance = form.create();
 		expect(instance.$getIsValid()).toBe(true);
+	});
+
+	/**
+	 * Bug: `ValidationState<In, Out>` is a discriminated union:
+	 *   - `isValid: true`  ⇒ `value: Out`  (parsed)
+	 *   - `isValid: false` ⇒ `value: In`   (raw input)
+	 *
+	 * When a validate-hook issue is routed to a schema field whose own
+	 * schema validation passes, the field's `getValidation()` was wrapped
+	 * to report `isValid: false` while still returning `baseValidation.value`
+	 * — i.e. the parsed `Out`. For schemas where In and Out diverge (parsing
+	 * morphs like `string.numeric.parse`), readers that branch on `isValid`
+	 * and then read `value` get the wrong type at runtime.
+	 */
+	it('routed validate-hook issues preserve the In type in value', () => {
+		const form = valueScope(
+			{ count: valueSchema(Count, '0') }, // In=string, Out=number
+			{
+				validate: ({ scope }: { scope: any }) => {
+					scope.count.use(); // track
+					return [{ message: 'too small', path: ['count'] }];
+				},
+			},
+		);
+		const instance = form.create();
+		const v = instance.count.getValidation();
+		expect(v.isValid).toBe(false);
+		// When isValid is false the discriminated union promises the raw In
+		// (the string '0'), not the parsed Out (number 0).
+		expect(v.value).toBe('0');
 	});
 
 	it('deep: false (default) ignores invalid nested scopes', () => {
@@ -945,6 +1070,80 @@ describe('validate scope config', () => {
 		// Both validate hooks produce issues, so not valid
 		expect(instance.$getIsValid()).toBe(false);
 	});
+
+	/**
+	 * Bug: a `validate` hook that throws used to propagate the error out
+	 * of the source field's `.set()`, because the hook runs inside a
+	 * Preact `computed` synced via an `effect`. Worse, after the throw
+	 * `validateIssuesSignal` was never updated, so `$getIsValid()`
+	 * silently kept returning `true` — a broken validator looked valid.
+	 *
+	 * Contract: a throwing validate hook does not propagate out of
+	 * `.set()`. The scope reports invalid (with a synthetic
+	 * "validate threw" issue), and the next non-throwing run recovers.
+	 */
+	describe('throw containment in validate hook', () => {
+		it('throw inside validate does not propagate out of source .set()', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const form = valueScope(
+				{
+					age: value<number>(0),
+				},
+				{
+					validate: ({ scope }: { scope: any }) => {
+						if (scope.age.use() < 0) throw new Error('negative age');
+						return [];
+					},
+				},
+			);
+			const instance = form.create({ age: 30 });
+			expect(() => instance.age.set(-1)).not.toThrow();
+			expect(instance.age.get()).toBe(-1);
+			expect(errSpy).toHaveBeenCalled();
+			errSpy.mockRestore();
+		});
+
+		it('scope reports invalid when validate throws', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const form = valueScope(
+				{
+					age: value<number>(0),
+				},
+				{
+					validate: ({ scope }: { scope: any }) => {
+						if (scope.age.use() < 0) throw new Error('negative age');
+						return [];
+					},
+				},
+			);
+			const instance = form.create({ age: 30 });
+			expect(instance.$getIsValid()).toBe(true);
+			instance.age.set(-1);
+			expect(instance.$getIsValid()).toBe(false);
+			errSpy.mockRestore();
+		});
+
+		it('next non-throwing run recovers validity', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const form = valueScope(
+				{
+					age: value<number>(0),
+				},
+				{
+					validate: ({ scope }: { scope: any }) => {
+						if (scope.age.use() < 0) throw new Error('negative age');
+						return [];
+					},
+				},
+			);
+			const instance = form.create({ age: 30 });
+			instance.age.set(-1);
+			expect(instance.$getIsValid()).toBe(false);
+			instance.age.set(25);
+			expect(instance.$getIsValid()).toBe(true);
+			errSpy.mockRestore();
+		});
+	});
 });
 
 // ── ValidationState discriminated union ────────────────────────────────
@@ -999,5 +1198,24 @@ describe('valueSchema change tracking', () => {
 
 		email.set('alice@example.com');
 		expect(subscriber).toHaveBeenCalledOnce();
+	});
+
+	/**
+	 * Bug: a throwing subscriber used to propagate out of `.set()`.
+	 * Contract: throw is contained, siblings still fire, the write lands,
+	 * subsequent writes work.
+	 */
+	it('a throwing subscriber does not poison .set()', () => {
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const email = valueSchema(Email, '');
+		const after = vi.fn();
+		email.subscribe(() => {
+			throw new Error('boom');
+		});
+		email.subscribe(after);
+		expect(() => email.set('alice@example.com')).not.toThrow();
+		expect(email.get()).toBe('alice@example.com');
+		expect(after).toHaveBeenCalledOnce();
+		errSpy.mockRestore();
 	});
 });

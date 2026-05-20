@@ -24,6 +24,7 @@ export class ValueSet<T> {
 	readonly #transforms: Transform<Set<T>>[] = [];
 	#comparator: Comparator<Set<T>> | undefined;
 	readonly #disposers = new Set<() => void>();
+	#destroyed = false;
 
 	/** @internal */
 	constructor(initial: Set<T>) {
@@ -54,6 +55,7 @@ export class ValueSet<T> {
 	 * ```
 	 */
 	set(valueOrFn: Set<T> | ((draft: Set<T>) => void)): void {
+		if (this.#destroyed) return;
 		const previous = this.get();
 		let next: Set<T>;
 		if (typeof valueOrFn === 'function') {
@@ -91,6 +93,11 @@ export class ValueSet<T> {
 
 	/** Remove all elements. */
 	clear(): void {
+		if (this.#destroyed) return;
+		// No-op if already empty. Without this guard `clear()` on an empty
+		// set still assigned a fresh `new Set()`, firing subscribers for a
+		// state that didn't change (parallel to the valueMap fix).
+		if (this.#signal.peek().size === 0) return;
 		this.#signal.value = new Set<T>();
 	}
 
@@ -100,6 +107,7 @@ export class ValueSet<T> {
 	 * @returns `true` if the value was present.
 	 */
 	delete(value: T): boolean {
+		if (this.#destroyed) return false;
 		const previous = this.get();
 		if (!previous.has(value)) return false;
 		const next = new Set(previous);
@@ -114,6 +122,7 @@ export class ValueSet<T> {
 	 * @returns `this` for chaining.
 	 */
 	add(value: T): this {
+		if (this.#destroyed) return this;
 		const previous = this.get();
 		if (previous.has(value)) return this;
 		const next = new Set(previous);
@@ -139,7 +148,11 @@ export class ValueSet<T> {
 			}
 			const prev = previousValue;
 			previousValue = currentValue;
-			fn(currentValue, prev);
+			try {
+				fn(currentValue, prev);
+			} catch (err) {
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		this.#disposers.add(dispose);
 		return () => {
@@ -199,8 +212,15 @@ export class ValueSet<T> {
 		];
 	}
 
-	/** Dispose all subscriptions. */
+	/**
+	 * Dispose all subscriptions.
+	 *
+	 * After destroy, reads still return the last value, writes are no-ops,
+	 * and existing subscribers stop firing. Idempotent.
+	 */
 	destroy(): void {
+		if (this.#destroyed) return;
+		this.#destroyed = true;
 		for (const dispose of this.#disposers) dispose();
 		this.#disposers.clear();
 	}

@@ -3,7 +3,13 @@ import { value, Value } from '../core/value.js';
 import { valuePlain } from '../core/value-plain.js';
 import { valueRef } from '../core/value-ref.js';
 import { valueScope } from '../core/value-scope.js';
+import { valueSet } from '../core/value-set.js';
+import { valueMap } from '../core/value-map.js';
+import { valueArray } from '../core/value-array.js';
 import { isValue, isPlain, isComputed, isScope } from '../core/field-value.js';
+import { pipeDebounce } from '../utils/pipeDebounce.js';
+import { pipeBatch } from '../utils/pipeBatch.js';
+import { batchSets } from '../core/signal.js';
 import type { ScopeInstance } from '../core/scope-types.js';
 
 describe('valueScope', () => {
@@ -203,6 +209,64 @@ describe('valueScope', () => {
 			const bob = person.create({ job: { title: 'CTO' } });
 			expect(bob.label.get()).toBe('Title: CTO');
 		});
+
+		/**
+		 * Bug: a sync derivation that throws (e.g. dereferencing a value
+		 * that's just been set to null) used to propagate the error out of
+		 * `set()` on the source field. The write itself landed, but the
+		 * derived slot held its stale value, and the caller — who had no
+		 * direct relationship to the derivation — got hit with an
+		 * unhandled exception.
+		 *
+		 * Contract: a throwing derivation must not poison the source
+		 * `set()`. The source write succeeds, the derived slot holds its
+		 * last good value, and the next non-throwing write recovers.
+		 */
+		describe('throw containment in sync derivations', () => {
+			it('throw inside derivation does not propagate out of source .set()', () => {
+				const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+				const person = valueScope({
+					firstName: value<string | null>(),
+					upper: ({ scope }: { scope: any }) =>
+						(scope.firstName.use() as string).toUpperCase(),
+				});
+				const bob = person.create({ firstName: 'bob' });
+				expect(bob.upper.get()).toBe('BOB');
+
+				expect(() => bob.firstName.set(null)).not.toThrow();
+				expect(bob.firstName.get()).toBeNull();
+				expect(errSpy).toHaveBeenCalled();
+				errSpy.mockRestore();
+			});
+
+			it('derived slot keeps the last good value when derivation throws', () => {
+				const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+				const person = valueScope({
+					firstName: value<string | null>(),
+					upper: ({ scope }: { scope: any }) =>
+						(scope.firstName.use() as string).toUpperCase(),
+				});
+				const bob = person.create({ firstName: 'bob' });
+				expect(bob.upper.get()).toBe('BOB');
+				bob.firstName.set(null);
+				expect(bob.upper.get()).toBe('BOB');
+				errSpy.mockRestore();
+			});
+
+			it('next non-throwing write recovers the derivation', () => {
+				const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+				const person = valueScope({
+					firstName: value<string | null>(),
+					upper: ({ scope }: { scope: any }) =>
+						(scope.firstName.use() as string).toUpperCase(),
+				});
+				const bob = person.create({ firstName: 'bob' });
+				bob.firstName.set(null);
+				bob.firstName.set('alice');
+				expect(bob.upper.get()).toBe('ALICE');
+				errSpy.mockRestore();
+			});
+		});
 	});
 
 	describe('$destroy()', () => {
@@ -335,6 +399,43 @@ describe('valueScope', () => {
 			expect(bob.name.get()).toBe('Robert');
 			expect(bob.greeting.get()).toBe('Hi Robert');
 		});
+
+		/**
+		 * Bug: `$setSnapshot({ job: 'CEO' })` against a `job` group used
+		 * to be a silent no-op — the recursion required `value` to be a
+		 * plain object, and a string at a group path just dropped on the
+		 * floor with no diagnostic. Surface a `console.warn` so the user
+		 * sees their misshapen write.
+		 *
+		 * Partial snapshots (missing keys) remain tolerated, since that
+		 * is the documented use case.
+		 */
+		describe('shape mismatch diagnostics', () => {
+			it('warns when a group path receives a non-object value', () => {
+				const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+				const person = valueScope({
+					job: { title: value<string>() },
+				});
+				const bob = person.create({ job: { title: 'Engineer' } });
+				bob.$setSnapshot({ job: 'CEO' } as any);
+				// No write happened — the group value is unchanged.
+				expect(bob.job.title.get()).toBe('Engineer');
+				expect(warnSpy).toHaveBeenCalled();
+				warnSpy.mockRestore();
+			});
+
+			it('does NOT warn for partial snapshots (missing keys)', () => {
+				const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+				const person = valueScope({
+					firstName: value<string>(),
+					lastName: value<string>(),
+				});
+				const bob = person.create({ firstName: 'Bob', lastName: 'Jones' });
+				bob.$setSnapshot({ firstName: 'Robert' });
+				expect(warnSpy).not.toHaveBeenCalled();
+				warnSpy.mockRestore();
+			});
+		});
 	});
 
 	describe('$subscribe()', () => {
@@ -348,6 +449,27 @@ describe('valueScope', () => {
 			bob.name.set('Robert');
 			// Subscriptions are synchronous via effect
 			expect(subscriber).toHaveBeenCalledOnce();
+		});
+
+		/**
+		 * Bug: a throwing `$subscribe` callback used to propagate out of
+		 * the source `.set()` via Preact's endBatch, breaking siblings.
+		 */
+		it('a throwing $subscribe callback does not poison .set()', () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const person = valueScope({
+				name: value<string>(),
+			});
+			const bob = person.create({ name: 'Bob' });
+			const after = vi.fn();
+			bob.$subscribe(() => {
+				throw new Error('boom');
+			});
+			bob.$subscribe(after);
+			expect(() => bob.name.set('Robert')).not.toThrow();
+			expect(bob.name.get()).toBe('Robert');
+			expect(after).toHaveBeenCalledOnce();
+			errSpy.mockRestore();
 		});
 	});
 
@@ -533,6 +655,45 @@ describe('lifecycle hooks', () => {
 			const { changes } = onChange.mock.calls[0]![0];
 			expect(changes.size).toBe(2);
 		});
+
+		/**
+		 * Bug: `onChange` runs on a microtask, and `#scheduleOnChange`
+		 * clears its "scheduled" flag at the *start* of the microtask. A
+		 * `.set()` made *inside* an `onChange` callback therefore always
+		 * schedules another microtask, which fires another `onChange`,
+		 * which writes again, ad infinitum. The page hangs silently.
+		 *
+		 * Contract: detect a chain of reentry-driven reschedules and break
+		 * out with a `console.error`, so the page recovers and the user
+		 * sees a clear diagnostic instead of an unexplained freeze.
+		 */
+		it('breaks out of an onChange re-entry loop with a diagnostic', async () => {
+			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const scope = valueScope(
+				{ tick: value<number>(0) },
+				{
+					onChange: ({ scope: s }: { scope: any }) => {
+						s.tick.set((n: number | undefined) => (n ?? 0) + 1);
+					},
+				},
+			);
+			const instance = scope.create({ tick: 0 });
+			instance.tick.set(1);
+
+			// Drain microtasks. If the loop is not broken, the test would
+			// time out here. Cap the drain count well above the loop
+			// detection threshold so we exit even if the guard misfires.
+			for (let i = 0; i < 500; i++) {
+				await Promise.resolve();
+			}
+
+			expect(errSpy).toHaveBeenCalled();
+			const stable = instance.tick.get();
+			// After a further drain, the value should not keep growing.
+			for (let i = 0; i < 50; i++) await Promise.resolve();
+			expect(instance.tick.get()).toBe(stable);
+			errSpy.mockRestore();
+		});
 	});
 
 	describe('beforeChange', () => {
@@ -569,6 +730,54 @@ describe('lifecycle hooks', () => {
 			instance.y.set(99);
 			expect(instance.x.get()).toBe(0);
 			expect(instance.y.get()).toBe(99);
+		});
+
+		/**
+		 * Contract: `beforeChange` is fundamentally per-write, in contrast
+		 * to `onChange` which is microtask-batched. Each `.set()` call
+		 * fires `beforeChange` synchronously with `changes.size === 1`,
+		 * and `prevent()` decisions are made against that single write.
+		 *
+		 * `batchSets` defers Preact's downstream effect propagation but
+		 * does NOT collapse `beforeChange` invocations into one — that
+		 * would change the prevent semantics (a "prevent this change"
+		 * call would need to mean "prevent this individual write" anyway,
+		 * since each write is independently veto-able).
+		 *
+		 * Pinning this so future refactors don't quietly change it.
+		 */
+		it('beforeChange fires per-write with changes.size === 1', () => {
+			const sizes: number[] = [];
+			const scope = valueScope(
+				{ x: value<number>(0), y: value<number>(0) },
+				{
+					beforeChange: ({ changes }) => {
+						sizes.push(changes.size);
+					},
+				},
+			);
+			const instance = scope.create();
+			instance.x.set(1);
+			instance.y.set(2);
+			expect(sizes).toEqual([1, 1]);
+		});
+
+		it('beforeChange still fires per-write inside batchSets', () => {
+			const sizes: number[] = [];
+			const scope = valueScope(
+				{ x: value<number>(0), y: value<number>(0) },
+				{
+					beforeChange: ({ changes }) => {
+						sizes.push(changes.size);
+					},
+				},
+			);
+			const instance = scope.create();
+			batchSets(() => {
+				instance.x.set(1);
+				instance.y.set(2);
+			});
+			expect(sizes).toEqual([1, 1]);
 		});
 	});
 });
@@ -614,6 +823,87 @@ describe('$setSnapshot with recreate', () => {
 		expect(signals[1]!.aborted).toBe(false);
 		// Input on recreate is the snapshot data
 		expect(inputs[1]).toEqual({ name: 'Robert' });
+	});
+
+	/**
+	 * Bug: recreate used to truncate the same `createCleanups` array
+	 * that held the sync `effect()` disposer and the async-derivation
+	 * abort+unsubscribe disposer. After one recreate the derivation
+	 * infrastructure was torn down with no path to rebuild it, so all
+	 * derivations silently stopped reacting to dep changes.
+	 *
+	 * Recreate is about the user-facing onCreate/onDestroy lifecycle. It must
+	 * leave the per-instance derivation wiring intact.
+	 */
+	it('sync derivations keep recomputing after recreate', () => {
+		const scope = valueScope({
+			n: value<number>(1),
+			doubled: ({ scope }: { scope: any }) => scope.n.use() * 2,
+		});
+		const instance = scope.create({ n: 1 });
+		expect(instance.doubled.get()).toBe(2);
+
+		instance.$setSnapshot({ n: 3 }, { recreate: true });
+		expect(instance.doubled.get()).toBe(6);
+
+		instance.n.set(4);
+		expect(instance.doubled.get()).toBe(8);
+	});
+
+	it('async derivations keep reacting to dep changes after recreate', async () => {
+		const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+		const scope = valueScope({
+			id: value<string>('a'),
+			result: async ({ scope: s }: { scope: any }) => `loaded:${s.id.use()}`,
+		});
+		const instance = scope.create({ id: 'a' });
+		await flush();
+		expect(instance.result.get()).toBe('loaded:a');
+
+		instance.$setSnapshot({ id: 'b' }, { recreate: true });
+		await flush();
+		instance.id.set('c');
+		await flush();
+		expect(instance.result.get()).toBe('loaded:c');
+	});
+});
+
+/**
+ * Bug: `$destroy()` had no "already destroyed" guard, so each call
+ * re-fired `config.onDestroy`, re-ran the same cleanup list, and cascaded a
+ * second `$destroy` into every factory-ref child. The bug surfaced naturally
+ * because `ScopeMap.delete(key)` calls `$destroy()` internally — any caller
+ * who also held the instance reference and called `$destroy()` themselves
+ * tripped it.
+ */
+describe('$destroy idempotency', () => {
+	it('calling $destroy() twice fires onDestroy only once', () => {
+		const onDestroy = vi.fn();
+		const scope = valueScope({ x: value<number>(0) }, { onDestroy });
+		const instance = scope.create();
+		instance.$destroy();
+		instance.$destroy();
+		expect(onDestroy).toHaveBeenCalledOnce();
+	});
+
+	it('ScopeMap.delete + manual $destroy fires factory-ref onDestroy only once', () => {
+		const childOnDestroy = vi.fn();
+		const child = valueScope(
+			{ name: value<string>() },
+			{ onDestroy: childOnDestroy },
+		);
+		const parent = valueScope({
+			kids: valueRef(() => child.createMap()),
+		});
+		const root = parent.create();
+		const kids = (root as any).kids;
+		kids.set('a', { name: 'A' });
+		const aInstance = kids.get('a');
+
+		kids.delete('a');
+		aInstance.$destroy();
+
+		expect(childOnDestroy).toHaveBeenCalledOnce();
 	});
 });
 
@@ -838,6 +1128,107 @@ describe('$use() setter', () => {
 			instance.config.set('light');
 			expect(beforeChange).not.toHaveBeenCalled();
 			expect(instance.config.get()).toBe('light');
+		});
+
+		/**
+		 * Bug: plain fields are documented as "inert" — writes must not
+		 * trigger derivations, `$subscribe` callbacks, devtools, or history.
+		 *
+		 * `onChange`/`beforeChange` were already correctly skipped (the
+		 * write-time hook calls early-return for `kind === 'plain'`), but the
+		 * plain value was still stored in the same Preact-signal slot as
+		 * reactive fields. Any effect tracking that signal (the per-instance
+		 * `$subscribe` effect, `$useSnapshot`'s snapshot-invalidation effect,
+		 * `_trackAll` for ref-instance use(), and any derivation that called
+		 * `scope.<plainField>.use()`) was therefore notified on every plain
+		 * write — directly contradicting the docs.
+		 *
+		 * The fix moves plain values out of the signal array into a separate
+		 * `Map`, with a coarse "plain version" signal that only the snapshot
+		 * cache invalidator tracks. That keeps `$getSnapshot()` returning
+		 * fresh data while leaving every other reactive consumer untouched.
+		 */
+		describe('valuePlain inertness vs the reactive graph', () => {
+			it('does not fire $subscribe', () => {
+				const scope = valueScope({
+					name: value('Alice'),
+					config: valuePlain('dark'),
+				});
+				const instance = scope.create();
+
+				const sub = vi.fn();
+				instance.$subscribe(sub);
+
+				instance.config.set('light');
+				// Wait for any potential microtask flush.
+				return Promise.resolve()
+					.then(() => Promise.resolve())
+					.then(() => {
+						expect(sub).not.toHaveBeenCalled();
+						instance.name.set('Bob');
+						return Promise.resolve().then(() => Promise.resolve());
+					})
+					.then(() => {
+						expect(sub).toHaveBeenCalled();
+					});
+			});
+
+			it('does not re-run sync derivations that .use() the plain field', () => {
+				let runs = 0;
+				const scope = valueScope({
+					config: valuePlain('dark'),
+					derived: ({ scope: s }: { scope: any }) => {
+						runs++;
+						return s.config.use() + '!';
+					},
+				});
+				const instance = scope.create();
+				expect(runs).toBe(1);
+				expect(instance.derived.get()).toBe('dark!');
+
+				instance.config.set('light');
+				// Plain is inert — derivation should not have re-run.
+				expect(runs).toBe(1);
+			});
+
+			it('does not re-run async derivations that .use() the plain field', async () => {
+				const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+				let runs = 0;
+				const scope = valueScope({
+					config: valuePlain('dark'),
+					result: async ({ scope: s }: { scope: any }) => {
+						runs++;
+						return s.config.use() + '!';
+					},
+				});
+				const instance = scope.create();
+				await flush();
+				expect(runs).toBe(1);
+				expect(instance.result.get()).toBe('dark!');
+
+				instance.config.set('light');
+				await flush();
+				expect(runs).toBe(1);
+			});
+
+			it('$getSnapshot() reads the freshest plain value', () => {
+				const scope = valueScope({
+					name: value('Alice'),
+					config: valuePlain('dark'),
+				});
+				const instance = scope.create();
+
+				expect(instance.$getSnapshot()).toEqual({
+					name: 'Alice',
+					config: 'dark',
+				});
+
+				instance.config.set('light');
+				expect(instance.$getSnapshot()).toEqual({
+					name: 'Alice',
+					config: 'light',
+				});
+			});
 		});
 
 		it('supports pipe transforms', () => {
@@ -1156,6 +1547,67 @@ describe('extend merges all config hooks', () => {
 	});
 });
 
+/**
+ * Bug: `valueSet`/`valueMap`/`valueArray` placed directly in a scope
+ * definition fell through `scope-definition.ts`'s type dispatch (they're
+ * objects but not Value/ValueSchema/ValuePlain/ValueRef/function/plain
+ * object) and were attached as **static** entries — meaning every instance
+ * created from the template shared the same collection reference. Mutating
+ * `alice.hobbies` therefore mutated `bob.hobbies`, breaking the "creating
+ * independent instances doesn't require factory wrappers" promise from the
+ * README and the documented example (`hobbies: valueSet<string>()`).
+ *
+ * The fix routes collection literals in definitions through `valueRef(() =>
+ * <factory>)` semantics: each instance gets a fresh `ValueSet`/`ValueMap`/
+ * `ValueArray`, cleaned up on parent destroy.
+ */
+describe('collections inside scope definitions are per-instance', () => {
+	it('valueSet field is independent across instances', () => {
+		const person = valueScope({
+			firstName: value<string>(),
+			hobbies: valueSet<string>(),
+		});
+		const alice = person.create({ firstName: 'Alice' });
+		const bob = person.create({ firstName: 'Bob' });
+
+		expect((alice as any).hobbies).not.toBe((bob as any).hobbies);
+
+		(alice as any).hobbies.add('climbing');
+		expect([...((alice as any).hobbies.get() as Set<string>)]).toEqual([
+			'climbing',
+		]);
+		expect([...((bob as any).hobbies.get() as Set<string>)]).toEqual([]);
+	});
+
+	it('valueArray field is independent across instances', () => {
+		const list = valueScope({
+			items: valueArray<string>(),
+		});
+		const a = list.create();
+		const b = list.create();
+		expect((a as any).items).not.toBe((b as any).items);
+
+		(a as any).items.push('x');
+		expect((a as any).items.get()).toEqual(['x']);
+		expect((b as any).items.get()).toEqual([]);
+	});
+
+	it('valueMap field is independent across instances', () => {
+		const store = valueScope({
+			scores: valueMap<string, number>(),
+		});
+		const a = store.create();
+		const b = store.create();
+		expect((a as any).scores).not.toBe((b as any).scores);
+
+		(a as any).scores.set((draft: Map<string, number>) =>
+			draft.set('alice', 95),
+		);
+		expect((a as any).scores.get('alice')).toBe(95);
+		expect((b as any).scores.has('alice')).toBe(false);
+	});
+});
+
 describe('value-ref in derivation scope', () => {
 	it('plain (non-reactive) value ref is accessible', () => {
 		const scope = valueScope({
@@ -1164,5 +1616,165 @@ describe('value-ref in derivation scope', () => {
 		});
 		const instance = scope.create({ label: 'test' });
 		expect((instance as any).constant).toBe(42);
+	});
+});
+
+/**
+ * Bug: factory pipes (`pipeDebounce`, `pipeThrottle`, `pipeBatch`)
+ * worked when applied to a standalone `value(...).pipe(pipeXxx())`, but were
+ * silently dead inside scope slot definitions.
+ *
+ * Cause: `InstanceStore.activateFactoryPipes(slot)` existed but was never
+ * called during scope creation. `InstanceStore.write` only routed through
+ * `#factoryPipes.get(slot)` when populated, and `#applySyncPipeline` stopped
+ * at the first factory step — so a `value('').pipe(pipeDebounce(300))` field
+ * skipped the debounce entirely and fired immediately on every set.
+ *
+ * Fix: activate factory pipes during InstanceStore construction for every
+ * slot whose pipeline contains a factory step. Then re-route the initial
+ * value through the pipeline so the initial state stays consistent with
+ * standalone Value semantics.
+ */
+describe('factory pipes inside scope slots', () => {
+	it('pipeDebounce inside a scope slot actually debounces writes', () => {
+		vi.useFakeTimers();
+		const scope = valueScope({
+			text: value<string>('').pipe(pipeDebounce(300)),
+		});
+		const instance = scope.create();
+
+		const subscriber = vi.fn();
+		instance.text.subscribe(subscriber);
+
+		instance.text.set('a');
+		instance.text.set('ab');
+		instance.text.set('abc');
+
+		// Before the debounce expires, nothing should be observable.
+		expect(subscriber).not.toHaveBeenCalled();
+		expect(instance.text.get()).toBe('');
+
+		vi.advanceTimersByTime(300);
+		expect(subscriber).toHaveBeenCalledOnce();
+		expect(instance.text.get()).toBe('abc');
+
+		vi.useRealTimers();
+	});
+
+	it('factory pipe cleanups run on $destroy', () => {
+		vi.useFakeTimers();
+		const scope = valueScope({
+			text: value<string>('').pipe(pipeDebounce(300)),
+		});
+		const instance = scope.create();
+		const subscriber = vi.fn();
+		instance.text.subscribe(subscriber);
+
+		instance.text.set('queued');
+		// Destroy while the debounce timer is pending — the pipe's onCleanup
+		// must clear it so the deferred write doesn't fire after destroy.
+		instance.$destroy();
+
+		vi.advanceTimersByTime(500);
+		expect(subscriber).not.toHaveBeenCalled();
+		expect(instance.text.get()).toBe('');
+
+		vi.useRealTimers();
+	});
+
+	/**
+	 * Bug: `pipeBatch` schedules a `Promise.resolve().then(...)` and has no
+	 * `onCleanup` registered, so a `$destroy()` between the `.set(...)` and
+	 * the microtask fires the deferred write *after* the instance is dead.
+	 * The write goes through the factory's `set` callback into
+	 * `InstanceStore._writeToSignal`, which had no `destroyed` guard, so the
+	 * disposed slot's signal still got mutated. Any consumer that had
+	 * subscribed to the signal via a path other than the instance's own
+	 * disposers (a `valueRef` from another scope, for instance) would see
+	 * the leaked update.
+	 *
+	 * Fix lives in `InstanceStore._writeToSignal`: short-circuit when the
+	 * store has been destroyed. Generalizes to *any* factory pipe that
+	 * defers without an onCleanup.
+	 */
+	/**
+	 * Bug: when a scope field is declared as `value(5).pipe(x => x*2).pipe(<factory>)`,
+	 * the slot's `defaultValue` is captured from the chained Value's signal
+	 * — which is already post-pipe (so 10). `InstanceStore`'s constructor
+	 * then ran `#applySyncPipeline(initial, pipeline)` against that default,
+	 * re-applying every sync step a second time (so 20). Combined with the
+	 * standalone `Value.pipe(factory)` bug it ran sync three times.
+	 *
+	 * Fix: only run `#applySyncPipeline` when the initial value came from
+	 * the user's `.create({...})` input. The Value-derived default has
+	 * already been through every sync step at definition time; we just
+	 * route it directly into the slot's signal and the activated factory.
+	 */
+	it('sync pipe followed by a factory inside a scope: default applies sync only once', () => {
+		const scope = valueScope({
+			x: value(5)
+				.pipe((x: number) => x * 2)
+				.pipe(pipeBatch()),
+		});
+		const inst = scope.create();
+		// 5 doubled once = 10. Batch is a pass-through; the default must
+		// be 10, not 20 (double-applied) or 40 (triple).
+		expect(inst.x.get()).toBe(10);
+	});
+
+	it('create() input still flows through the sync pipeline', () => {
+		const scope = valueScope({
+			x: value(0).pipe((x: number) => x * 2),
+		});
+		const inst = scope.create({ x: 7 });
+		// User-supplied input goes through pipes exactly once.
+		expect(inst.x.get()).toBe(14);
+	});
+
+	it('pipeBatch microtask scheduled before $destroy does not leak a write into the slot', async () => {
+		const scope = valueScope({
+			text: value<string>('').pipe(pipeBatch()),
+		});
+		const instance = scope.create();
+
+		instance.text.set('queued');
+		// Batched — not yet written through.
+		expect(instance.text.get()).toBe('');
+
+		instance.$destroy();
+
+		// Drain microtasks. Without the guard, pipeBatch's deferred `set`
+		// flushes through `_writeToSignal` and mutates the slot's signal.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(instance.text.get()).toBe('');
+	});
+});
+
+/**
+ * Bug: factory ref destruction only propagated to objects that had
+ * `$destroy` (scope instances and ScopeMaps). Factory refs to plain reactive
+ * primitives (`Value`, `ValueSet`, `ValueMap`, `ValueArray`) silently leaked
+ * their subscriptions when the parent was destroyed — those classes expose
+ * `.destroy()`, not `$destroy`.
+ */
+describe('factory refs to non-scope reactive primitives', () => {
+	it('factory ref to a Value gets disposed when parent is destroyed', () => {
+		const parent = valueScope({
+			counter: valueRef(() => value(0)),
+		});
+
+		const instance = parent.create();
+		const counter = (instance as any).counter as Value<number>;
+		const subscriber = vi.fn();
+		counter.subscribe(subscriber);
+
+		instance.$destroy();
+
+		// After destroy, the Value's subscribers should be torn down; setting
+		// after destroy is allowed by Value semantics but must not notify.
+		counter.set(5);
+		expect(subscriber).not.toHaveBeenCalled();
 	});
 });

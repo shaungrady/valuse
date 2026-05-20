@@ -92,16 +92,39 @@ describe('InstanceStore', () => {
 			expect(store.read(0)).toBe('hello');
 		});
 
-		it('applies sync pipeline to initial value', () => {
+		it('applies sync pipeline to user-supplied initial value', () => {
+			// Note: the slot's `defaultValue` is captured from the Value's
+			// already-piped signal in real usage (see scope-definition.ts),
+			// so the pipeline only re-runs on user-supplied initials. This
+			// test reflects that contract: pass a raw value through the
+			// initial-values map and expect the pipeline to apply.
 			const definition = makeDefinition([
 				makeSlotMeta({
 					path: 'name',
-					defaultValue: '  HELLO  ',
+					defaultValue: '',
 					pipeline: [{ kind: 'sync', transform: (v) => (v as string).trim() }],
 				}),
 			]);
-			const store = new InstanceStore(definition, new Map());
+			const store = new InstanceStore(definition, new Map([[0, '  HELLO  ']]));
 			expect(store.read(0)).toBe('HELLO');
+		});
+
+		it('does NOT re-apply pipeline to a Value-derived defaultValue', () => {
+			// Bug guard: in real usage `defaultValue` is the post-pipe signal
+			// value (a `Value`'s `_signal.peek()`), so we must not run the
+			// pipeline again — that used to silently double-apply every sync
+			// step.
+			const definition = makeDefinition([
+				makeSlotMeta({
+					path: 'name',
+					// Simulates `value(5).pipe(x => x*2)`: defaultValue is the
+					// already-piped 10; pipeline contains the same sync step.
+					defaultValue: 10,
+					pipeline: [{ kind: 'sync', transform: (v) => (v as number) * 2 }],
+				}),
+			]);
+			const store = new InstanceStore(definition, new Map());
+			expect(store.read(0)).toBe(10);
 		});
 	});
 

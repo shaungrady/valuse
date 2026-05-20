@@ -188,7 +188,13 @@ export class ScopeMap<
 	#notifyListeners(): void {
 		this.#keyVersion.value++;
 		const keys = this.keys();
-		for (const listener of this.#listeners) {
+		// Snapshot listeners before iterating: a listener may subscribe again
+		// while running (e.g. an async derivation re-subscribing during its
+		// re-run), and Set iteration would otherwise pick up that newly added
+		// listener and call it within the same notify, causing infinite
+		// re-entrance.
+		const snapshot = [...this.#listeners];
+		for (const listener of snapshot) {
 			listener(keys);
 		}
 	}

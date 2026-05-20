@@ -67,6 +67,48 @@ describe('ScopeMap', () => {
 		expect(map.get(2)!.name.get()).toBe('Bob');
 	});
 
+	/**
+	 * Bug: `createMap(items, 'id')` used to silently collapse every item
+	 * whose `id` field was missing/undefined onto the same `undefined`
+	 * key, so a list of N items could end up as a single entry — with no
+	 * diagnostic. Throw fast instead: the caller almost certainly didn't
+	 * mean to do that, and a clear error at `createMap` is easier to
+	 * debug than missing rows.
+	 */
+	describe('keyField missing on items', () => {
+		it('throws when a keyField resolves to undefined for an item', () => {
+			const withId = valueScope({
+				id: value<string>(),
+				name: value<string>(),
+			});
+			expect(() =>
+				withId.createMap(
+					[{ name: 'Alice' }, { name: 'Bob' }] as Partial<{
+						id: string;
+						name: string;
+					}>[],
+					'id',
+				),
+			).toThrow(/keyField/i);
+		});
+
+		it('throws when a key callback returns undefined for an item', () => {
+			const withId = valueScope({
+				id: value<number>(),
+				name: value<string>(),
+			});
+			expect(() =>
+				withId.createMap(
+					[{ id: 1, name: 'Alice' }, { name: 'Bob' }] as Partial<{
+						id: number;
+						name: string;
+					}>[],
+					(item) => item.id as number,
+				),
+			).toThrow(/undefined/i);
+		});
+	});
+
 	describe('set/get/has/delete', () => {
 		it('set creates a new instance', () => {
 			const map = person.createMap();

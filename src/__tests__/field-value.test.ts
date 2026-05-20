@@ -220,6 +220,23 @@ describe('type guards', () => {
 		expect(isSchema(null)).toBe(false);
 	});
 
+	/**
+	 * Pinning the documented overlap: `FieldValueSchema extends FieldValue`,
+	 * and the constructor sets both brands. Code that narrows generically
+	 * must check `isSchema` *before* `isValue`, since `isValue` will also
+	 * accept a schema field. Pinning so a future "make these mutually
+	 * exclusive" refactor is a deliberate decision.
+	 */
+	it('isValue() returns true for schema fields (a schema is also a value)', () => {
+		const store = makeStore(
+			[makeSlotMeta({ path: 'email', kind: 'schema' })],
+			new Map([[0, 'a@b.com']]),
+		);
+		const field = new FieldValueSchema<string, string>(store, 0);
+		expect(isSchema(field)).toBe(true);
+		expect(isValue(field)).toBe(true);
+	});
+
 	it('isPlain() identifies FieldValuePlain instances', () => {
 		const store = makeStore(
 			[makeSlotMeta({ path: 'note', kind: 'plain' })],

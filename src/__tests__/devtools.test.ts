@@ -165,6 +165,36 @@ describe('withDevtools', () => {
 		expect(alice.lastName.get()).toBe('Jones');
 	});
 
+	/**
+	 * Bug: a DISPATCH from DevTools used to call `$setSnapshot`
+	 * directly, which queued a fresh `onChange` microtask. The devtools
+	 * middleware's `onChange` then sent a new `set:...` action back to the
+	 * extension, treating the time-travel restore as a brand-new user
+	 * action. Every jump-to-state produced a redundant timeline entry and
+	 * eventually corrupted the action ordering.
+	 *
+	 * The fix mirrors `withHistory`'s `isRestoring` pattern: gate the
+	 * `onChange` handler on a per-instance flag set during the time-travel
+	 * restore.
+	 */
+	it('does not re-send actions when DevTools triggers a time-travel restore', async () => {
+		const person = valueScope({
+			firstName: value<string>(),
+			lastName: value<string>(),
+		});
+		const debugPerson = withDevtools(person, { name: 'person' });
+		debugPerson.create({ firstName: 'Alice', lastName: 'Smith' });
+
+		mockConnection.send.mockClear();
+		mockConnection._dispatch({ firstName: 'Bob', lastName: 'Jones' });
+
+		// Flush the onChange microtask that $setSnapshot scheduled.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(mockConnection.send).not.toHaveBeenCalled();
+	});
+
 	it('returns the original template when extension is not available', () => {
 		delete (globalThis as Record<string, unknown>).__REDUX_DEVTOOLS_EXTENSION__;
 
@@ -281,6 +311,24 @@ describe('connectDevtools', () => {
 		mockConnection._dispatch({ value: 3 });
 
 		expect(count.get()).toBe(3);
+	});
+
+	/**
+	 * Bug: time-travel called `val.set(historicalState.value)`, which
+	 * fired the subscribed `val.subscribe` callback that in turn called
+	 * `connection.send` — re-dispatching the restore as a fresh `set`
+	 * action to DevTools.
+	 */
+	it('does not re-send `set` actions when DevTools triggers a time-travel restore', () => {
+		const count = value(0);
+		connectDevtools(count, { name: 'count' });
+
+		count.set(10);
+		mockConnection.send.mockClear();
+		mockConnection._dispatch({ value: 3 });
+
+		expect(count.get()).toBe(3);
+		expect(mockConnection.send).not.toHaveBeenCalled();
 	});
 
 	it('cleans up on disconnect', () => {
@@ -422,6 +470,38 @@ describe('connectMapDevtools', () => {
 
 		expect(people.has('bob')).toBe(false);
 		expect(people.get('alice')!.name.get()).toBe('Alicia');
+	});
+
+	/**
+	 * Bug: time-travel reconciliation calls `map.delete`,
+	 * `map.set`, and `instance.$setSnapshot` — each of which fires the
+	 * subscribers wired by `connectMapDevtools` (the map-keys listener,
+	 * the per-instance `$subscribe`). Those subscribers used to call
+	 * `sendState` unconditionally, treating every step of the restore as
+	 * a fresh user action. A single time-travel could emit half a dozen
+	 * spurious entries.
+	 */
+	it('does not re-send actions when DevTools triggers a time-travel restore', async () => {
+		const person = valueScope({
+			name: value<string>(),
+		});
+		const people = person.createMap<string>();
+		people.set('alice', { name: 'Alice' });
+		people.set('bob', { name: 'Bob' });
+
+		connectMapDevtools(people, { name: 'people' });
+
+		mockConnection.send.mockClear();
+		mockConnection._dispatch({
+			_keys: ['alice'],
+			alice: { name: 'Alicia' },
+		});
+
+		// Flush the $subscribe microtask that $setSnapshot scheduled.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(mockConnection.send).not.toHaveBeenCalled();
 	});
 
 	it('cleans up all subscriptions on disconnect', () => {

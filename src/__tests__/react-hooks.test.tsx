@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, act, screen, waitFor } from '@testing-library/react';
-import { useSyncExternalStore } from 'react';
+import { StrictMode, useSyncExternalStore } from 'react';
 import { type } from 'arktype';
 
 // Install React bridge before importing v2 modules
@@ -193,6 +193,101 @@ describe('React hooks via .use() (v2)', () => {
 
 			const fourth = instance.$getSnapshot();
 			expect(fourth).toBe(third);
+		});
+
+		/**
+		 * Pinning: React 18+ dev `<StrictMode>` calls every
+		 * `useSyncExternalStore` subscribe → unsubscribe → subscribe in
+		 * quick succession. `versionedAdapter` caches a single shared
+		 * `version` counter per instance; the concern was that the
+		 * double-subscribe might cause spurious re-renders or stale
+		 * snapshots. Verify the final render matches the latest value
+		 * and that updates after mount continue to flow through.
+		 */
+		describe('StrictMode + $use()', () => {
+			it('renders the initial value correctly under StrictMode', () => {
+				const person = valueScope({
+					name: value('Alice'),
+				});
+				const instance = person.create();
+				function App() {
+					const [snapshot] = (instance as any).$use();
+					return <span data-testid="val">{snapshot.name}</span>;
+				}
+				render(
+					<StrictMode>
+						<App />
+					</StrictMode>,
+				);
+				expect(screen.getByTestId('val').textContent).toBe('Alice');
+			});
+
+			it('post-mount updates flow through under StrictMode', () => {
+				const person = valueScope({
+					name: value('Alice'),
+				});
+				const instance = person.create();
+				function App() {
+					const [snapshot] = (instance as any).$use();
+					return <span data-testid="val">{snapshot.name}</span>;
+				}
+				render(
+					<StrictMode>
+						<App />
+					</StrictMode>,
+				);
+				act(() => (instance.name as any).set('Bob'));
+				expect(screen.getByTestId('val').textContent).toBe('Bob');
+			});
+
+			it('a set between StrictMode double-mount cycles is observed', () => {
+				// Set the value *during* render — between the two subscribe
+				// passes StrictMode performs — and confirm the final
+				// committed render reflects the latest value, not a stale
+				// snapshot from before the second subscribe.
+				const person = valueScope({
+					name: value('Alice'),
+				});
+				const instance = person.create();
+				let renderCount = 0;
+				function App() {
+					renderCount++;
+					if (renderCount === 1) {
+						(instance.name as any).set('Bob');
+					}
+					const [snapshot] = (instance as any).$use();
+					return <span data-testid="val">{snapshot.name}</span>;
+				}
+				render(
+					<StrictMode>
+						<App />
+					</StrictMode>,
+				);
+				expect(screen.getByTestId('val').textContent).toBe('Bob');
+			});
+		});
+
+		/**
+		 * Pinning: per-key subscribes through `valueMap.use(key)` also go
+		 * through cached adapters. Verify they survive StrictMode.
+		 */
+		it('valueMap.use(key) renders correctly under StrictMode', () => {
+			const map = valueMap<string, number>([
+				['a', 1],
+				['b', 2],
+			]);
+			function App() {
+				const [a] = map.use('a');
+				return <span data-testid="val">{a}</span>;
+			}
+			render(
+				<StrictMode>
+					<App />
+				</StrictMode>,
+			);
+			expect(screen.getByTestId('val').textContent).toBe('1');
+			act(() => map.set((draft) => draft.set('a', 99)));
+			expect(screen.getByTestId('val').textContent).toBe('99');
 		});
 	});
 
@@ -419,6 +514,52 @@ describe('React hooks via .use() (v2)', () => {
 			act(() => screen.getByTestId('bad').click());
 			expect(screen.getByTestId('val').textContent).toBe('not-an-email');
 			expect(screen.getByTestId('valid').textContent).toBe('false');
+		});
+
+		/**
+		 * Bug: `useValidation()` only subscribed to (1) the field's own
+		 * value signal and (2) the field's own schema-validation state signal.
+		 * When a cross-field `validate` hook routed an issue to this field via
+		 * `path: ['fieldName']`, its `getValidation()` *did* return the merged
+		 * issues — but the hook never re-rendered, because neither of the two
+		 * subscribed signals fired. Users saw stale per-field errors any time
+		 * the validate hook depended on a different field.
+		 */
+		it('re-renders when a cross-field validate hook flips this field invalid', () => {
+			const Password = type('string >= 1');
+			const scope = valueScope(
+				{
+					password: valueSchema(Password, 'a'),
+					confirm: valueSchema(Password, 'a'),
+				},
+				{
+					validate: ({ scope: s }: { scope: any }) => {
+						if (s.password.use() !== s.confirm.use()) {
+							return [{ message: 'Passwords must match', path: ['confirm'] }];
+						}
+						return [];
+					},
+				},
+			);
+			const instance = scope.create();
+			function App() {
+				const [, , validation] = (instance.confirm as any).useValidation();
+				return (
+					<span data-testid="confirm-valid">{String(validation.isValid)}</span>
+				);
+			}
+			render(<App />);
+			expect(screen.getByTestId('confirm-valid').textContent).toBe('true');
+
+			// Mutate `password` only — confirm's own value and its own schema
+			// validation are unchanged, but the validate hook should now route
+			// an issue to confirm. The field hook must re-render to reflect it.
+			act(() => (instance.password as any).set('different'));
+			expect(screen.getByTestId('confirm-valid').textContent).toBe('false');
+
+			// Bring them back into sync — confirm should flip back to valid.
+			act(() => (instance.password as any).set('a'));
+			expect(screen.getByTestId('confirm-valid').textContent).toBe('true');
 		});
 	});
 

@@ -276,6 +276,63 @@ describe('async derivations', () => {
 			const state = instance.selfRef.getAsync();
 			expect(state.status).toBe('error');
 		});
+
+		/**
+		 * Investigated edge case that turned out to be benign — kept as a
+		 * behavior guard.
+		 *
+		 * `runDerivation` adds the slot to `store.runningAsync` for cycle
+		 * detection, and the `.then`/`.catch` handlers call
+		 * `runningAsync.delete(slot)` *before* checking
+		 * `controller.signal.aborted`. In theory, when a dep change aborts a
+		 * pending run and immediately starts a new one, the stale promise's
+		 * later resolution could erase the marker for the still-in-flight new
+		 * run — letting a cyclic `s.self.use()` slip through detection.
+		 *
+		 * In practice this doesn't happen: cycle detection is a synchronous
+		 * check during the new run's setup phase, and the marker is still set
+		 * at that point. The stale promise's `.delete` runs strictly later.
+		 * This test pins that ordering so future refactors don't break it.
+		 */
+		it('cycle detection still fires after a stale aborted run resolves', async () => {
+			let resolveFirst!: () => void;
+			let phase = 0;
+
+			const scope = valueScope({
+				trigger: value<number>(0),
+				bouncy: async ({ scope: s }: { scope: any }) => {
+					phase++;
+					if (phase === 1) {
+						s.trigger.use();
+						await new Promise<void>((r) => {
+							resolveFirst = r;
+						});
+						return 'first';
+					}
+					// Second run: self-use synchronously → must throw cycle.
+					s.bouncy.use();
+					return 'second';
+				},
+			});
+
+			const instance = scope.create();
+			// Let the first run start and reach its await.
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(phase).toBe(1);
+
+			// Dep change: aborts run 1, starts run 2 (which throws cycle).
+			instance.trigger.set(1);
+			// Resolve stale run-1 promise; its `.then` deletes the slot from
+			// `runningAsync`, but only after run 2's cycle check has already
+			// fired synchronously.
+			resolveFirst();
+			await flush();
+
+			const state = instance.bouncy.getAsync();
+			expect(state.status).toBe('error');
+			expect(String(state.error)).toMatch(/[Cc]ycle/);
+		});
 	});
 
 	describe('$destroy()', () => {

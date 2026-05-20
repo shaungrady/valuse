@@ -67,6 +67,7 @@ export class Value<In, Out = In> {
 	_comparator: Comparator<Out> | undefined;
 	readonly #disposers: (() => void)[] = [];
 	readonly #activeFactories: ActiveFactoryPipe[] = [];
+	#destroyed = false;
 
 	/** @internal */
 	constructor(initial: Out, pipeSteps?: InternalPipeStep[]) {
@@ -102,6 +103,10 @@ export class Value<In, Out = In> {
 	 * ```
 	 */
 	set(valueOrFn: In | ((prev: Out) => In)): void {
+		// After destroy, writes are silently dropped — matches `ValueArray`,
+		// the RxJS Subject pattern, and the per-instance Lifecycle contract
+		// in the README. Reads still return the last value.
+		if (this.#destroyed) return;
 		const previous = this._signal.peek();
 		const raw =
 			typeof valueOrFn === 'function' ?
@@ -162,7 +167,14 @@ export class Value<In, Out = In> {
 			}
 			const prev = previousValue;
 			previousValue = currentValue;
-			fn(currentValue, prev);
+			try {
+				fn(currentValue, prev);
+			} catch (err) {
+				// A throwing subscriber would otherwise propagate out of
+				// the source `.set()` via Preact's endBatch. Contain it so
+				// siblings — and the source write — are unaffected.
+				console.error('valuse: subscriber threw', err);
+			}
 		});
 		this.#disposers.push(dispose);
 		return () => {
@@ -245,8 +257,17 @@ export class Value<In, Out = In> {
 			newValue._comparator = this._comparator as Comparator<In> | undefined;
 			// Activate the factory pipe
 			newValue.#activateFactories();
-			// Re-apply the initial value through the full pipeline
-			newValue.set(currentValue as unknown as In);
+			// Hand the current value directly to the first factory rather
+			// than going through `set()`. `set()` would re-apply every sync
+			// pre-step against `currentValue`, but `currentValue` is the
+			// prior Value's signal value — which already had those sync
+			// steps applied at *its* construction. Calling `set()` here
+			// would silently double-apply them (so `value(5).pipe(x => x*2)
+			// .pipe(pipeFilter(>5))` would store 20 instead of 10). Bypassing
+			// `set` keeps the sync chain single-pass while still letting
+			// stateful factories (pipeScan, pipeUnique, pipeDebounce, …)
+			// observe the current value.
+			newValue.#activeFactories[0]?.write(currentValue as unknown);
 			return newValue as unknown as Value<In, NewOut>;
 		}
 
@@ -309,9 +330,14 @@ export class Value<In, Out = In> {
 
 	/**
 	 * Dispose all active subscriptions and factory pipe cleanups.
-	 * The value remains readable but will no longer notify subscribers.
+	 *
+	 * After destroy, reads still return the last value, writes are no-ops,
+	 * and existing subscribers stop firing. Idempotent — calling twice does
+	 * nothing the second time.
 	 */
 	destroy(): void {
+		if (this.#destroyed) return;
+		this.#destroyed = true;
 		for (const dispose of this.#disposers) dispose();
 		this.#disposers.length = 0;
 		for (const factory of this.#activeFactories) {
