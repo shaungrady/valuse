@@ -12,7 +12,7 @@ require factory wrappers or providers.
 [Valtio](examples/compare-valtio.md) |
 [React Context](examples/compare-react-context.md)
 
-So what kind of stuff does ValUse make easy?
+What can you build with it?
 
 - [Another todo list](examples/todo-app.md), because the world needed one more
 - A [form wizard](examples/form-wizard.md) with validation, dynamic fields, and
@@ -38,16 +38,17 @@ So what kind of stuff does ValUse make easy?
   - [Nesting](#nesting)
   - [Derivations](#derivations)
   - [Plain data in scopes](#plain-data-in-scopes)
+  - [Undeclared properties](#undeclared-properties)
 - [Reacting to Changes](#reacting-to-changes)
   - [Per-field subscribe](#per-field-subscribe)
   - [Whole-scope subscribe](#whole-scope-subscribe)
   - [onChange](#onchange)
   - [beforeChange](#beforechange)
 - [Scaling Up](#scaling-up)
-  - [ScopeMap — keyed collections](#scopemap--keyed-collections)
-  - [valueRef — scope composition](#valueref--scope-composition)
+  - [ScopeMap: keyed collections](#scopemap-keyed-collections)
+  - [valueRef: scope composition](#valueref-scope-composition)
   - [Extending scopes](#extending-scopes)
-  - [Async derivations](#async-derivations-full-treatment)
+  - [Async derivations](#async-derivations-advanced-patterns)
   - [Lifecycle hooks and signals](#lifecycle-hooks-and-signals)
   - [Factories](#factories)
   - [Schema validation](#schema-validation)
@@ -58,6 +59,18 @@ So what kind of stuff does ValUse make easy?
   - [Manual recompute](#manual-recompute)
   - [Type guards](#type-guards)
 - [API Reference](#api-reference)
+  - [Primitives](#primitives)
+  - [Field types](#field-types)
+  - [Value methods](#value-methods)
+  - [valueArray methods](#valuearray-methods)
+  - [Scope definition](#scope-definition)
+  - [Instance fields](#instance-fields)
+  - [Instance $ methods](#instance--methods)
+  - [ScopeMap methods](#scopemap-methods)
+  - [Scope config](#scope-config)
+  - [Derivation context](#derivation-context)
+  - [Type guards](#type-guards-1)
+  - [Import paths](#import-paths)
 
 ---
 
@@ -100,7 +113,10 @@ function PersonName({ person }) {
 
 ## Reactive Values
 
-The building block. A `value` is a single piece of reactive state.
+A `value` wraps a piece of state with read, write, and subscription, plus
+optional transforms and custom equality. Every other reactive type in ValUse
+(`valueArray`, `valueSet`, `valueMap`, schema-validated values, scopes) builds
+on the same core surface.
 
 > **Deep dive:** [docs/reactive-values.md](docs/reactive-values.md)
 
@@ -126,13 +142,10 @@ In React, `.use()` returns the current value and re-renders on change:
 const [currentName, setName] = name.use();
 ```
 
-Setting values works the same everywhere, via `.set()` on the value directly:
+### Collections
 
-```ts
-name.set('Charlie');
-```
-
-### [Collections](docs/reactive-values.md#collections)
+> **Deep dive:**
+> [docs/reactive-values.md#collections](docs/reactive-values.md#collections)
 
 Reactive versions of Array, Set, and Map. Same core interface: `.get()`,
 `.set()`, `.use()`, `.subscribe()`.
@@ -171,7 +184,9 @@ const keys = scores.useKeys(); // only re-renders when keys change
 const [first, setFirst] = names.use(0); // only re-renders when index 0 changes
 ```
 
-### [Transforms](docs/pipes.md)
+### Transforms
+
+> **Deep dive:** [docs/pipes.md](docs/pipes.md)
 
 Chain `.pipe()` to transform values on every `.set()`. Pipes run in order before
 the value is stored:
@@ -221,10 +236,10 @@ const users = valueArray<User>().compareElementsUsing((a, b) => a.id === b.id);
 
 When a value has both pipes and a custom comparator, the order is:
 
-1. **set()** — raw input enters
-2. **pipe chain** — transforms run left to right
-3. **compareUsing()** — compared against current value
-4. **write** — if different, subscribers are notified
+1. **set()**: raw input enters.
+2. **pipe chain**: transforms run left to right.
+3. **compareUsing()**: compared against current value.
+4. **write**: if different, subscribers are notified.
 
 This means comparison runs on the _post-pipe_ value, not the raw input.
 
@@ -246,9 +261,38 @@ batchSets(() => {
 
 ## Scopes
 
-A `valueScope` bundles related state and derivations into a reusable template.
-Fields are accessed directly as properties, each with `.get()`, `.set()`, and
-`.use()`.
+A scope bundles related state into a reusable template. Call `.create()` to
+produce as many independent instances as you need; each owns its own signals,
+its own derivations, and its own lifecycle.
+
+A scope definition can mix:
+
+- **Reactive fields:** [`value()`](docs/reactive-values.md),
+  [collections](docs/reactive-values.md#collections) (`valueArray()`,
+  `valueSet()`, `valueMap()`), [`valueSchema()`](docs/schema-validation.md) for
+  schema-validated values, and
+  [`valuePlain()`](docs/scopes.md#non-reactive-state-with-valueplain) for
+  non-reactive bookkeeping.
+- **Derivations**, [sync](docs/derivations.md) or
+  [async](docs/async-derivations.md), that read other fields and recompute when
+  their dependencies change.
+- **[Nested groups](docs/scopes.md#nesting)** of plain objects, so you can write
+  `scope.job.title` without creating a separate scope.
+- **Refs to other scopes** via [`valueRef()`](docs/refs.md), so reactivity and
+  lifecycle flow across template boundaries (shared globally, or per-instance
+  via a factory).
+- **[Lifecycle hooks](docs/lifecycle.md)** in the scope config: `onCreate`,
+  `onUsed`, `onUnused`, `onDestroy`, plus
+  [`beforeChange` / `onChange`](docs/change-hooks.md) for side effects and
+  [`validate`](docs/schema-validation.md#cross-field-validation-with-validate)
+  for cross-field rules.
+
+Scopes also compose: [`.extend()`](docs/extending.md) layers extra fields and
+hooks onto an existing template, which makes middleware just a function from
+scope to scope.
+
+Fields are accessed as properties on the instance, each with `.get()`, `.set()`,
+and `.use()`. Derivations have the same surface minus `.set()`.
 
 > **Deep dive:** [docs/scopes.md](docs/scopes.md) |
 > [docs/derivations.md](docs/derivations.md)
@@ -327,10 +371,14 @@ bob.$setSnapshot({
 });
 ```
 
-To re-run [lifecycle hooks](docs/lifecycle.md) (onDestroy then onCreate) during
-a snapshot restore, pass `{ recreate: true }`. This aborts the previous
-`onCreate` signal, fires all cleanups, runs `onDestroy`, applies the snapshot,
-then runs `onCreate` fresh:
+To re-run [lifecycle hooks](docs/lifecycle.md) during a snapshot restore, pass
+`{ recreate: true }`. The instance steps through:
+
+1. Aborts the previous `onCreate` signal.
+2. Fires all registered cleanups.
+3. Runs `onDestroy`.
+4. Applies the snapshot.
+5. Runs `onCreate` fresh.
 
 ```ts
 bob.$setSnapshot(savedState, { recreate: true });
@@ -369,7 +417,9 @@ bob.schemaVersion; // 1 — just a value, no .get()
 For cross-scope composition (sharing state between independent scopes), use
 [`valueRef`](docs/refs.md) instead of nesting.
 
-### [Derivations](docs/derivations.md)
+### Derivations
+
+> **Deep dive:** [docs/derivations.md](docs/derivations.md)
 
 Derivations are functions that compute values from other fields. They receive a
 `scope` context for reading state:
@@ -385,8 +435,8 @@ const scope = valueScope({
 });
 ```
 
-- **`.use()`** — tracked read. The derivation re-runs when this value changes.
-- **`.get()`** — untracked read. Current value, no dependency.
+- **`.use()`**: tracked read. The derivation re-runs when this value changes.
+- **`.get()`**: untracked read. Current value, no dependency.
 
 A derivation with zero `.use()` calls is a constant; it runs once and never
 recomputes. Call `.recompute()` on any derivation to manually trigger a re-run.
@@ -498,6 +548,8 @@ inst.metadata.set({ createdBy: 'alice' });
 inst.config.set({ theme: 'light' }); // throws — readonly
 ```
 
+### Undeclared properties
+
 When working with external data that has more properties than your scope
 declares (e.g., rich text nodes, API responses), use `allowUndeclaredProperties`
 to preserve the extras as plain, non-reactive data:
@@ -521,6 +573,15 @@ nodes.set('node-1', slateNode);
 ---
 
 ## Reacting to Changes
+
+There are two ways to wire side effects to state changes:
+[subscribe](docs/change-hooks.md#per-field-subscribe) to a specific field or a
+whole instance for a value-as-it-changes stream, or use the scope config's
+[`beforeChange`](docs/change-hooks.md#beforechange) /
+[`onChange`](docs/change-hooks.md#onchange) hooks to intercept and respond to
+writes with full structured change metadata. `beforeChange` runs synchronously
+before each write and can `prevent()` it; `onChange` runs after a batch of
+writes settles and tells you which fields and which subscopes changed.
 
 > **Deep dive:** [docs/change-hooks.md](docs/change-hooks.md)
 
@@ -574,32 +635,50 @@ write. Derivations never see prevented values.
 
 Unlike `onChange`, `beforeChange` is **per-write, not batched**: it fires once
 for each `.set()` call with `changes.size === 1`. `batchSets` defers downstream
-effect propagation but does not collapse `beforeChange` invocations — each write
+effect propagation but does not collapse `beforeChange` invocations; each write
 is independently veto-able.
 
 ```ts
-{
-  beforeChange: ({ scope, changes, prevent }) => {
-    // `changes` always holds exactly one change here.
-    const [change] = changes;
-
-    // Prevent a specific field
-    if (change.path === 'job.title') prevent(change);
-
-    // Prevent everything under a group
-    if (change.to === '') prevent(scope.job);
-
-    // Prevent based on the change itself
-    if (change.to === null) prevent(change);
+const person = valueScope(
+  {
+    firstName: value<string>(),
+    job: {
+      title: value<string>(),
+    },
   },
-}
+  {
+    beforeChange: ({ scope, changes, prevent }) => {
+      // `changes` always holds exactly one change here.
+      const [change] = changes;
+
+      // Prevent a specific field
+      if (change.path === 'job.title') prevent(change);
+
+      // Prevent everything under a group
+      if (change.to === '') prevent(scope.job);
+
+      // Prevent based on the change itself
+      if (change.to === null) prevent(change);
+    },
+  },
+);
 ```
 
 ---
 
 ## Scaling Up
 
-### ScopeMap — keyed collections
+Beyond a single scope instance, ValUse covers the patterns that usually come
+next: keyed collections of the same shape ([`ScopeMap`](docs/scope-map.md)),
+composition across independent scopes ([`valueRef`](docs/refs.md)), derived
+templates and middleware ([`.extend()`](docs/extending.md)),
+[long-running async work](docs/async-derivations.md#long-running-derivations),
+[lifecycle setup and teardown](docs/lifecycle.md),
+[schema validation](docs/schema-validation.md), and a small kit of shipped
+middleware ([devtools](docs/devtools.md), [persistence](docs/persistence.md),
+[undo/redo](docs/history.md)).
+
+### ScopeMap: keyed collections
 
 > **Deep dive:** [docs/scope-map.md](docs/scope-map.md)
 
@@ -661,7 +740,7 @@ function PeopleTable({ people }) {
 }
 ```
 
-### valueRef — scope composition
+### valueRef: scope composition
 
 > **Deep dive:** [docs/refs.md](docs/refs.md)
 
@@ -695,10 +774,10 @@ Reactivity flows through refs. A derivation that reads a ref's fields via
 `use()` will re-run when those fields change, just like any other dependency.
 
 Lifecycle is [transitive](docs/refs.md#transitive-lifecycle) too. When a scope
-gets its first subscriber (triggering `onUsed`), all scopes it references via
-`valueRef()` also become "used," activating their `onUsed` hooks and async
-derivations. When the last subscriber detaches, referenced scopes are notified
-as well.
+gets its first subscriber (triggering [`onUsed`](#lifecycle-hooks-and-signals)),
+all scopes it references via `valueRef()` also become "used," activating their
+`onUsed` hooks and async derivations. When the last subscriber detaches,
+referenced scopes are notified as well.
 
 ### Extending scopes
 
@@ -746,7 +825,7 @@ const withSoftDelete = (scope) =>
 const fullPerson = withSoftDelete(withTracking(person));
 ```
 
-### Async derivations (full treatment)
+### Async derivations: advanced patterns
 
 > **Deep dive:** [docs/async-derivations.md](docs/async-derivations.md)
 
@@ -891,10 +970,13 @@ const scope = valueScope(
 aborts when the last subscriber detaches, and is recreated fresh on the next
 attach.
 
-Destroy is a terminal state. After `destroy()` / `$destroy()`, reads still
-return the last value, writes (and any deferred work that crosses the boundary —
-debounced flushes, async resolutions) are silently dropped, subscribers stop
-firing, and a second call is a no-op.
+Destroy is a terminal state. After `destroy()` / `$destroy()`:
+
+- Reads still return the last value.
+- Writes are silently dropped, along with any deferred work that crosses the
+  boundary (debounced flushes, async resolutions).
+- Subscribers stop firing.
+- A second call is a no-op.
 
 ### Factories
 
@@ -1015,13 +1097,17 @@ function SubmitButton() {
 you can render errors anywhere. Both pairs accept `{ deep: true }` to walk
 subscopes transitively, prefixing nested paths with the ref field name (and
 ScopeMap entry key) so a child's `path: ['email']` surfaces at the parent as
-`path: ['account', 'email']`. `validate` lives in the scope config alongside
-`onCreate` and the other lifecycle hooks, but it isn't an event hook; it is a
-reactive derivation that returns an `Issue[]`, re-evaluating whenever a
-`.use()`'d dependency changes. It composes with `.extend()`: both base and
-extension `validate` rules run, and issues are concatenated. Async schemas are
-rejected at the type level; pair a sync schema with an async derivation if you
-need to check something like username availability.
+`path: ['account', 'email']`.
+
+`validate` lives in the scope config alongside `onCreate` and the other
+lifecycle hooks, but it isn't an event hook. It is a reactive derivation that
+returns an `Issue[]`, re-evaluating whenever a `.use()`'d dependency changes.
+
+It composes with `.extend()`: both base and extension `validate` rules run, and
+issues are concatenated.
+
+Async schemas are rejected at the type level; pair a sync schema with an async
+derivation if you need to check something like username availability.
 
 ### Shipped middleware
 
@@ -1070,11 +1156,20 @@ instance.undo(); // history
 
 For standalone values and `ScopeMap`s that don't flow through `.extend()`, the
 devtools package also exports `connectDevtools(value, …)` and
-`connectMapDevtools(map, …)` — see [docs/devtools.md](docs/devtools.md).
+`connectMapDevtools(map, …)`; see [docs/devtools.md](docs/devtools.md).
 
 ---
 
 ## Power Tools
+
+A handful of advanced primitives for when you need more than the common
+patterns: [factory pipes](docs/pipes.md#factory-pipes) for stateful transforms
+like debounce and throttle,
+[type-changing pipes](docs/pipes.md#type-changing-pipes) that let a value's
+input and output types diverge, manual
+[`.recompute()`](docs/derivations.md#manual-recompute) for derivations that only
+do untracked reads, and [runtime type guards](#type-guards) for middleware that
+operates on unknown fields.
 
 ### Factory pipes
 
