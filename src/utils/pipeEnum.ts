@@ -21,6 +21,5 @@ export function pipeEnum<const T extends readonly unknown[]>(
 ): Transform<unknown, T[number]> {
 	const set = new Set<unknown>(allowed);
 	const fallback = allowed[0] as T[number];
-	return (value: unknown): T[number] =>
-		set.has(value) ? (value as T[number]) : fallback;
+	return (value: unknown): T[number] => (set.has(value) ? value : fallback);
 }

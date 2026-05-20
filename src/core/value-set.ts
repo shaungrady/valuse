@@ -59,7 +59,7 @@ export class ValueSet<T> {
 		const previous = this.get();
 		let next: Set<T>;
 		if (typeof valueOrFn === 'function') {
-			next = draftSet(previous, valueOrFn as (draft: Set<T>) => void);
+			next = draftSet(previous, valueOrFn);
 		} else {
 			next = valueOrFn;
 		}

@@ -36,12 +36,9 @@ export class ValuePlain<T, R extends boolean = false> {
 	 */
 	pipe<U>(transform: (value: T) => U): ValuePlain<U, R> {
 		// Store the *raw* default — the InstanceStore applies the pipeline at init time
-		const next = new ValuePlain<U, R>(
-			this._value as unknown as U,
-			{
-				readonly: this._readonly,
-			} as { readonly: R },
-		);
+		const next = new ValuePlain<U, R>(this._value as unknown as U, {
+			readonly: this._readonly,
+		});
 		// Copy existing steps and add the new one
 		next._pipeSteps.push(...this._pipeSteps, {
 			kind: 'sync',

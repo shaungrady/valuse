@@ -77,7 +77,7 @@ export class ValueMap<K, V> {
 		const previous = this.#signal.value;
 		let next: Map<K, V>;
 		if (typeof valueOrFn === 'function') {
-			next = draftMap(previous, valueOrFn as (draft: Map<K, V>) => void);
+			next = draftMap(previous, valueOrFn);
 		} else {
 			next = valueOrFn;
 		}

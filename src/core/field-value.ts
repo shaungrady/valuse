@@ -156,7 +156,7 @@ export class FieldValueSchema<In, Out = In> extends FieldValue<In, In> {
 			return [
 				this.get(),
 				(valueOrFn) => {
-					this.set(valueOrFn as In | ((prev: In) => In));
+					this.set(valueOrFn);
 				},
 				this.getValidation(),
 			];
@@ -164,7 +164,7 @@ export class FieldValueSchema<In, Out = In> extends FieldValue<In, In> {
 		return [
 			this.get(),
 			(valueOrFn) => {
-				this.set(valueOrFn as In | ((prev: In) => In));
+				this.set(valueOrFn);
 			},
 			this.getValidation(),
 		];

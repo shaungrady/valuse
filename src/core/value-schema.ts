@@ -162,7 +162,7 @@ export class ValueSchema<In, Out = In> {
 			:	valueOrFn;
 
 		// Apply sync pipe transforms
-		const next = this.#applyAllSyncTransforms(raw as unknown) as In;
+		const next = this.#applyAllSyncTransforms(raw) as In;
 
 		// Comparator check
 		if (this._comparator && this._comparator(previous, next)) {
@@ -221,7 +221,7 @@ export class ValueSchema<In, Out = In> {
 		};
 		const allSteps = [...this._pipeSteps, newStep];
 		const currentValue = this._signal.peek();
-		const transformedInitial = transform(currentValue) as unknown as NewIn;
+		const transformedInitial = transform(currentValue);
 		const newSchema = new ValueSchema<NewIn, Out>(
 			this._schema,
 			transformedInitial,
@@ -247,7 +247,7 @@ export class ValueSchema<In, Out = In> {
 		return [
 			this.get(),
 			(valueOrFn) => {
-				this.set(valueOrFn as In | ((prev: In) => In));
+				this.set(valueOrFn);
 			},
 		];
 	}

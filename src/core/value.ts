@@ -132,7 +132,7 @@ export class Value<In, Out = In> {
 		}
 
 		// All sync pipes — apply in order
-		const next = this.#applyAllSyncTransforms(raw as unknown) as Out;
+		const next = this.#applyAllSyncTransforms(raw) as Out;
 
 		if (this._comparator && this._comparator(previous, next)) {
 			return;
@@ -267,7 +267,7 @@ export class Value<In, Out = In> {
 			// `set` keeps the sync chain single-pass while still letting
 			// stateful factories (pipeScan, pipeUnique, pipeDebounce, …)
 			// observe the current value.
-			newValue.#activeFactories[0]?.write(currentValue as unknown);
+			newValue.#activeFactories[0]?.write(currentValue);
 			return newValue as unknown as Value<In, NewOut>;
 		}
 
@@ -369,7 +369,7 @@ export class Value<In, Out = In> {
 
 			const cleanups: (() => void)[] = [];
 			const currentFactoryIndex = factoryIndex;
-			const write = (step as FactoryPipeStep).descriptor.create({
+			const write = step.descriptor.create({
 				set: (value: unknown) => {
 					// Apply any sync steps after this factory
 					let current = value;

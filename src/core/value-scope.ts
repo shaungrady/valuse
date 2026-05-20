@@ -16,7 +16,6 @@ import {
 	DerivationWrap,
 	brandAsScope,
 } from './field-value.js';
-import type { ValidationState } from './value-schema.js';
 import {
 	initialAsyncState,
 	settingAsyncState,
@@ -206,7 +205,7 @@ export class ScopeTemplate<
 			this.#definition,
 			this.#rawDefinition,
 			this.#config,
-			input as Record<string, unknown> | undefined,
+			input,
 		) as unknown as ScopeInstance<Def>;
 	}
 
@@ -473,12 +472,12 @@ function createScopeInstance(
 				resolved !== null &&
 				'$destroy' in resolved
 			) {
-				factoryRefInstances.push(resolved as Record<string, unknown>);
+				factoryRefInstances.push(resolved);
 			} else if (
 				typeof resolved === 'object' &&
 				resolved !== null &&
 				'destroy' in resolved &&
-				typeof (resolved as { destroy: unknown }).destroy === 'function'
+				typeof resolved.destroy === 'function'
 			) {
 				factoryRefDestroyables.push(resolved as { destroy: () => void });
 			}
@@ -489,9 +488,9 @@ function createScopeInstance(
 			typeof resolved === 'object' &&
 			resolved !== null &&
 			'$subscribe' in resolved &&
-			typeof (resolved as { $subscribe: unknown }).$subscribe === 'function'
+			typeof resolved.$subscribe === 'function'
 		) {
-			transitiveLifecycleRefs.push(resolved as Record<string, unknown>);
+			transitiveLifecycleRefs.push(resolved);
 		}
 		resolvedRefs.set(path, resolved);
 		// Attach to derivation scope for use in derivations. Wrap with a
@@ -904,10 +903,7 @@ function wrapRefForDerivation(
 	// slot up front, so the derivation re-runs on any field change inside the
 	// referenced instance. Granularity is coarse by design; it's the price of
 	// letting consumers read the full instance shape.
-	if (
-		'$get' in resolved &&
-		typeof (resolved as { $get: unknown }).$get === 'function'
-	) {
+	if ('$get' in resolved && typeof resolved.$get === 'function') {
 		const instance = resolved as Record<string, unknown> & {
 			_trackAll?: () => void;
 		};
@@ -936,10 +932,7 @@ function wrapRefForDerivation(
 	// Any reactive source with a parameterless `.get()` — Value, ValueSet,
 	// ValueMap (whole-map read), ValuePlain, etc. Preact signals inside
 	// `.get()` handle tracking; `.use()` is an alias here.
-	if (
-		'get' in resolved &&
-		typeof (resolved as { get: unknown }).get === 'function'
-	) {
+	if ('get' in resolved && typeof resolved.get === 'function') {
 		const source = resolved as { get(): unknown };
 		return {
 			use: () => source.get(),
@@ -1225,10 +1218,7 @@ function wrapRefForAsyncDerivation(
 	// Scope instance: `.use()` returns the instance, tracked via $subscribe
 	// (whole-scope: fires on any field change), matching the coarse-grained
 	// sync behavior backed by `_trackAll`.
-	if (
-		'$subscribe' in resolved &&
-		typeof (resolved as { $subscribe: unknown }).$subscribe === 'function'
-	) {
+	if ('$subscribe' in resolved && typeof resolved.$subscribe === 'function') {
 		const instance = resolved as {
 			$subscribe: (cb: () => void) => () => void;
 		};
@@ -1253,7 +1243,7 @@ function wrapRefForAsyncDerivation(
 	// Value / ValueSet / ValueMap / ValueArray — anything with .subscribe + .get.
 	if (
 		'subscribe' in resolved &&
-		typeof (resolved as { subscribe: unknown }).subscribe === 'function' &&
+		typeof resolved.subscribe === 'function' &&
 		'get' in resolved &&
 		typeof (resolved as { get: unknown }).get === 'function'
 	) {
@@ -1454,7 +1444,7 @@ function setupValidation(
 					isValid: false,
 					value,
 					issues: allIssues,
-				} as ValidationState<unknown, unknown>;
+				};
 			};
 
 			// `useValidation` on the field wrapper used to only subscribe to

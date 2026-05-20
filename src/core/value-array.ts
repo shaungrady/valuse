@@ -345,7 +345,7 @@ export class ValueArray<In, Out = In> {
 
 	#transformElement(item: In): Out {
 		if (this.#elementTransform) {
-			return this.#elementTransform(item) as unknown as Out;
+			return this.#elementTransform(item);
 		}
 		return item as unknown as Out;
 	}
