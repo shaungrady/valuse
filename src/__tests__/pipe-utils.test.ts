@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { value } from '../core/value.js';
-import { pipeEnum } from '../utils/pipeEnum.js';
-import { pipeDebounce } from '../utils/pipeDebounce.js';
-import { pipeThrottle } from '../utils/pipeThrottle.js';
-import { pipeBatch } from '../utils/pipeBatch.js';
-import { pipeFilter } from '../utils/pipeFilter.js';
-import { pipeScan } from '../utils/pipeScan.js';
-import { pipeUnique } from '../utils/pipeUnique.js';
+import { pipeEnum } from '../utils/pipe-enum.js';
+import { pipeDebounce } from '../utils/pipe-debounce.js';
+import { pipeThrottle } from '../utils/pipe-throttle.js';
+import { pipeBatch } from '../utils/pipe-batch.js';
+import { pipeFilter } from '../utils/pipe-filter.js';
+import { pipeScan } from '../utils/pipe-scan.js';
+import { pipeUnique } from '../utils/pipe-unique.js';
 
 describe('pipeDebounce', () => {
 	it('delays the value', async () => {

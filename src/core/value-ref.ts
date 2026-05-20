@@ -115,7 +115,7 @@ export function valueRef(source: unknown): ValueRef<unknown> {
 }
 
 /** Create a ValueRef from an already-resolved source. @internal */
-export function createRefFromSource(source: unknown): ValueRef<unknown> {
+function createRefFromSource(source: unknown): ValueRef<unknown> {
 	// Scope instances use $get()
 	if (
 		typeof source === 'object' &&

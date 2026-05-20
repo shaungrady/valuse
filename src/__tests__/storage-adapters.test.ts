@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { localStorageAdapter } from '../middleware/persistence/localStorageAdapter.js';
-import { sessionStorageAdapter } from '../middleware/persistence/sessionStorageAdapter.js';
+import { localStorageAdapter } from '../middleware/persistence/local-storage-adapter.js';
+import { sessionStorageAdapter } from '../middleware/persistence/session-storage-adapter.js';
 
 describe('localStorageAdapter', () => {
 	let mockStorage: Map<string, string>;

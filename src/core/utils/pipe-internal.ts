@@ -10,7 +10,7 @@ export interface SyncPipeStep<In = unknown, Out = unknown> {
 	transform: Transform<In, Out>;
 }
 
-export interface FactoryPipeStep<In = unknown, Out = unknown> {
+interface FactoryPipeStep<In = unknown, Out = unknown> {
 	kind: 'factory';
 	descriptor: PipeFactoryDescriptor<In, Out>;
 }

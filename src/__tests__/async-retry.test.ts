@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { asyncRetry } from '../utils/asyncRetry.js';
+import { asyncRetry } from '../utils/async-retry.js';
 
 describe('asyncRetry', () => {
 	describe('happy path', () => {

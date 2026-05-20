@@ -386,7 +386,7 @@ describe('localStorageAdapter', () => {
 
 	it('reads and writes via localStorage', async () => {
 		const { localStorageAdapter } =
-			await import('../middleware/persistence/localStorageAdapter.js');
+			await import('../middleware/persistence/local-storage-adapter.js');
 		localStorageAdapter.write('k', 'hello');
 		expect(localStorageAdapter.read('k')).toBe('hello');
 		localStorageAdapter.remove('k');
@@ -395,7 +395,7 @@ describe('localStorageAdapter', () => {
 
 	it('returns null for missing keys', async () => {
 		const { localStorageAdapter } =
-			await import('../middleware/persistence/localStorageAdapter.js');
+			await import('../middleware/persistence/local-storage-adapter.js');
 		expect(localStorageAdapter.read('missing')).toBeNull();
 	});
 });
@@ -411,7 +411,7 @@ describe('sessionStorageAdapter', () => {
 
 	it('reads and writes via sessionStorage', async () => {
 		const { sessionStorageAdapter } =
-			await import('../middleware/persistence/sessionStorageAdapter.js');
+			await import('../middleware/persistence/session-storage-adapter.js');
 		sessionStorageAdapter.write('k', 'hello');
 		expect(sessionStorageAdapter.read('k')).toBe('hello');
 		sessionStorageAdapter.remove('k');
@@ -420,7 +420,7 @@ describe('sessionStorageAdapter', () => {
 
 	it('has no subscribe method', async () => {
 		const { sessionStorageAdapter } =
-			await import('../middleware/persistence/sessionStorageAdapter.js');
+			await import('../middleware/persistence/session-storage-adapter.js');
 		expect(sessionStorageAdapter.subscribe).toBeUndefined();
 	});
 });

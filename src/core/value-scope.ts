@@ -184,8 +184,7 @@ export class ScopeTemplate<
 		if (Array.isArray(data) && keyFieldOrFn !== undefined) {
 			// Array + field name or callback
 			const items = data as Partial<ValueInputOf<Def>>[];
-			for (let i = 0; i < items.length; i++) {
-				const item = items[i]!;
+			for (const [i, item] of items.entries()) {
 				const key: K | undefined =
 					typeof keyFieldOrFn === 'function' ?
 						keyFieldOrFn(item)
@@ -801,14 +800,14 @@ function setupSyncDerivations(
 				try {
 					// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 					return derivationFn({ scope: derivationScope });
-				} catch (err) {
+				} catch (error) {
 					// A throwing derivation would otherwise propagate out of
 					// the source `.set()` that triggered the recompute, since
 					// the computed re-runs inside Preact's endBatch. Contain
 					// the throw, log it, and keep the slot's last good value
 					// so the source write succeeds and the next non-throwing
 					// run recovers.
-					console.error('valuse: sync derivation threw', err);
+					console.error('valuse: sync derivation threw', error);
 					return store.signals[slotIndex]!.peek();
 				}
 			});
@@ -1194,20 +1193,20 @@ function setupValidation(
 		const derivedValidateSignal = computed(() => {
 			try {
 				return validateFn({ scope: derivationScope });
-			} catch (err) {
+			} catch (error) {
 				// A throwing validate hook would otherwise propagate out of
 				// the source `.set()` that triggered the recompute, and
 				// leave `$getIsValid()` reporting `true` indefinitely (since
 				// the issues signal never updated). Contain the throw, log
 				// it, and synthesise a scope-level issue so the scope
 				// reports invalid until the hook recovers.
-				console.error('valuse: validate hook threw', err);
+				console.error('valuse: validate hook threw', error);
 				return [
 					{
 						message:
-							err instanceof Error ?
-								`validate threw: ${err.message}`
-							:	`validate threw: ${String(err)}`,
+							error instanceof Error ?
+								`validate threw: ${error.message}`
+							:	`validate threw: ${String(error)}`,
 					},
 				];
 			}
@@ -1541,7 +1540,7 @@ function setNestedValue(
 		}
 		current = current[part] as Record<string, unknown>;
 	}
-	current[parts[parts.length - 1]!] = value;
+	current[parts.at(-1)!] = value;
 }
 
 /** Attach $-prefixed instance methods. @internal */

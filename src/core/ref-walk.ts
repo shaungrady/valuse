@@ -74,6 +74,6 @@ export function walkRefTrack(ref: unknown, visited: WeakSet<object>): void {
 	}
 }
 
-export function isScopeLike(x: unknown): boolean {
+function isScopeLike(x: unknown): boolean {
 	return typeof x === 'object' && x !== null && '$destroy' in x;
 }

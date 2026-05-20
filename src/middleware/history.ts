@@ -59,8 +59,10 @@ interface HistoryState {
 	position: Signal<number>;
 	canUndoSignal: Signal<boolean>;
 	canRedoSignal: Signal<boolean>;
-	/** Set while undo/redo/clearHistory is running so the subscriber
-	 *  doesn't record a new entry. */
+	/**
+	 * Set while undo/redo/clearHistory is running so the subscriber
+	 * doesn't record a new entry.
+	 */
 	isRestoring: boolean;
 	/** Pending batch timer, if a batch window is open. */
 	batchTimer: ReturnType<typeof setTimeout> | null;

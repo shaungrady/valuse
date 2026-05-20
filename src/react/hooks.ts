@@ -8,8 +8,6 @@
  * ```ts
  * import 'valuse/react';
  * ```
- *
- * @module
  */
 import { useSyncExternalStore } from 'react';
 import { installReact } from '../core/react-bridge.js';

@@ -71,7 +71,11 @@ function identitySnapshot(
 // --- Helpers ---
 
 function getExtension(): ReduxDevtoolsExtension | undefined {
-	if (typeof globalThis === 'undefined') return undefined;
+	// Belt-and-suspenders: `globalThis` is ES2020 standard and always bound
+	// in any environment we target, so this guard is for legacy hosts that
+	// shipped before that.
+	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+	if (globalThis === undefined) return undefined;
 	return globalThis.__REDUX_DEVTOOLS_EXTENSION__;
 }
 
@@ -81,7 +85,8 @@ function isEnabled(options: DevtoolsOptions): boolean {
 	// Default: disabled in production
 	try {
 		return (
-			typeof globalThis === 'undefined' ||
+			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+			globalThis === undefined ||
 			!('process' in globalThis) ||
 			(
 				globalThis as unknown as {

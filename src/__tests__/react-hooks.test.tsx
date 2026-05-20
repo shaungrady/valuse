@@ -543,7 +543,8 @@ describe('React hooks via .use() (v2)', () => {
 			);
 			const instance = scope.create();
 			function App() {
-				const [, , validation] = (instance.confirm as any).useValidation();
+				const result = (instance.confirm as any).useValidation();
+				const validation = result.at(2);
 				return (
 					<span data-testid="confirm-valid">{String(validation.isValid)}</span>
 				);

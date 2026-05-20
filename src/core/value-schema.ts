@@ -55,22 +55,24 @@ export function runValidation<In, Out>(
 	let result: ReturnType<StandardSchemaV1['~standard']['validate']>;
 	try {
 		result = schema['~standard'].validate(input);
-	} catch (err) {
+	} catch (error) {
 		// A throwing validator (rather than one that returns issues) would
 		// otherwise propagate out of `.set()`. Surface the failure through
 		// the validation state instead — readers see `isValid: false` with
 		// the throw message as an issue, and the value still gets stored.
-		console.error('valuse: schema validator threw', err);
+		console.error('valuse: schema validator threw', error);
 		return {
 			isValid: false,
 			value: input,
-			issues: [{ message: err instanceof Error ? err.message : String(err) }],
+			issues: [
+				{ message: error instanceof Error ? error.message : String(error) },
+			],
 		};
 	}
 
 	// Guard against async schemas that slipped through at runtime
 	if (result instanceof Promise) {
-		throw new Error(
+		throw new TypeError(
 			'valueSchema received an async schema. Only synchronous schemas are supported.',
 		);
 	}

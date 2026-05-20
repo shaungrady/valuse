@@ -1,19 +1,19 @@
 // Grouped re-export of all utilities.
 
 // --- Pipe factories ---
-export { pipeEnum } from './utils/pipeEnum.js';
-export { pipeDebounce } from './utils/pipeDebounce.js';
-export { pipeThrottle } from './utils/pipeThrottle.js';
-export { pipeBatch } from './utils/pipeBatch.js';
-export { pipeFilter } from './utils/pipeFilter.js';
-export { pipeScan } from './utils/pipeScan.js';
-export { pipeUnique } from './utils/pipeUnique.js';
+export { pipeEnum } from './utils/pipe-enum.js';
+export { pipeDebounce } from './utils/pipe-debounce.js';
+export { pipeThrottle } from './utils/pipe-throttle.js';
+export { pipeBatch } from './utils/pipe-batch.js';
+export { pipeFilter } from './utils/pipe-filter.js';
+export { pipeScan } from './utils/pipe-scan.js';
+export { pipeUnique } from './utils/pipe-unique.js';
 
 // --- Async derivation utilities (see specs/derive-utils.md) ---
-export { asyncDelay } from './utils/asyncDelay.js';
-export { asyncPoll } from './utils/asyncPoll.js';
-export { asyncRetry } from './utils/asyncRetry.js';
-export { asyncTimeout } from './utils/asyncTimeout.js';
+export { asyncDelay } from './utils/async-delay.js';
+export { asyncPoll } from './utils/async-poll.js';
+export { asyncRetry } from './utils/async-retry.js';
+export { asyncTimeout } from './utils/async-timeout.js';
 
 // --- Signals (re-exported for advanced usage) ---
 export { signal } from './utils/signal.js';

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { value } from '../core/value.js';
 import { valueScope } from '../core/value-scope.js';
-import { indexedDBAdapter } from '../middleware/persistence/indexedDBAdapter.js';
+import { indexedDBAdapter } from '../middleware/persistence/indexed-db-adapter.js';
 import { withPersistence } from '../middleware/persistence/persistence.js';
 
 // Each test gets a fresh database name so fake-indexeddb doesn't leak state.

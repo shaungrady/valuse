@@ -231,7 +231,7 @@ describe('async derivations', () => {
 
 			// Should have intermediate (10) then final (100)
 			expect(values).toContain(10);
-			expect(values[values.length - 1]).toBe(100);
+			expect(values.at(-1)).toBe(100);
 		});
 	});
 

@@ -141,12 +141,12 @@ describe('value (v2)', () => {
 
 	describe('.pipe() — type-changing', () => {
 		it('changes the output type', () => {
-			const parsed = value<string>('42').pipe((v) => parseInt(v));
+			const parsed = value<string>('42').pipe((v) => Number.parseInt(v));
 			expect(parsed.get()).toBe(42);
 		});
 
 		it('set() still accepts the original input type', () => {
-			const parsed = value<string>('42').pipe((v) => parseInt(v));
+			const parsed = value<string>('42').pipe((v) => Number.parseInt(v));
 			parsed.set('100');
 			expect(parsed.get()).toBe(100);
 		});
@@ -154,14 +154,14 @@ describe('value (v2)', () => {
 		it('chains sync then type-changing', () => {
 			const parsed = value<string>('  42  ')
 				.pipe((s) => s.trim())
-				.pipe((s) => parseInt(s));
+				.pipe((s) => Number.parseInt(s));
 			expect(parsed.get()).toBe(42);
 			parsed.set('  100  ');
 			expect(parsed.get()).toBe(100);
 		});
 
 		it('set callback receives Out type as prev', () => {
-			const parsed = value<string>('42').pipe((v) => parseInt(v));
+			const parsed = value<string>('42').pipe((v) => Number.parseInt(v));
 			parsed.set((prev) => {
 				expect(typeof prev).toBe('number');
 				return String(prev + 1);
@@ -188,7 +188,7 @@ describe('value (v2)', () => {
 				create:
 					({ set }) =>
 					(value) =>
-						set(parseInt(value)),
+						set(Number.parseInt(value)),
 			});
 			expect(parsed.get()).toBe(42);
 			parsed.set('100');
@@ -274,7 +274,7 @@ describe('value (v2)', () => {
 
 		it('compares post-pipe values for type-changing pipes', () => {
 			const parsed = value<string>('42')
-				.pipe((v) => parseInt(v))
+				.pipe((v) => Number.parseInt(v))
 				.compareUsing((a, b) => a === b);
 			const calls: number[] = [];
 			parsed.subscribe((current) => calls.push(current));

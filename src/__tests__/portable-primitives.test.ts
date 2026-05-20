@@ -30,13 +30,15 @@ describe('draftSet', () => {
 		draftSet(source, (d) => {
 			d.add(4);
 			d.delete(2);
-			observed.push([...d]);
-			observed.push([...d.values()]);
-			observed.push([...d.keys()]);
-			observed.push([...d.entries()].map(([v]) => v));
-			const byForEach: number[] = [];
-			d.forEach((value) => byForEach.push(value));
-			observed.push(byForEach);
+			const byForOf: number[] = [];
+			for (const value of d) byForOf.push(value);
+			observed.push(
+				[...d],
+				[...d.values()],
+				[...d.keys()],
+				[...d.entries()].map(([v]) => v),
+				byForOf,
+			);
 		});
 		for (const snapshot of observed) {
 			expect(new Set(snapshot)).toEqual(new Set([1, 3, 4]));
@@ -105,11 +107,13 @@ describe('draftMap', () => {
 			d.set('c', 3);
 			d.set('a', 10); // override existing
 			d.delete('b');
-			snapshots.push([...d]);
-			snapshots.push([...d.entries()]);
 			const keys = [...d.keys()];
 			const values = [...d.values()];
-			snapshots.push(keys.map((k, i) => [k, values[i]!]));
+			snapshots.push(
+				[...d],
+				[...d.entries()],
+				keys.map((k, i) => [k, values[i]!]),
+			);
 		});
 		for (const snapshot of snapshots) {
 			expect(new Map(snapshot)).toEqual(

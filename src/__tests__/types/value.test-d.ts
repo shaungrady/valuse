@@ -32,7 +32,7 @@ expectTypeOf(multiPiped.get()).toEqualTypeOf<string>();
 
 // --- .pipe() type-changing: In stays, Out changes ---
 
-const typeChanging = value<string>('42').pipe((v) => parseInt(v));
+const typeChanging = value<string>('42').pipe((v) => Number.parseInt(v));
 expectTypeOf(typeChanging.get()).toEqualTypeOf<number>();
 // set() still accepts the original In type (string)
 expectTypeOf(typeChanging.set).toBeCallableWith('100');
@@ -40,7 +40,7 @@ expectTypeOf(typeChanging.set).toBeCallableWith('100');
 // Chained type change
 const chained = value<string>('  42  ')
 	.pipe((v) => v.trim())
-	.pipe((v) => parseInt(v));
+	.pipe((v) => Number.parseInt(v));
 expectTypeOf(chained.get()).toEqualTypeOf<number>();
 expectTypeOf(chained.set).toBeCallableWith('  100  ');
 
@@ -51,7 +51,7 @@ expectTypeOf(compared.get()).toEqualTypeOf<string>();
 
 // compareUsing on type-changed value: comparator receives Out type
 const comparedTypeChanged = value<string>('42')
-	.pipe((v) => parseInt(v))
+	.pipe((v) => Number.parseInt(v))
 	.compareUsing((a, b) => a === b);
 expectTypeOf(comparedTypeChanged.get()).toEqualTypeOf<number>();
 
@@ -82,7 +82,7 @@ expectTypeOf(useNoDefault).toEqualTypeOf<
 
 // Type-changing: use() returns [Out, Setter<In>]
 const useTypeChanged = value<string>('42')
-	.pipe((v) => parseInt(v))
+	.pipe((v) => Number.parseInt(v))
 	.use();
 expectTypeOf(useTypeChanged).toEqualTypeOf<[number, Setter<string>]>();
 

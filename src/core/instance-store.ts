@@ -142,7 +142,9 @@ export class InstanceStore {
 		this.#factoryPipes = new Map();
 
 		// Allocate signals
-		this.signals = new Array(definition.slotCount) as Signal<unknown>[];
+		this.signals = Array.from<Signal<unknown>>({
+			length: definition.slotCount,
+		});
 		for (let slot = 0; slot < definition.slotCount; slot++) {
 			const meta = definition.slots[slot]!;
 			const hasUserInitial = initialValues.has(slot);

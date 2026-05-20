@@ -183,7 +183,7 @@ export class FieldValuePlain<In, Out = In> {
 	/**
 	 * Write a new value, or derive the next value from the previous one.
 	 *
-	 * @throws `TypeError` if the slot was declared with `{ readonly: true }`.
+	 * @throws {TypeError} if the slot was declared with `{ readonly: true }`.
 	 * @param valueOrFn - the new value, or a function that receives the current value and returns a new one.
 	 */
 	set(valueOrFn: In | ((prev: Out) => In)): void {

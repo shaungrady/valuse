@@ -44,7 +44,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
  * Flatten an intersection into a single object type for readability.
  * @internal
  */
-export type Simplify<T> = { [K in keyof T]: T[K] } & {};
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
 /**
  * `true` when `T` is a plain-object group (not a `Value`, not a function).

@@ -283,8 +283,11 @@ describe('withHistory', () => {
 		// Batch timer is pending (300ms not elapsed yet)
 		instance.$destroy();
 
-		// Advancing time should not cause errors
-		vi.advanceTimersByTime(300);
+		// Advancing time should not cause errors — the batch timer should have
+		// been cleared during destroy, so no callback fires.
+		expect(() => {
+			vi.advanceTimersByTime(300);
+		}).not.toThrow();
 		vi.useRealTimers();
 	});
 });

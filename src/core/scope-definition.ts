@@ -76,14 +76,11 @@ export function buildScopeDefinition(
 
 	// Build lookup maps
 	const pathToSlot = new Map<string, number>();
-	for (let i = 0; i < slots.length; i++) {
-		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-		pathToSlot.set(slots[i]!.path, i);
+	for (const [i, slot] of slots.entries()) {
+		pathToSlot.set(slot.path, i);
 	}
 	const pathToGroup = new Map<string, number>();
-	for (let i = 0; i < groups.length; i++) {
-		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-		const group = groups[i]!;
+	for (const [i, group] of groups.entries()) {
 		if (group.path) pathToGroup.set(group.path, i);
 	}
 

@@ -319,9 +319,9 @@ export class Value<In, Out = In> {
 			const step = this._pipeSteps[i]!;
 			if (step.kind !== 'factory') continue;
 
-			const isLastFactory =
-				this._pipeSteps.slice(i + 1).findIndex((s) => s.kind === 'factory') ===
-				-1;
+			const isLastFactory = !this._pipeSteps
+				.slice(i + 1)
+				.some((s) => s.kind === 'factory');
 
 			// Collect sync steps after this factory (until the next factory or end)
 			const syncStepsAfter: SyncPipeStep[] = [];
@@ -371,15 +371,14 @@ export class Value<In, Out = In> {
 // --- Factory overloads ---
 
 /**
- * Create a reactive value.
+ * Create a reactive value with no initial value (starts as `undefined`).
  *
- * @param initial - the initial value to store.
  * @typeParam T - the type of the stored value.
  * @returns a new {@link Value} instance.
  *
  * @example
  * ```ts
- * const count = value(0);
+ * const count = value<number>();    // Value<number | undefined>
  * const name = value<string | null>(null);
  * ```
  */

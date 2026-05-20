@@ -878,7 +878,7 @@ describe('$getValidation() edge cases', () => {
 
 		const paths = result.issues
 			.map((i: StandardSchemaV1.Issue) => i.path?.join('.'))
-			.sort();
+			.toSorted();
 		expect(paths).toEqual(['address.zip', 'cards.c1.title', 'name']);
 	});
 

@@ -1,4 +1,4 @@
-import { asyncDelay } from './asyncDelay.js';
+import { asyncDelay } from './async-delay.js';
 
 interface AsyncRetryOptions {
 	/** Maximum number of attempts (including the first). Default: 3. */

@@ -48,14 +48,12 @@ export class ValuePlain<T, R extends boolean = false> {
 	}
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyValuePlain = ValuePlain<any, boolean>;
-
 /**
  * Create a non-reactive value for use in a scope definition.
  *
  * @param initial - the initial value.
  * @param options - optional configuration.
+ * @param options.readonly - when `true`, the field's `set()` throws at runtime.
  * @returns a {@link ValuePlain} instance.
  *
  * @example

@@ -13,10 +13,10 @@ export type {
 	PersistenceOptions,
 } from './middleware/persistence/persistence.js';
 
-export { localStorageAdapter } from './middleware/persistence/localStorageAdapter.js';
-export { sessionStorageAdapter } from './middleware/persistence/sessionStorageAdapter.js';
-export { indexedDBAdapter } from './middleware/persistence/indexedDBAdapter.js';
-export type { IndexedDBAdapterOptions } from './middleware/persistence/indexedDBAdapter.js';
+export { localStorageAdapter } from './middleware/persistence/local-storage-adapter.js';
+export { sessionStorageAdapter } from './middleware/persistence/session-storage-adapter.js';
+export { indexedDBAdapter } from './middleware/persistence/indexed-db-adapter.js';
+export type { IndexedDBAdapterOptions } from './middleware/persistence/indexed-db-adapter.js';
 
 export { withHistory } from './middleware/history.js';
 export type {

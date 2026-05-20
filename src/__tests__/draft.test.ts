@@ -84,7 +84,7 @@ describe('draftSet', () => {
 			draft.delete(2);
 			draft.add(4);
 			const values: number[] = [];
-			draft.forEach((value) => values.push(value));
+			for (const value of draft) values.push(value);
 			expect(values).toEqual([1, 3, 4]);
 		});
 	});
@@ -254,7 +254,7 @@ describe('draftMap', () => {
 			draft.delete('a');
 			draft.set('c', 3);
 			const entries: [string, number][] = [];
-			draft.forEach((value, key) => entries.push([key, value]));
+			for (const [key, value] of draft) entries.push([key, value]);
 			expect(entries).toEqual([
 				['b', 2],
 				['c', 3],

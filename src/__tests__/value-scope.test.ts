@@ -7,8 +7,8 @@ import { valueSet } from '../core/value-set.js';
 import { valueMap } from '../core/value-map.js';
 import { valueArray } from '../core/value-array.js';
 import { isValue, isPlain, isComputed, isScope } from '../core/field-value.js';
-import { pipeDebounce } from '../utils/pipeDebounce.js';
-import { pipeBatch } from '../utils/pipeBatch.js';
+import { pipeDebounce } from '../utils/pipe-debounce.js';
+import { pipeBatch } from '../utils/pipe-batch.js';
 import { batchSets } from '../core/signal.js';
 import type { ScopeInstance } from '../core/scope-types.js';
 
@@ -1160,13 +1160,15 @@ describe('$use() setter', () => {
 				instance.$subscribe(sub);
 
 				instance.config.set('light');
-				// Wait for any potential microtask flush.
+				// Wait through two microtask hops — Preact batches subscriber
+				// notifications onto a follow-up microtask, so a single
+				// `Promise.resolve()` await would land before the batch flush.
 				return Promise.resolve()
-					.then(() => Promise.resolve())
+					.then(() => undefined)
 					.then(() => {
 						expect(sub).not.toHaveBeenCalled();
 						instance.name.set('Bob');
-						return Promise.resolve().then(() => Promise.resolve());
+						return Promise.resolve().then(() => undefined);
 					})
 					.then(() => {
 						expect(sub).toHaveBeenCalled();

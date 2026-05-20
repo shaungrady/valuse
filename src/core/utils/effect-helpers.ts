@@ -36,8 +36,8 @@ export function subscribeWithPrevious<T>(
 		previousValue = currentValue;
 		try {
 			fn(currentValue, prev);
-		} catch (err) {
-			console.error('valuse: subscriber threw', err);
+		} catch (error) {
+			console.error('valuse: subscriber threw', error);
 		}
 	});
 }
@@ -63,8 +63,8 @@ export function subscribeFireOnly(
 		}
 		try {
 			fn();
-		} catch (err) {
-			console.error('valuse: subscriber threw', err);
+		} catch (error) {
+			console.error('valuse: subscriber threw', error);
 		}
 	});
 }

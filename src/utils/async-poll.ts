@@ -1,4 +1,4 @@
-import { asyncDelay } from './asyncDelay.js';
+import { asyncDelay } from './async-delay.js';
 
 interface AsyncPollOptions {
 	/** Interval in milliseconds between polls. */

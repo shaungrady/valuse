@@ -109,7 +109,7 @@ export class ValueArray<In, Out = In> {
 		if (this.#bag.destroyed) return undefined;
 		const current = this.#signal.peek();
 		if (current.length === 0) return undefined;
-		const last = current[current.length - 1];
+		const last = current.at(-1);
 		this.#commitArray(current.slice(0, -1));
 		return last;
 	}
@@ -161,7 +161,7 @@ export class ValueArray<In, Out = In> {
 	filter(predicate: (element: Out, index: number) => boolean): void {
 		if (this.#bag.destroyed) return;
 		const current = this.#signal.peek();
-		this.#commitArray(current.filter(predicate));
+		this.#commitArray(current.filter((el, i) => predicate(el, i)));
 	}
 
 	/**
@@ -171,7 +171,7 @@ export class ValueArray<In, Out = In> {
 	map(transform: (element: Out, index: number) => Out): void {
 		if (this.#bag.destroyed) return;
 		const current = this.#signal.peek();
-		this.#commitArray(current.map(transform));
+		this.#commitArray(current.map((el, i) => transform(el, i)));
 	}
 
 	/**

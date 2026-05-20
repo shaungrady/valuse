@@ -5,12 +5,7 @@ import type { AnyValueRef } from './value-ref.js';
 /**
  * The kind of reactive node a slot represents.
  */
-export type SlotKind =
-	| 'value'
-	| 'plain'
-	| 'schema'
-	| 'derived'
-	| 'asyncDerived';
+type SlotKind = 'value' | 'plain' | 'schema' | 'derived' | 'asyncDerived';
 
 /**
  * A single step in a pipe chain, stored at definition time.
