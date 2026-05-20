@@ -43,7 +43,7 @@
 		"prepack": "pnpm build"
 	},
 	"dependencies": {
-		"@preact/signals-core": "^1.14.1"
+		"@preact/signals-core": "^1.14.2"
 	},
 	"peerDependencies": {
 		"@standard-schema/spec": ">=1",
@@ -62,35 +62,29 @@
 		"@standard-schema/spec": "^1.1.0",
 		"@testing-library/react": "^16.3.2",
 		"@types/react": "^19.2.14",
-		"@vitest/coverage-v8": "^4.1.4",
+		"@vitest/coverage-v8": "^4.1.6",
 		"arktype": "^2.2.0",
 		"eslint": "^9.39.4",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-react-hooks": "^5.2.0",
 		"expect-type": "^1.3.0",
 		"fake-indexeddb": "^6.2.5",
-		"jiti": "^2.6.1",
+		"jiti": "^2.7.0",
 		"jsdom": "^26.1.0",
-		"lefthook": "^2.1.4",
-		"prettier": "^3.8.1",
-		"react": "^19.2.4",
-		"react-dom": "^19.2.4",
-		"tsdown": "^0.21.7",
-		"type-fest": "^5.5.0",
-		"typescript": "^6.0.2",
-		"typescript-eslint": "^8.58.0",
-		"vitest": "^4.1.2"
+		"lefthook": "^2.1.6",
+		"prettier": "^3.8.3",
+		"react": "^19.2.6",
+		"react-dom": "^19.2.6",
+		"tsdown": "^0.21.10",
+		"type-fest": "^5.6.0",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.59.4",
+		"vitest": "^4.1.6"
 	},
 	"volta": {
 		"node": "24.14.1"
 	},
 	"engines": {
 		"node": ">=22"
-	},
-	"pnpm": {
-		"onlyBuiltDependencies": [
-			"esbuild",
-			"lefthook"
-		]
 	}
 }
