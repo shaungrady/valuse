@@ -2,6 +2,7 @@ import { signal, type Signal } from '@preact/signals-core';
 import type { ScopeTemplate } from '../core/value-scope.js';
 import type { ScopeInstance, ValueInputOf } from '../core/scope-types.js';
 import type { Unsubscribe } from '../core/types.js';
+import { pickFields } from '../core/utils/pick-fields.js';
 
 /** Options for {@link withHistory}. */
 export interface HistoryOptions {
@@ -72,20 +73,6 @@ interface HistoryState {
  * Using a WeakMap avoids polluting the instance with a `__history` property.
  */
 const historyByInstance = new WeakMap<object, HistoryState>();
-
-function pickFields(
-	snapshot: Record<string, unknown>,
-	fields: string[] | undefined,
-): Record<string, unknown> {
-	if (!fields) return { ...snapshot };
-	const filtered: Record<string, unknown> = {};
-	for (const field of fields) {
-		if (field in snapshot) {
-			filtered[field] = snapshot[field];
-		}
-	}
-	return filtered;
-}
 
 function snapshotsEqual(
 	a: Record<string, unknown>,

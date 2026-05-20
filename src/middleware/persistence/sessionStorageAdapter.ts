@@ -1,4 +1,5 @@
 import type { PersistenceAdapter } from './persistence.js';
+import { createWebStorageAdapter } from './web-storage.js';
 
 function getStorage(): Storage | null {
 	if (typeof globalThis === 'undefined' || !('sessionStorage' in globalThis)) {
@@ -13,36 +14,7 @@ function getStorage(): Storage | null {
 
 /**
  * Synchronous `sessionStorage` adapter. Scoped to the current tab. SSR-safe.
- * No cross-tab sync (no `subscribe`).
+ * No cross-tab sync (storage events don't fire for sessionStorage).
  */
-export const sessionStorageAdapter: PersistenceAdapter = {
-	read(key: string): string | null {
-		const storage = getStorage();
-		if (!storage) return null;
-		try {
-			return storage.getItem(key);
-		} catch {
-			return null;
-		}
-	},
-
-	write(key: string, data: string): void {
-		const storage = getStorage();
-		if (!storage) return;
-		try {
-			storage.setItem(key, data);
-		} catch {
-			// Silently drop.
-		}
-	},
-
-	remove(key: string): void {
-		const storage = getStorage();
-		if (!storage) return;
-		try {
-			storage.removeItem(key);
-		} catch {
-			// Silently drop.
-		}
-	},
-};
+export const sessionStorageAdapter: PersistenceAdapter =
+	createWebStorageAdapter({ getStorage });

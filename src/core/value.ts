@@ -1,4 +1,13 @@
-import { signal, effect, type Signal } from './signal.js';
+import { signal, type Signal } from './signal.js';
+import { subscribeWithPrevious } from './utils/effect-helpers.js';
+import { DisposerBag } from './utils/disposer-bag.js';
+import {
+	applySyncSteps,
+	type ActiveFactoryPipe,
+	type InternalPipeStep,
+	type SyncPipeStep,
+} from './utils/pipe-internal.js';
+import { applyBrand, hasBrand } from './utils/brand.js';
 import type {
 	Comparator,
 	Transform,
@@ -8,25 +17,6 @@ import type {
 } from './types.js';
 
 const VALUE_INSTANCE_BRAND = Symbol.for('valuse.Value');
-
-// --- Internal pipe step representation ---
-
-interface SyncPipeStep<In = unknown, Out = unknown> {
-	kind: 'sync';
-	transform: Transform<In, Out>;
-}
-
-interface FactoryPipeStep<In = unknown, Out = unknown> {
-	kind: 'factory';
-	descriptor: PipeFactoryDescriptor<In, Out>;
-}
-
-type InternalPipeStep = SyncPipeStep | FactoryPipeStep;
-
-interface ActiveFactoryPipe {
-	write: (value: unknown) => void;
-	cleanups: (() => void)[];
-}
 
 /**
  * A single piece of reactive state.
@@ -65,9 +55,8 @@ export class Value<In, Out = In> {
 	readonly _pipeSteps: InternalPipeStep[] = [];
 	/** @internal */
 	_comparator: Comparator<Out> | undefined;
-	readonly #disposers: (() => void)[] = [];
+	readonly #bag = new DisposerBag();
 	readonly #activeFactories: ActiveFactoryPipe[] = [];
-	#destroyed = false;
 
 	/** @internal */
 	constructor(initial: Out, pipeSteps?: InternalPipeStep[]) {
@@ -75,10 +64,7 @@ export class Value<In, Out = In> {
 			this._pipeSteps = pipeSteps;
 		}
 		this._signal = signal(initial);
-		Object.defineProperty(this, VALUE_INSTANCE_BRAND, {
-			value: true,
-			enumerable: false,
-		});
+		applyBrand(this, VALUE_INSTANCE_BRAND);
 	}
 
 	/**
@@ -106,7 +92,7 @@ export class Value<In, Out = In> {
 		// After destroy, writes are silently dropped — matches `ValueArray`,
 		// the RxJS Subject pattern, and the per-instance Lifecycle contract
 		// in the README. Reads still return the last value.
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const previous = this._signal.peek();
 		const raw =
 			typeof valueOrFn === 'function' ?
@@ -132,7 +118,7 @@ export class Value<In, Out = In> {
 		}
 
 		// All sync pipes — apply in order
-		const next = this.#applyAllSyncTransforms(raw) as Out;
+		const next = applySyncSteps(this._pipeSteps, raw) as Out;
 
 		if (this._comparator && this._comparator(previous, next)) {
 			return;
@@ -157,31 +143,13 @@ export class Value<In, Out = In> {
 	 * ```
 	 */
 	subscribe(fn: (value: Out, previous: Out) => void): Unsubscribe {
-		let isFirstRun = true;
-		let previousValue = this._signal.peek();
-		const dispose = effect(() => {
-			const currentValue = this._signal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			const prev = previousValue;
-			previousValue = currentValue;
-			try {
-				fn(currentValue, prev);
-			} catch (err) {
-				// A throwing subscriber would otherwise propagate out of
-				// the source `.set()` via Preact's endBatch. Contain it so
-				// siblings — and the source write — are unaffected.
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		this.#disposers.push(dispose);
-		return () => {
-			dispose();
-			const index = this.#disposers.indexOf(dispose);
-			if (index !== -1) this.#disposers.splice(index, 1);
-		};
+		return this.#bag.attach(
+			subscribeWithPrevious(
+				() => this._signal.value,
+				() => this._signal.peek(),
+				fn,
+			),
+		);
 	}
 
 	/**
@@ -336,10 +304,7 @@ export class Value<In, Out = In> {
 	 * nothing the second time.
 	 */
 	destroy(): void {
-		if (this.#destroyed) return;
-		this.#destroyed = true;
-		for (const dispose of this.#disposers) dispose();
-		this.#disposers.length = 0;
+		if (!this.#bag.destroy()) return;
 		for (const factory of this.#activeFactories) {
 			for (const cleanup of factory.cleanups) cleanup();
 		}
@@ -401,17 +366,6 @@ export class Value<In, Out = In> {
 			factoryIndex++;
 		}
 	}
-
-	/** @internal */
-	#applyAllSyncTransforms(value: unknown): unknown {
-		let current = value;
-		for (const step of this._pipeSteps) {
-			if (step.kind === 'sync') {
-				current = step.transform(current);
-			}
-		}
-		return current;
-	}
 }
 
 // --- Factory overloads ---
@@ -448,5 +402,5 @@ export function value<T>(initial?: T): Value<T | undefined> {
  * @internal
  */
 export function isValueInstance(v: unknown): v is Value<unknown> {
-	return typeof v === 'object' && v !== null && VALUE_INSTANCE_BRAND in v;
+	return hasBrand(v, VALUE_INSTANCE_BRAND);
 }

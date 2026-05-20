@@ -1,4 +1,7 @@
-import { signal, effect, type Signal } from './signal.js';
+import { signal, type Signal } from './signal.js';
+import { subscribeWithPrevious } from './utils/effect-helpers.js';
+import { DisposerBag } from './utils/disposer-bag.js';
+import { applyTransforms } from './utils/pipe-internal.js';
 import { draftSet } from './draft.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
 import { getReactHooks, stableSubscribe } from './react-bridge.js';
@@ -23,8 +26,7 @@ export class ValueSet<T> {
 	#signal: Signal<Set<T>>;
 	readonly #transforms: Transform<Set<T>>[] = [];
 	#comparator: Comparator<Set<T>> | undefined;
-	readonly #disposers = new Set<() => void>();
-	#destroyed = false;
+	readonly #bag = new DisposerBag();
 
 	/** @internal */
 	constructor(initial: Set<T>) {
@@ -55,7 +57,7 @@ export class ValueSet<T> {
 	 * ```
 	 */
 	set(valueOrFn: Set<T> | ((draft: Set<T>) => void)): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const previous = this.get();
 		let next: Set<T>;
 		if (typeof valueOrFn === 'function') {
@@ -63,7 +65,7 @@ export class ValueSet<T> {
 		} else {
 			next = valueOrFn;
 		}
-		next = this.#applyTransforms(next);
+		next = applyTransforms(this.#transforms, next);
 		if (next === previous) return;
 		if (this.#comparator && this.#comparator(previous, next)) return;
 		this.#signal.value = next;
@@ -93,7 +95,7 @@ export class ValueSet<T> {
 
 	/** Remove all elements. */
 	clear(): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		// No-op if already empty. Without this guard `clear()` on an empty
 		// set still assigned a fresh `new Set()`, firing subscribers for a
 		// state that didn't change (parallel to the valueMap fix).
@@ -107,7 +109,7 @@ export class ValueSet<T> {
 	 * @returns `true` if the value was present.
 	 */
 	delete(value: T): boolean {
-		if (this.#destroyed) return false;
+		if (this.#bag.destroyed) return false;
 		const previous = this.get();
 		if (!previous.has(value)) return false;
 		const next = new Set(previous);
@@ -122,7 +124,7 @@ export class ValueSet<T> {
 	 * @returns `this` for chaining.
 	 */
 	add(value: T): this {
-		if (this.#destroyed) return this;
+		if (this.#bag.destroyed) return this;
 		const previous = this.get();
 		if (previous.has(value)) return this;
 		const next = new Set(previous);
@@ -138,27 +140,13 @@ export class ValueSet<T> {
 	 * @returns an {@link Unsubscribe} function.
 	 */
 	subscribe(fn: (value: Set<T>, previous: Set<T>) => void): Unsubscribe {
-		let isFirstRun = true;
-		let previousValue = this.#signal.peek();
-		const dispose = effect(() => {
-			const currentValue = this.#signal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			const prev = previousValue;
-			previousValue = currentValue;
-			try {
-				fn(currentValue, prev);
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		this.#disposers.add(dispose);
-		return () => {
-			dispose();
-			this.#disposers.delete(dispose);
-		};
+		return this.#bag.attach(
+			subscribeWithPrevious(
+				() => this.#signal.value,
+				() => this.#signal.peek(),
+				fn,
+			),
+		);
 	}
 
 	/**
@@ -168,7 +156,7 @@ export class ValueSet<T> {
 	 */
 	pipe(transform: Transform<Set<T>>): this {
 		this.#transforms.push(transform);
-		this.#signal.value = this.#applyTransforms(this.#signal.value);
+		this.#signal.value = applyTransforms(this.#transforms, this.#signal.value);
 		return this;
 	}
 
@@ -219,17 +207,7 @@ export class ValueSet<T> {
 	 * and existing subscribers stop firing. Idempotent.
 	 */
 	destroy(): void {
-		if (this.#destroyed) return;
-		this.#destroyed = true;
-		for (const dispose of this.#disposers) dispose();
-		this.#disposers.clear();
-	}
-
-	#applyTransforms(value: Set<T>): Set<T> {
-		return this.#transforms.reduce(
-			(current, transform) => transform(current),
-			value,
-		);
+		this.#bag.destroy();
 	}
 }
 

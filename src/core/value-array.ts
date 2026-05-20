@@ -1,4 +1,6 @@
-import { signal, effect, type Signal } from './signal.js';
+import { signal, type Signal } from './signal.js';
+import { subscribeWithPrevious } from './utils/effect-helpers.js';
+import { DisposerBag } from './utils/disposer-bag.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
 import { getReactHooks, stableSubscribe } from './react-bridge.js';
 
@@ -21,10 +23,9 @@ import { getReactHooks, stableSubscribe } from './react-bridge.js';
  */
 export class ValueArray<In, Out = In> {
 	readonly #signal: Signal<readonly Out[]>;
-	readonly #disposers = new Set<() => void>();
+	readonly #bag = new DisposerBag();
 	#elementTransform: Transform<In, Out> | null = null;
 	#elementComparator: Comparator<Out> | null = null;
-	#destroyed = false;
 
 	/** @internal */
 	constructor(initial?: In[]) {
@@ -70,7 +71,7 @@ export class ValueArray<In, Out = In> {
 	 */
 	set(index: number, value: In): void;
 	set(arrayOrIndex: In[] | number, value?: In): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 
 		if (typeof arrayOrIndex === 'number') {
 			const index = arrayOrIndex;
@@ -94,7 +95,7 @@ export class ValueArray<In, Out = In> {
 	 * @param items - elements to append.
 	 */
 	push(...items: In[]): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = this.#signal.peek();
 		const transformed = items.map((item) => this.#transformElement(item));
 		this.#commitArray([...current, ...transformed]);
@@ -105,7 +106,7 @@ export class ValueArray<In, Out = In> {
 	 * @returns the removed element, or `undefined` if the array is empty.
 	 */
 	pop(): Out | undefined {
-		if (this.#destroyed) return undefined;
+		if (this.#bag.destroyed) return undefined;
 		const current = this.#signal.peek();
 		if (current.length === 0) return undefined;
 		const last = current[current.length - 1];
@@ -118,7 +119,7 @@ export class ValueArray<In, Out = In> {
 	 * @param items - elements to prepend.
 	 */
 	unshift(...items: In[]): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = this.#signal.peek();
 		const transformed = items.map((item) => this.#transformElement(item));
 		this.#commitArray([...transformed, ...current]);
@@ -129,7 +130,7 @@ export class ValueArray<In, Out = In> {
 	 * @returns the removed element, or `undefined` if the array is empty.
 	 */
 	shift(): Out | undefined {
-		if (this.#destroyed) return undefined;
+		if (this.#bag.destroyed) return undefined;
 		const current = this.#signal.peek();
 		if (current.length === 0) return undefined;
 		const first = current[0];
@@ -145,7 +146,7 @@ export class ValueArray<In, Out = In> {
 	 * @returns the removed elements.
 	 */
 	splice(start: number, deleteCount: number, ...items: In[]): Out[] {
-		if (this.#destroyed) return [];
+		if (this.#bag.destroyed) return [];
 		const current = [...this.#signal.peek()];
 		const transformed = items.map((item) => this.#transformElement(item));
 		const removed = current.splice(start, deleteCount, ...transformed);
@@ -158,7 +159,7 @@ export class ValueArray<In, Out = In> {
 	 * @param predicate - return `true` to keep the element.
 	 */
 	filter(predicate: (element: Out, index: number) => boolean): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = this.#signal.peek();
 		this.#commitArray(current.filter(predicate));
 	}
@@ -168,7 +169,7 @@ export class ValueArray<In, Out = In> {
 	 * @param transform - function that maps each element to a new value.
 	 */
 	map(transform: (element: Out, index: number) => Out): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = this.#signal.peek();
 		this.#commitArray(current.map(transform));
 	}
@@ -178,7 +179,7 @@ export class ValueArray<In, Out = In> {
 	 * @param comparator - optional comparison function (same contract as `Array.sort`).
 	 */
 	sort(comparator?: (a: Out, b: Out) => number): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = [...this.#signal.peek()];
 		current.sort(comparator);
 		this.#commitArray(current);
@@ -186,7 +187,7 @@ export class ValueArray<In, Out = In> {
 
 	/** Reverse the array order. */
 	reverse(): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = [...this.#signal.peek()];
 		current.reverse();
 		this.#commitArray(current);
@@ -198,7 +199,7 @@ export class ValueArray<In, Out = In> {
 	 * @param indexB - second index.
 	 */
 	swap(indexA: number, indexB: number): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const current = [...this.#signal.peek()];
 		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 		const temp = current[indexA]!;
@@ -217,27 +218,13 @@ export class ValueArray<In, Out = In> {
 	subscribe(
 		fn: (value: readonly Out[], previous: readonly Out[]) => void,
 	): Unsubscribe {
-		let isFirstRun = true;
-		let previousValue = this.#signal.peek();
-		const dispose = effect(() => {
-			const currentValue = this.#signal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			const prev = previousValue;
-			previousValue = currentValue;
-			try {
-				fn(currentValue, prev);
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		this.#disposers.add(dispose);
-		return () => {
-			dispose();
-			this.#disposers.delete(dispose);
-		};
+		return this.#bag.attach(
+			subscribeWithPrevious(
+				() => this.#signal.value,
+				() => this.#signal.peek(),
+				fn,
+			),
+		);
 	}
 
 	/**
@@ -338,9 +325,7 @@ export class ValueArray<In, Out = In> {
 	 * Dispose all subscriptions.
 	 */
 	destroy(): void {
-		this.#destroyed = true;
-		for (const dispose of this.#disposers) dispose();
-		this.#disposers.clear();
+		this.#bag.destroy();
 	}
 
 	#transformElement(item: In): Out {

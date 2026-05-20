@@ -1,11 +1,12 @@
-import { signal, effect, type Signal } from './signal.js';
-import type {
-	Comparator,
-	Transform,
-	PipeFactoryDescriptor,
-	Unsubscribe,
-	Setter,
-} from './types.js';
+import { signal, type Signal } from './signal.js';
+import { subscribeWithPrevious } from './utils/effect-helpers.js';
+import { DisposerBag } from './utils/disposer-bag.js';
+import {
+	applySyncSteps,
+	type InternalPipeStep,
+} from './utils/pipe-internal.js';
+import { applyBrand, hasBrand } from './utils/brand.js';
+import type { Comparator, Transform, Unsubscribe, Setter } from './types.js';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 
 const VALUE_SCHEMA_BRAND = Symbol.for('valuse.ValueSchema');
@@ -42,20 +43,6 @@ export type ValidationState<In, Out> =
  * at runtime are caught with a clear error in {@link runValidation}.
  */
 export type SyncStandardSchema<S extends StandardSchemaV1> = S;
-
-// --- Internal pipe step representation ---
-
-interface SyncPipeStep<In = unknown, Out = unknown> {
-	kind: 'sync';
-	transform: Transform<In, Out>;
-}
-
-interface FactoryPipeStep<In = unknown, Out = unknown> {
-	kind: 'factory';
-	descriptor: PipeFactoryDescriptor<In, Out>;
-}
-
-type InternalPipeStep = SyncPipeStep | FactoryPipeStep;
 
 /**
  * Run a Standard Schema validation and return a ValidationState.
@@ -123,8 +110,7 @@ export class ValueSchema<In, Out = In> {
 	readonly _pipeSteps: InternalPipeStep[] = [];
 	/** @internal */
 	_comparator: Comparator<In> | undefined;
-	readonly #disposers: (() => void)[] = [];
-	#destroyed = false;
+	readonly #bag = new DisposerBag();
 
 	/** @internal */
 	constructor(
@@ -138,10 +124,7 @@ export class ValueSchema<In, Out = In> {
 		}
 		this._signal = signal(initial);
 		this._validationSignal = signal(runValidation<In, Out>(schema, initial));
-		Object.defineProperty(this, VALUE_SCHEMA_BRAND, {
-			value: true,
-			enumerable: false,
-		});
+		applyBrand(this, VALUE_SCHEMA_BRAND);
 	}
 
 	/** Read the current value. */
@@ -154,7 +137,7 @@ export class ValueSchema<In, Out = In> {
 	 * The value is stored regardless of validity. Validation state is updated.
 	 */
 	set(valueOrFn: In | ((prev: In) => In)): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const previous = this._signal.peek();
 		const raw =
 			typeof valueOrFn === 'function' ?
@@ -162,7 +145,7 @@ export class ValueSchema<In, Out = In> {
 			:	valueOrFn;
 
 		// Apply sync pipe transforms
-		const next = this.#applyAllSyncTransforms(raw) as In;
+		const next = applySyncSteps(this._pipeSteps, raw) as In;
 
 		// Comparator check
 		if (this._comparator && this._comparator(previous, next)) {
@@ -185,28 +168,13 @@ export class ValueSchema<In, Out = In> {
 	 * Listen for changes. The callback fires on every update after subscription.
 	 */
 	subscribe(fn: (value: In, previous: In) => void): Unsubscribe {
-		let isFirstRun = true;
-		let previousValue = this._signal.peek();
-		const dispose = effect(() => {
-			const currentValue = this._signal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			const prev = previousValue;
-			previousValue = currentValue;
-			try {
-				fn(currentValue, prev);
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		this.#disposers.push(dispose);
-		return () => {
-			dispose();
-			const index = this.#disposers.indexOf(dispose);
-			if (index !== -1) this.#disposers.splice(index, 1);
-		};
+		return this.#bag.attach(
+			subscribeWithPrevious(
+				() => this._signal.value,
+				() => this._signal.peek(),
+				fn,
+			),
+		);
 	}
 
 	/**
@@ -259,21 +227,7 @@ export class ValueSchema<In, Out = In> {
 	 * and existing subscribers stop firing. Idempotent.
 	 */
 	destroy(): void {
-		if (this.#destroyed) return;
-		this.#destroyed = true;
-		for (const dispose of this.#disposers) dispose();
-		this.#disposers.length = 0;
-	}
-
-	/** @internal */
-	#applyAllSyncTransforms(value: unknown): unknown {
-		let current = value;
-		for (const step of this._pipeSteps) {
-			if (step.kind === 'sync') {
-				current = step.transform(current);
-			}
-		}
-		return current;
+		this.#bag.destroy();
 	}
 }
 
@@ -312,5 +266,5 @@ export function valueSchema<S extends StandardSchemaV1>(
 export function isValueSchemaInstance(
 	v: unknown,
 ): v is ValueSchema<unknown, unknown> {
-	return typeof v === 'object' && v !== null && VALUE_SCHEMA_BRAND in v;
+	return hasBrand(v, VALUE_SCHEMA_BRAND);
 }

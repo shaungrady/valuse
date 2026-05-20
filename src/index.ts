@@ -10,7 +10,7 @@ export type {
 	SyncStandardSchema,
 } from './core/value-schema.js';
 export { valueScope, ScopeTemplate } from './core/value-scope.js';
-export type { ScopeConfig } from './core/value-scope.js';
+export type { ScopeConfig } from './core/scope-config.js';
 export { valueArray, ValueArray } from './core/value-array.js';
 export { valueRef, ValueRef } from './core/value-ref.js';
 export { valuePlain, ValuePlain } from './core/value-plain.js';

@@ -1,7 +1,7 @@
 import { expectTypeOf } from 'expect-type';
 import { value, Value } from '../../core/value.js';
 import { valueScope, ScopeTemplate } from '../../core/value-scope.js';
-import type { ScopeConfig } from '../../core/value-scope.js';
+import type { ScopeConfig } from '../../core/scope-config.js';
 import type {
 	FieldValue,
 	FieldDerived,

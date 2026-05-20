@@ -1,4 +1,5 @@
 import type { ScopeTemplate } from '../../core/value-scope.js';
+import { pickFields } from '../../core/utils/pick-fields.js';
 
 /** A pluggable storage backend for `withPersistence`. */
 export interface PersistenceAdapter {
@@ -68,20 +69,6 @@ interface PersistenceState {
  * Using a WeakMap avoids polluting the instance with a `__persistence` property.
  */
 const persistenceByInstance = new WeakMap<object, PersistenceState>();
-
-function pickFields(
-	snapshot: Record<string, unknown>,
-	fields: string[] | undefined,
-): Record<string, unknown> {
-	if (!fields) return snapshot;
-	const filtered: Record<string, unknown> = {};
-	for (const field of fields) {
-		if (field in snapshot) {
-			filtered[field] = snapshot[field];
-		}
-	}
-	return filtered;
-}
 
 /**
  * Wrap a scope template with persistence to a storage backend.

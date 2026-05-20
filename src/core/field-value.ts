@@ -7,6 +7,7 @@ import {
 	stableSubscribe,
 	versionedAdapter,
 } from './react-bridge.js';
+import { applyBrand, hasBrand } from './utils/brand.js';
 
 // --- Brand symbols for type guards ---
 
@@ -26,15 +27,17 @@ const SCOPE_BRAND = Symbol.for('valuse.scope');
 export class FieldValue<In, Out = In> {
 	readonly #store: InstanceStore;
 	readonly #slot: number;
+	/** Bound, identity-stable `Setter<In>` exposed via `.use()`. @internal */
+	protected readonly _setter: Setter<In>;
 
 	/** @internal */
 	constructor(store: InstanceStore, slot: number) {
 		this.#store = store;
 		this.#slot = slot;
-		Object.defineProperty(this, VALUE_BRAND, {
-			value: true,
-			enumerable: false,
-		});
+		this._setter = (valueOrFn) => {
+			this.set(valueOrFn as In | ((prev: Out) => In));
+		};
+		applyBrand(this, VALUE_BRAND);
 	}
 
 	/** Read the current value. */
@@ -69,19 +72,9 @@ export class FieldValue<In, Out = In> {
 				}),
 			);
 			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
-			return [
-				snapshot,
-				(valueOrFn) => {
-					this.set(valueOrFn as In | ((prev: Out) => In));
-				},
-			];
+			return [snapshot, this._setter];
 		}
-		return [
-			this.get(),
-			(valueOrFn) => {
-				this.set(valueOrFn as In | ((prev: Out) => In));
-			},
-		];
+		return [this.get(), this._setter];
 	}
 
 	/**
@@ -121,10 +114,7 @@ export class FieldValueSchema<In, Out = In> extends FieldValue<In, In> {
 		super(store, slot);
 		this.#store = store;
 		this.#slot = slot;
-		Object.defineProperty(this, SCHEMA_BRAND, {
-			value: true,
-			enumerable: false,
-		});
+		applyBrand(this, SCHEMA_BRAND);
 	}
 
 	/** Read the current validation state without reactive tracking. */
@@ -153,21 +143,9 @@ export class FieldValueSchema<In, Out = In> extends FieldValue<In, In> {
 				};
 			});
 			hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
-			return [
-				this.get(),
-				(valueOrFn) => {
-					this.set(valueOrFn);
-				},
-				this.getValidation(),
-			];
+			return [this.get(), this._setter, this.getValidation()];
 		}
-		return [
-			this.get(),
-			(valueOrFn) => {
-				this.set(valueOrFn);
-			},
-			this.getValidation(),
-		];
+		return [this.get(), this._setter, this.getValidation()];
 	}
 }
 
@@ -194,10 +172,7 @@ export class FieldValuePlain<In, Out = In> {
 	constructor(store: InstanceStore, slot: number) {
 		this.#store = store;
 		this.#slot = slot;
-		Object.defineProperty(this, PLAIN_BRAND, {
-			value: true,
-			enumerable: false,
-		});
+		applyBrand(this, PLAIN_BRAND);
 	}
 
 	/** Read the current value. */
@@ -240,10 +215,7 @@ export class FieldDerived<T> {
 	constructor(store: InstanceStore, slot: number) {
 		this.#store = store;
 		this.#slot = slot;
-		Object.defineProperty(this, COMPUTED_BRAND, {
-			value: true,
-			enumerable: false,
-		});
+		applyBrand(this, COMPUTED_BRAND);
 	}
 
 	/** Read the current derived value. */
@@ -276,6 +248,11 @@ export class FieldDerived<T> {
 	 * @param fn - callback fired with the new and previous values on each change.
 	 * @returns an {@link Unsubscribe} function.
 	 */
+	// `FieldDerived` and `FieldValue` are intentionally parallel hierarchies:
+	// merging them would either pull `.set()` into derived fields or force a
+	// shared abstract base that exposes `#store` / `#slot` as `protected`,
+	// both worse than this 4-line repeat.
+	// eslint-disable-next-line sonarjs/no-identical-functions
 	subscribe(fn: (value: T, previous: T) => void): Unsubscribe {
 		return this.#store.subscribe(
 			this.#slot,
@@ -376,7 +353,7 @@ export class DerivationWrap {
  * Check if a value is a FieldValue (reactive, has .get()/.set()/.use()).
  */
 export function isValue(value: unknown): value is FieldValue<unknown> {
-	return typeof value === 'object' && value !== null && VALUE_BRAND in value;
+	return hasBrand(value, VALUE_BRAND);
 }
 
 /**
@@ -385,14 +362,14 @@ export function isValue(value: unknown): value is FieldValue<unknown> {
 export function isSchema(
 	value: unknown,
 ): value is FieldValueSchema<unknown, unknown> {
-	return typeof value === 'object' && value !== null && SCHEMA_BRAND in value;
+	return hasBrand(value, SCHEMA_BRAND);
 }
 
 /**
  * Check if a value is a FieldValuePlain (non-reactive, has .get()/.set(), no .use()).
  */
 export function isPlain(value: unknown): value is FieldValuePlain<unknown> {
-	return typeof value === 'object' && value !== null && PLAIN_BRAND in value;
+	return hasBrand(value, PLAIN_BRAND);
 }
 
 /**
@@ -400,21 +377,17 @@ export function isPlain(value: unknown): value is FieldValuePlain<unknown> {
  * .get()/.use(), no .set()).
  */
 export function isComputed(value: unknown): value is FieldDerived<unknown> {
-	return typeof value === 'object' && value !== null && COMPUTED_BRAND in value;
+	return hasBrand(value, COMPUTED_BRAND);
 }
 
 /**
  * Check if a value is a scope instance (has $ methods).
  */
 export function isScope(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && SCOPE_BRAND in value;
+	return hasBrand(value, SCOPE_BRAND);
 }
 
 /** @internal — brand a scope instance for isScope(). */
 export function brandAsScope(instance: Record<string, unknown>): void {
-	Object.defineProperty(instance, SCOPE_BRAND, {
-		value: true,
-		enumerable: false,
-		configurable: false,
-	});
+	applyBrand(instance, SCOPE_BRAND);
 }

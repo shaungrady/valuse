@@ -1,4 +1,7 @@
-import { signal, effect, type Signal } from './signal.js';
+import { signal, type Signal } from './signal.js';
+import { subscribeWithPrevious } from './utils/effect-helpers.js';
+import { DisposerBag } from './utils/disposer-bag.js';
+import { applyTransforms } from './utils/pipe-internal.js';
 import { draftMap } from './draft.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
 import {
@@ -32,8 +35,7 @@ export class ValueMap<K, V> {
 	#signal: Signal<Map<K, V>>;
 	readonly #transforms: Transform<Map<K, V>>[] = [];
 	#comparator: Comparator<Map<K, V>> | undefined;
-	readonly #disposers = new Set<() => void>();
-	#destroyed = false;
+	readonly #bag = new DisposerBag();
 
 	/** @internal */
 	constructor(initial: Map<K, V>) {
@@ -73,7 +75,7 @@ export class ValueMap<K, V> {
 	 * ```
 	 */
 	set(valueOrFn: Map<K, V> | ((draft: Map<K, V>) => void)): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		const previous = this.#signal.value;
 		let next: Map<K, V>;
 		if (typeof valueOrFn === 'function') {
@@ -81,7 +83,7 @@ export class ValueMap<K, V> {
 		} else {
 			next = valueOrFn;
 		}
-		next = this.#applyTransforms(next);
+		next = applyTransforms(this.#transforms, next);
 		if (next === previous) return;
 		if (this.#comparator && this.#comparator(previous, next)) return;
 		this.#signal.value = next;
@@ -93,7 +95,7 @@ export class ValueMap<K, V> {
 	 * @returns `true` if the key was present.
 	 */
 	delete(key: K): boolean {
-		if (this.#destroyed) return false;
+		if (this.#bag.destroyed) return false;
 		const previous = this.#signal.value;
 		if (!previous.has(key)) return false;
 		const next = new Map(previous);
@@ -142,7 +144,7 @@ export class ValueMap<K, V> {
 
 	/** Remove all entries. */
 	clear(): void {
-		if (this.#destroyed) return;
+		if (this.#bag.destroyed) return;
 		// No-op if already empty. Without this guard, `clear()` on an empty
 		// map still assigned a fresh `new Map()` and fired subscribers (and
 		// triggered React re-renders) for a state that didn't change.
@@ -157,27 +159,13 @@ export class ValueMap<K, V> {
 	 * @returns an {@link Unsubscribe} function.
 	 */
 	subscribe(fn: (value: Map<K, V>, previous: Map<K, V>) => void): Unsubscribe {
-		let isFirstRun = true;
-		let previousValue = this.#signal.peek();
-		const dispose = effect(() => {
-			const currentValue = this.#signal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			const prev = previousValue;
-			previousValue = currentValue;
-			try {
-				fn(currentValue, prev);
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		this.#disposers.add(dispose);
-		return () => {
-			dispose();
-			this.#disposers.delete(dispose);
-		};
+		return this.#bag.attach(
+			subscribeWithPrevious(
+				() => this.#signal.value,
+				() => this.#signal.peek(),
+				fn,
+			),
+		);
 	}
 
 	/**
@@ -187,7 +175,7 @@ export class ValueMap<K, V> {
 	 */
 	pipe(transform: Transform<Map<K, V>>): this {
 		this.#transforms.push(transform);
-		this.#signal.value = this.#applyTransforms(this.#signal.value);
+		this.#signal.value = applyTransforms(this.#transforms, this.#signal.value);
 		return this;
 	}
 
@@ -296,17 +284,7 @@ export class ValueMap<K, V> {
 	 * and existing subscribers stop firing. Idempotent.
 	 */
 	destroy(): void {
-		if (this.#destroyed) return;
-		this.#destroyed = true;
-		for (const dispose of this.#disposers) dispose();
-		this.#disposers.clear();
-	}
-
-	#applyTransforms(value: Map<K, V>): Map<K, V> {
-		return this.#transforms.reduce(
-			(current, transform) => transform(current),
-			value,
-		);
+		this.#bag.destroy();
 	}
 }
 

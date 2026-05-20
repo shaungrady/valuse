@@ -5,6 +5,7 @@ import {
 	effect,
 	type ReadonlySignal,
 } from './signal.js';
+import { subscribeFireOnly } from './utils/effect-helpers.js';
 import { buildScopeDefinition } from './scope-definition.js';
 import { InstanceStore } from './instance-store.js';
 import {
@@ -24,8 +25,10 @@ import {
 } from './async-state.js';
 import { ScopeMap } from './scope-map.js';
 import { getReactHooks, versionedAdapter } from './react-bridge.js';
+import { mergeConfigs, type ScopeConfig } from './scope-config.js';
+import { walkRefCollect, walkRefTrack, walkRefValid } from './ref-walk.js';
 import type { ScopeDefinitionMeta, GroupMeta } from './slot-meta.js';
-import type { Change, ScopeNode, Unsubscribe } from './types.js';
+import type { ScopeNode, Unsubscribe } from './types.js';
 import type {
 	ScopeInstance,
 	ValueInputOf,
@@ -34,131 +37,6 @@ import type {
 	ScopeValidationResult,
 } from './scope-types.js';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-
-// --- Scope Config ---
-
-/**
- * Lifecycle hooks and options for a scope.
- *
- * @remarks
- * Scope configuration allows you to intercept changes, respond to lifecycle events,
- * and enable advanced features like undeclared property passthrough.
- *
- * @typeParam Def - the scope definition record.
- */
-export interface ScopeConfig {
-	/**
-	 * When `true`, preserve properties not declared in the scope definition
-	 * as plain, non-reactive passthrough data.
-	 *
-	 * @defaultValue `false`
-	 */
-	allowUndeclaredProperties?: boolean;
-
-	/**
-	 * Fires once after the instance is created.
-	 *
-	 * @param context.scope - the scope instance tree.
-	 * @param context.input - the raw input passed to `.create()`.
-	 * @param context.signal - `AbortSignal` that aborts when the instance is destroyed.
-	 * @param context.onCleanup - register a cleanup function that runs on destroy.
-	 *
-	 * @example
-	 * ```ts
-	 * onCreate: ({ scope, signal, onCleanup }) => {
-	 *   document.addEventListener('resize', () => scope.width.set(innerWidth), { signal });
-	 *   const timer = setInterval(() => scope.tick.set(Date.now()), 1000);
-	 *   onCleanup(() => clearInterval(timer));
-	 * }
-	 * ```
-	 */
-	onCreate?: (context: {
-		scope: GenericScopeInstance;
-		input: Record<string, unknown> | undefined;
-		signal: AbortSignal;
-		onCleanup: (fn: () => void) => void;
-	}) => void;
-
-	/**
-	 * Fires when `$destroy()` is called on the instance.
-	 *
-	 * @param context - object containing the scope instance.
-	 */
-	onDestroy?: (context: { scope: GenericScopeInstance }) => void;
-
-	/**
-	 * Fires on a microtask after one or more value fields change. Changes are batched.
-	 *
-	 * @param context - change metadata including the affected scope nodes.
-	 *
-	 * @example
-	 * ```ts
-	 * onChange: ({ changes }) => {
-	 *   console.log(`${changes.size} fields changed`);
-	 * }
-	 * ```
-	 */
-	onChange?: (context: {
-		scope: ScopeNode;
-		changes: Set<Change>;
-		changesByScope: Map<ScopeNode, Change[]>;
-	}) => void;
-
-	/**
-	 * Fires synchronously before value fields are written.
-	 * Can prevent individual or all changes.
-	 *
-	 * @param context - change metadata and a `prevent()` function.
-	 *
-	 * @example
-	 * ```ts
-	 * beforeChange: ({ changes, prevent }) => {
-	 *   for (const change of changes) {
-	 *     if (change.key === 'locked') prevent(change);
-	 *   }
-	 * }
-	 * ```
-	 */
-	beforeChange?: (context: {
-		scope: ScopeNode;
-		changes: Set<Change>;
-		changesByScope: Map<ScopeNode, Change[]>;
-		prevent: (target?: ScopeNode | Change) => void;
-	}) => void;
-
-	/**
-	 * Fires when the first subscriber attaches to any reactive field in the scope.
-	 *
-	 * @param context.scope - the scope instance tree.
-	 * @param context.signal - `AbortSignal` that aborts when the last subscriber detaches.
-	 * @param context.onCleanup - register a cleanup function that runs on detach.
-	 */
-	onUsed?: (context: {
-		scope: GenericScopeInstance;
-		signal: AbortSignal;
-		onCleanup: (fn: () => void) => void;
-	}) => void;
-
-	/**
-	 * Fires when the last subscriber detaches from all reactive fields in the scope.
-	 *
-	 * @param context - object containing the scope instance.
-	 */
-	onUnused?: (context: { scope: GenericScopeInstance }) => void;
-
-	/**
-	 * Cross-field validation. A reactive derivation that returns
-	 * `StandardSchemaV1.Issue[]`. Re-evaluates when any `.use()`'d
-	 * dependency changes. Issues with a `path` matching a field name
-	 * are routed to that field's validation state.
-	 */
-	validate?: (context: { scope: Record<string, unknown> }) => {
-		readonly message: string;
-		readonly path?:
-			| ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>
-			| undefined;
-	}[];
-}
 
 // --- ScopeTemplate ---
 
@@ -342,60 +220,6 @@ export class ScopeTemplate<
 	}
 }
 
-/** Merge two scope configs, running both hooks in order. @internal */
-function mergeConfigs(
-	base: ScopeConfig | undefined,
-	extension: ScopeConfig | undefined,
-): ScopeConfig | undefined {
-	if (!base && !extension) return undefined;
-	if (!base) return extension;
-	if (!extension) return base;
-
-	const merged: ScopeConfig = {};
-	const allowUndeclared =
-		extension.allowUndeclaredProperties ?? base.allowUndeclaredProperties;
-	if (allowUndeclared !== undefined)
-		merged.allowUndeclaredProperties = allowUndeclared;
-
-	const onCreate = mergeHook(base.onCreate, extension.onCreate);
-	if (onCreate) merged.onCreate = onCreate;
-	const onDestroy = mergeHook(base.onDestroy, extension.onDestroy);
-	if (onDestroy) merged.onDestroy = onDestroy;
-	const onChange = mergeHook(base.onChange, extension.onChange);
-	if (onChange) merged.onChange = onChange;
-	const beforeChange = mergeHook(base.beforeChange, extension.beforeChange);
-	if (beforeChange) merged.beforeChange = beforeChange;
-	const onUsed = mergeHook(base.onUsed, extension.onUsed);
-	if (onUsed) merged.onUsed = onUsed;
-	const onUnused = mergeHook(base.onUnused, extension.onUnused);
-	if (onUnused) merged.onUnused = onUnused;
-
-	// validate hooks concatenate their issues
-	if (base.validate || extension.validate) {
-		const baseValidate = base.validate;
-		const extValidate = extension.validate;
-		merged.validate = (context) => {
-			const baseIssues = baseValidate ? baseValidate(context) : [];
-			const extIssues = extValidate ? extValidate(context) : [];
-			return [...baseIssues, ...extIssues];
-		};
-	}
-
-	return merged;
-}
-
-function mergeHook<Args extends readonly unknown[]>(
-	base: ((...args: Args) => void) | undefined,
-	extension: ((...args: Args) => void) | undefined,
-): ((...args: Args) => void) | undefined {
-	if (!base) return extension;
-	if (!extension) return base;
-	return (...args: Args) => {
-		base(...args);
-		extension(...args);
-	};
-}
-
 /**
  * Define a reactive scope.
  *
@@ -429,6 +253,34 @@ export function valueScope<Def extends Record<string, unknown>>(
 }
 
 // --- Instance creation ---
+
+/**
+ * Fire the `onCreate` lifecycle hook with a fresh `AbortController` whose
+ * signal aborts when the scope is destroyed (or, in the `$setSnapshot
+ * recreate` path, when the next recreate cycle starts). The controller is
+ * created unconditionally so the lifecycle-cleanups list always grows by
+ * exactly one entry — keeps the create / recreate paths symmetric.
+ * @internal
+ */
+function fireOnCreate(
+	config: ScopeConfig | undefined,
+	instance: Record<string, unknown>,
+	input: Record<string, unknown> | undefined,
+	lifecycleCleanups: (() => void)[],
+): void {
+	const controller = new AbortController();
+	lifecycleCleanups.push(() => {
+		controller.abort();
+	});
+	if (config?.onCreate) {
+		config.onCreate({
+			scope: instance as GenericScopeInstance,
+			input,
+			signal: controller.signal,
+			onCleanup: (fn) => lifecycleCleanups.push(fn),
+		});
+	}
+}
 
 function createScopeInstance(
 	definition: ScopeDefinitionMeta,
@@ -665,21 +517,7 @@ function createScopeInstance(
 		};
 	}
 
-	// Create lifecycle AbortController (aborts on $destroy or recreate)
-	const lifecycleController = new AbortController();
-	lifecycleCleanups.push(() => {
-		lifecycleController.abort();
-	});
-
-	// Fire onCreate
-	if (config?.onCreate) {
-		config.onCreate({
-			scope: instance as GenericScopeInstance,
-			input: input ?? undefined,
-			signal: lifecycleController.signal,
-			onCleanup: (fn) => lifecycleCleanups.push(fn),
-		});
-	}
+	fireOnCreate(config, instance, input ?? undefined, lifecycleCleanups);
 
 	return instance;
 }
@@ -1340,13 +1178,6 @@ function setupValidation(
 	const hasValidateHook = !!validateFn;
 	const hasValidationSources = schemaSlots.length > 0 || hasValidateHook;
 
-	// Build a map from field name to schema slot index for issue routing
-	const fieldNameToSlot = new Map<string, number>();
-	for (const slot of schemaSlots) {
-		const meta = definition.slots[slot]!;
-		fieldNameToSlot.set(meta.fieldName, slot);
-	}
-
 	// Set up the validate derivation as a computed signal
 	let validateIssuesSignal: ReturnType<typeof createSignal> | null = null;
 	if (validateFn) {
@@ -1467,19 +1298,13 @@ function setupValidation(
 						const unsub2 = store.subscribeValidation(slotForHook, () => {
 							onChange();
 						});
-						let isFirst = true;
-						const dispose = effect(() => {
+						const unsub3 = subscribeFireOnly(() => {
 							void (validateIssuesSignal as { value: unknown }).value;
-							if (isFirst) {
-								isFirst = false;
-								return;
-							}
-							onChange();
-						});
+						}, onChange);
 						return () => {
 							unsub1();
 							unsub2();
-							dispose();
+							unsub3();
 						};
 					});
 					hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
@@ -1589,6 +1414,36 @@ function setupValidation(
 		return issues;
 	}
 
+	// Subscription factory shared by `$useIsValid` and `$useValidation`. Both
+	// hooks need to re-render on the same signal set (own schema slots +
+	// validate-hook issues, or a deep walk via `_trackDeepValid`); only their
+	// final return value differs.
+	function subscribeValidationChanges(
+		deep: boolean | undefined,
+	): (onChange: () => void) => () => void {
+		return (onChange) => {
+			if (deep) {
+				return subscribeFireOnly(() => {
+					trackDeepValid(new WeakSet());
+				}, onChange);
+			}
+			const unsubs: (() => void)[] = [];
+			for (const slot of schemaSlots) {
+				unsubs.push(store.subscribeValidation(slot, onChange));
+			}
+			if (validateIssuesSignal) {
+				unsubs.push(
+					subscribeFireOnly(() => {
+						void (validateIssuesSignal as { value: unknown }).value;
+					}, onChange),
+				);
+			}
+			return () => {
+				for (const unsub of unsubs) unsub();
+			};
+		};
+	}
+
 	// Expose the internal walkers so parent scopes can recurse into this one.
 	instance._deepCheckValid = deepCheckValid;
 	instance._trackDeepValid = trackDeepValid;
@@ -1614,39 +1469,10 @@ function setupValidation(
 		}
 		const hooks = getReactHooks();
 		if (hooks) {
-			const adapter = versionedAdapter(instance, (onChange) => {
-				if (options?.deep) {
-					let isFirst = true;
-					const dispose = effect(() => {
-						trackDeepValid(new WeakSet());
-						if (isFirst) {
-							isFirst = false;
-							return;
-						}
-						onChange();
-					});
-					return dispose;
-				}
-				const unsubs: (() => void)[] = [];
-				for (const slot of schemaSlots) {
-					unsubs.push(store.subscribeValidation(slot, onChange));
-				}
-				if (validateIssuesSignal) {
-					let isFirst = true;
-					const dispose = effect(() => {
-						void (validateIssuesSignal as { value: unknown }).value;
-						if (isFirst) {
-							isFirst = false;
-							return;
-						}
-						onChange();
-					});
-					unsubs.push(dispose);
-				}
-				return () => {
-					for (const unsub of unsubs) unsub();
-				};
-			});
+			const adapter = versionedAdapter(
+				instance,
+				subscribeValidationChanges(options?.deep),
+			);
 			hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
 		}
 		return (instance.$getIsValid as (options?: { deep?: boolean }) => boolean)(
@@ -1676,39 +1502,10 @@ function setupValidation(
 		}
 		const hooks = getReactHooks();
 		if (hooks) {
-			const adapter = versionedAdapter(instance, (onChange) => {
-				if (options?.deep) {
-					let isFirst = true;
-					const dispose = effect(() => {
-						trackDeepValid(new WeakSet());
-						if (isFirst) {
-							isFirst = false;
-							return;
-						}
-						onChange();
-					});
-					return dispose;
-				}
-				const unsubs: (() => void)[] = [];
-				for (const slot of schemaSlots) {
-					unsubs.push(store.subscribeValidation(slot, onChange));
-				}
-				if (validateIssuesSignal) {
-					let isFirst = true;
-					const dispose = effect(() => {
-						void (validateIssuesSignal as { value: unknown }).value;
-						if (isFirst) {
-							isFirst = false;
-							return;
-						}
-						onChange();
-					});
-					unsubs.push(dispose);
-				}
-				return () => {
-					for (const unsub of unsubs) unsub();
-				};
-			});
+			const adapter = versionedAdapter(
+				instance,
+				subscribeValidationChanges(options?.deep),
+			);
 			hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
 		}
 		return (
@@ -1717,73 +1514,6 @@ function setupValidation(
 			}) => ScopeValidationResult
 		)(options);
 	};
-}
-
-/** Walk a ref value, collecting nested issues with prefixed paths. @internal */
-function walkRefCollect(
-	ref: unknown,
-	visited: WeakSet<object>,
-): StandardSchemaV1.Issue[] {
-	if (ref instanceof ScopeMap) {
-		const collected: StandardSchemaV1.Issue[] = [];
-		for (const [entryKey, entry] of ref.entries()) {
-			const entryIssues = walkRefCollect(entry, visited);
-			for (const issue of entryIssues) {
-				collected.push({
-					message: issue.message,
-					path: [entryKey, ...(issue.path ?? [])],
-				});
-			}
-		}
-		return collected;
-	}
-	if (isScopeLike(ref)) {
-		const deepCollect = (ref as Record<string, unknown>)._deepCollectIssues as
-			| ((visited: WeakSet<object>) => StandardSchemaV1.Issue[])
-			| undefined;
-		if (typeof deepCollect === 'function') return deepCollect(visited);
-	}
-	return [];
-}
-
-/** Walk a ref value for deep validation. Returns false if any nested scope fails. @internal */
-function walkRefValid(ref: unknown, visited: WeakSet<object>): boolean {
-	if (ref instanceof ScopeMap) {
-		for (const entry of ref.values()) {
-			if (!walkRefValid(entry, visited)) return false;
-		}
-		return true;
-	}
-	if (isScopeLike(ref)) {
-		const deepCheck = (ref as Record<string, unknown>)._deepCheckValid as
-			| ((visited: WeakSet<object>) => boolean)
-			| undefined;
-		if (typeof deepCheck === 'function') {
-			return deepCheck(visited);
-		}
-	}
-	return true;
-}
-
-/** Walk a ref value, touching reactive signals for deep validation tracking. @internal */
-function walkRefTrack(ref: unknown, visited: WeakSet<object>): void {
-	if (ref instanceof ScopeMap) {
-		ref._trackKeys();
-		for (const entry of ref.values()) {
-			walkRefTrack(entry, visited);
-		}
-		return;
-	}
-	if (isScopeLike(ref)) {
-		const trackDeep = (ref as Record<string, unknown>)._trackDeepValid as
-			| ((visited: WeakSet<object>) => void)
-			| undefined;
-		if (typeof trackDeep === 'function') trackDeep(visited);
-	}
-}
-
-function isScopeLike(x: unknown): boolean {
-	return typeof x === 'object' && x !== null && '$destroy' in x;
 }
 
 /** Attach static entries to the instance tree. @internal */
@@ -1826,6 +1556,15 @@ function attachDollarMethods(
 	factoryRefInstances?: Record<string, unknown>[],
 	factoryRefDestroyables?: { destroy: () => void }[],
 ): void {
+	// Register a Preact dependency on every slot signal. Used by the snapshot
+	// invalidator, `$subscribe`, and `instance._trackAll` (the derivation-scope
+	// ref hook). Coarse-grained by design.
+	const trackAllSlots = (): void => {
+		for (let slot = 0; slot < definition.slotCount; slot++) {
+			void store.signals[slot]!.value;
+		}
+	};
+
 	instance.$destroy = () => {
 		// Idempotency: a second call must be a no-op so onDestroy fires once
 		// and factory-ref children aren't re-destroyed. Naturally exercised
@@ -1876,9 +1615,7 @@ function attachDollarMethods(
 	let cachedSnapshot: Record<string, unknown> | null = null;
 	let snapshotDirty = true;
 	const invalidateSnapshot = effect(() => {
-		for (let slot = 0; slot < definition.slotCount; slot++) {
-			void store.signals[slot]!.value;
-		}
+		trackAllSlots();
 		void store._plainVersion.value;
 		snapshotDirty = true;
 	});
@@ -1922,41 +1659,13 @@ function attachDollarMethods(
 				config.onDestroy({ scope: instance as GenericScopeInstance });
 			}
 
-			const recreateController = new AbortController();
-			lifecycleCleanups.push(() => {
-				recreateController.abort();
-			});
-
-			if (config?.onCreate) {
-				config.onCreate({
-					scope: instance as GenericScopeInstance,
-					input: data,
-					signal: recreateController.signal,
-					onCleanup: (fn) => lifecycleCleanups.push(fn),
-				});
-			}
+			fireOnCreate(config, instance, data, lifecycleCleanups);
 		}
 	};
 
 	instance.$subscribe = (fn: () => void): Unsubscribe => {
 		const untrackExternal = store.trackExternalSubscription();
-
-		// Single effect that tracks all signals, fires fn() on any change
-		let isFirstRun = true;
-		const dispose = effect(() => {
-			for (let slot = 0; slot < definition.slotCount; slot++) {
-				void store.signals[slot]!.value; // track all signals
-			}
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			try {
-				fn();
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
+		const dispose = subscribeFireOnly(trackAllSlots, fn);
 
 		let disposed = false;
 		return () => {
@@ -1999,11 +1708,7 @@ function attachDollarMethods(
 	// the enclosing derivation when any field on the referenced instance
 	// changes. Tracks coarsely — all fields, regardless of which the
 	// consumer reads from the returned snapshot.
-	instance._trackAll = () => {
-		for (let slot = 0; slot < definition.slotCount; slot++) {
-			void store.signals[slot]!.value;
-		}
-	};
+	instance._trackAll = trackAllSlots;
 }
 
 /** Build a plain snapshot of all values. @internal */

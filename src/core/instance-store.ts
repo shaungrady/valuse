@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import { signal, effect, type Signal } from './signal.js';
+import { signal, type Signal } from './signal.js';
+import {
+	subscribeFireOnly,
+	subscribeWithPrevious,
+} from './utils/effect-helpers.js';
 import type { AsyncState } from './async-state.js';
 import { initialAsyncState, resolvedAsyncState } from './async-state.js';
 import { runValidation, type ValidationState } from './value-schema.js';
@@ -390,23 +394,11 @@ export class InstanceStore {
 		fn: (value: unknown, previous: unknown) => void,
 	): Unsubscribe {
 		this.#incrementSubscribers();
-
-		let isFirstRun = true;
-		let previousValue = this.signals[slot]!.peek();
-		const dispose = effect(() => {
-			const currentValue = this.signals[slot]!.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			const prev = previousValue;
-			previousValue = currentValue;
-			try {
-				fn(currentValue, prev);
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
+		const dispose = subscribeWithPrevious(
+			() => this.signals[slot]!.value,
+			() => this.signals[slot]!.peek(),
+			fn,
+		);
 
 		let disposed = false;
 		return () => {
@@ -484,20 +476,9 @@ export class InstanceStore {
 	subscribeValidation(slot: number, fn: () => void): Unsubscribe {
 		const validationSignal = this.validationStates.get(slot);
 		if (!validationSignal) return () => {};
-		let isFirstRun = true;
-		const dispose = effect(() => {
+		return subscribeFireOnly(() => {
 			void validationSignal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			try {
-				fn();
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		return dispose;
+		}, fn);
 	}
 
 	/**
@@ -515,20 +496,9 @@ export class InstanceStore {
 	subscribeAsyncState(slot: number, fn: () => void): Unsubscribe {
 		const asyncSignal = this.asyncStates.get(slot);
 		if (!asyncSignal) return () => {};
-		let isFirstRun = true;
-		const dispose = effect(() => {
+		return subscribeFireOnly(() => {
 			void asyncSignal.value;
-			if (isFirstRun) {
-				isFirstRun = false;
-				return;
-			}
-			try {
-				fn();
-			} catch (err) {
-				console.error('valuse: subscriber threw', err);
-			}
-		});
-		return dispose;
+		}, fn);
 	}
 
 	/**

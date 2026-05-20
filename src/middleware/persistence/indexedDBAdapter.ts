@@ -66,46 +66,38 @@ export function indexedDBAdapter(
 		return dbPromise;
 	}
 
+	// Run `fn` inside a fresh transaction on the object store. Returns
+	// `undefined` when IndexedDB is unavailable or any step throws — both
+	// failures are non-fatal at the adapter contract level.
+	async function withStore<T>(
+		mode: IDBTransactionMode,
+		fn: (store: IDBObjectStore) => Promise<T>,
+	): Promise<T | undefined> {
+		const db = getDB();
+		if (!db) return undefined;
+		try {
+			const dbInstance = await db;
+			const tx = dbInstance.transaction(storeName, mode);
+			return await fn(tx.objectStore(storeName));
+		} catch {
+			return undefined;
+		}
+	}
+
 	return {
 		async read(key: string): Promise<string | null> {
-			const db = getDB();
-			if (!db) return null;
-			try {
-				const dbInstance = await db;
-				const tx = dbInstance.transaction(storeName, 'readonly');
-				const store = tx.objectStore(storeName);
-				const result = await txPromise<unknown>(store.get(key));
-				if (typeof result === 'string') return result;
-				return null;
-			} catch {
-				return null;
-			}
+			const result = await withStore('readonly', (store) =>
+				txPromise<unknown>(store.get(key)),
+			);
+			return typeof result === 'string' ? result : null;
 		},
 
 		async write(key: string, data: string): Promise<void> {
-			const db = getDB();
-			if (!db) return;
-			try {
-				const dbInstance = await db;
-				const tx = dbInstance.transaction(storeName, 'readwrite');
-				const store = tx.objectStore(storeName);
-				await txPromise(store.put(data, key));
-			} catch {
-				// Silently drop.
-			}
+			await withStore('readwrite', (store) => txPromise(store.put(data, key)));
 		},
 
 		async remove(key: string): Promise<void> {
-			const db = getDB();
-			if (!db) return;
-			try {
-				const dbInstance = await db;
-				const tx = dbInstance.transaction(storeName, 'readwrite');
-				const store = tx.objectStore(storeName);
-				await txPromise(store.delete(key));
-			} catch {
-				// Silently drop.
-			}
+			await withStore('readwrite', (store) => txPromise(store.delete(key)));
 		},
 	};
 }

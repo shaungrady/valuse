@@ -3,6 +3,7 @@ import type { ScopeMap } from '../core/scope-map.js';
 import type { Value } from '../core/value.js';
 import type { GenericScopeInstance } from '../core/scope-types.js';
 import type { Change, Unsubscribe } from '../core/types.js';
+import { pickFields } from '../core/utils/pick-fields.js';
 
 // --- Redux DevTools Extension types ---
 
@@ -93,18 +94,31 @@ function isEnabled(options: DevtoolsOptions): boolean {
 	}
 }
 
-function filterSnapshot(
-	snapshot: Record<string, unknown>,
-	fields: string[] | undefined,
-): Record<string, unknown> {
-	if (!fields) return snapshot;
-	const filtered: Record<string, unknown> = {};
-	for (const field of fields) {
-		if (field in snapshot) {
-			filtered[field] = snapshot[field];
-		}
-	}
-	return filtered;
+/**
+ * Probe for the Redux DevTools extension and gate by `options.enabled` /
+ * NODE_ENV. Returns `null` when devtools shouldn't be wired up. Each caller
+ * decides what null means in its own context — bail out of `withDevtools`
+ * before extending the template, or hand back a no-op unsubscribe from the
+ * connect* APIs.
+ *
+ * @internal
+ */
+function getEnabledExtension(
+	options: DevtoolsOptions,
+): ReduxDevtoolsExtension | null {
+	if (!isEnabled(options)) return null;
+	return getExtension() ?? null;
+}
+
+/** Open a DevTools connection with the standard option mapping. @internal */
+function openConnection(
+	extension: ReduxDevtoolsExtension,
+	options: DevtoolsOptions,
+): DevtoolsConnection {
+	return extension.connect({
+		name: options.name,
+		maxAge: options.maxAge ?? 50,
+	});
 }
 
 function buildActionName(changes: Set<Change>): string {
@@ -155,9 +169,7 @@ export function withDevtools<Def extends Record<string, unknown>>(
 	template: ScopeTemplate<Def>,
 	options: DevtoolsOptions,
 ): ScopeTemplate<Def> {
-	if (!isEnabled(options)) return template;
-
-	const extension = getExtension();
+	const extension = getEnabledExtension(options);
 	if (!extension) return template;
 
 	const serialize = options.serialize ?? identitySnapshot;
@@ -167,13 +179,10 @@ export function withDevtools<Def extends Record<string, unknown>>(
 		{},
 		{
 			onCreate({ scope }) {
-				const connection = extension.connect({
-					name: options.name,
-					maxAge: options.maxAge ?? 50,
-				});
+				const connection = openConnection(extension, options);
 
 				const initialState = serialize(
-					filterSnapshot(scope.$getSnapshot(), options.fields),
+					pickFields(scope.$getSnapshot(), options.fields),
 				);
 				connection.init(initialState);
 
@@ -210,7 +219,7 @@ export function withDevtools<Def extends Record<string, unknown>>(
 				const actionName = buildActionName(changes);
 				const payload = buildSetPayload(changes);
 				const stateSnapshot = serialize(
-					filterSnapshot(
+					pickFields(
 						(scope as unknown as GenericScopeInstance).$getSnapshot(),
 						options.fields,
 					),
@@ -246,18 +255,13 @@ export function connectMapDevtools<
 	K extends string | number,
 	Def extends Record<string, unknown>,
 >(map: ScopeMap<K, Def>, options: DevtoolsOptions): Unsubscribe {
-	if (!isEnabled(options)) return () => {};
-
-	const extension = getExtension();
+	const extension = getEnabledExtension(options);
 	if (!extension) return () => {};
 
 	const serialize = options.serialize ?? identitySnapshot;
 	const deserialize = options.deserialize ?? identitySnapshot;
 
-	const connection = extension.connect({
-		name: options.name,
-		maxAge: options.maxAge ?? 50,
-	});
+	const connection = openConnection(extension, options);
 
 	const instanceSubscriptions = new Map<K, Unsubscribe>();
 	// Gate every `sendState` call during DevTools-initiated time travel so
@@ -279,7 +283,7 @@ export function connectMapDevtools<
 				>;
 				snapshot[String(key)] =
 					options.fields ?
-						filterSnapshot(instanceSnapshot, options.fields)
+						pickFields(instanceSnapshot, options.fields)
 					:	instanceSnapshot;
 			}
 		}
@@ -419,15 +423,10 @@ export function connectDevtools<In, Out>(
 	val: Value<In, Out>,
 	options: DevtoolsOptions,
 ): Unsubscribe {
-	if (!isEnabled(options)) return () => {};
-
-	const extension = getExtension();
+	const extension = getEnabledExtension(options);
 	if (!extension) return () => {};
 
-	const connection = extension.connect({
-		name: options.name,
-		maxAge: options.maxAge ?? 50,
-	});
+	const connection = openConnection(extension, options);
 
 	connection.init({ value: val.get() });
 

@@ -13,9 +13,28 @@ import type {
 } from './slot-meta.js';
 import type { AnyValueRef } from './value-ref.js';
 import type { Comparator } from './types.js';
+import type { InternalPipeStep } from './utils/pipe-internal.js';
 
 /** Prototype for async function detection. @internal */
 const AsyncFunction = (async () => {}).constructor;
+
+/**
+ * Convert a Value/Schema/Plain instance's runtime pipe-step list into the
+ * static {@link DefinitionPipeStep} shape stored on `SlotMeta.pipeline`.
+ * Returns `null` for empty pipelines so the slot-meta carries the same
+ * "no pipes" signal regardless of source.
+ * @internal
+ */
+function buildPipeline(
+	steps: readonly InternalPipeStep[],
+): DefinitionPipeStep[] | null {
+	if (steps.length === 0) return null;
+	return steps.map((step) =>
+		step.kind === 'sync' ?
+			{ kind: 'sync' as const, transform: step.transform }
+		:	{ kind: 'factory' as const, descriptor: step.descriptor },
+	);
+}
 
 /**
  * Walk a scope definition tree and produce the shared {@link ScopeDefinitionMeta}.
@@ -106,20 +125,11 @@ function walkTree(
 			const schemaInstance = entry;
 			const slotIndex = slots.length;
 
-			const pipeSteps: DefinitionPipeStep[] | null =
-				schemaInstance._pipeSteps.length > 0 ?
-					schemaInstance._pipeSteps.map((step) =>
-						step.kind === 'sync' ?
-							{ kind: 'sync' as const, transform: step.transform }
-						:	{ kind: 'factory' as const, descriptor: step.descriptor },
-					)
-				:	null;
-
 			slots.push({
 				path,
 				fieldName: key,
 				kind: 'schema',
-				pipeline: pipeSteps,
+				pipeline: buildPipeline(schemaInstance._pipeSteps),
 				comparator: schemaInstance._comparator ?? null,
 				defaultValue: schemaInstance._signal.peek(),
 				ancestorGroupIndices: slotAncestors,
@@ -137,20 +147,11 @@ function walkTree(
 			const valueInstance = entry;
 			const slotIndex = slots.length;
 
-			const pipeSteps: DefinitionPipeStep[] | null =
-				valueInstance._pipeSteps.length > 0 ?
-					valueInstance._pipeSteps.map((step) =>
-						step.kind === 'sync' ?
-							{ kind: 'sync' as const, transform: step.transform }
-						:	{ kind: 'factory' as const, descriptor: step.descriptor },
-					)
-				:	null;
-
 			slots.push({
 				path,
 				fieldName: key,
 				kind: 'value',
-				pipeline: pipeSteps,
+				pipeline: buildPipeline(valueInstance._pipeSteps),
 				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
 				comparator: (valueInstance._comparator as Comparator<unknown>) ?? null,
 				defaultValue: valueInstance._signal.peek(),
@@ -168,19 +169,11 @@ function walkTree(
 			// Non-reactive plain value field
 			const slotIndex = slots.length;
 
-			const pipeSteps: DefinitionPipeStep[] | null =
-				entry._pipeSteps.length > 0 ?
-					entry._pipeSteps.map((step) => ({
-						kind: 'sync' as const,
-						transform: step.transform,
-					}))
-				:	null;
-
 			slots.push({
 				path,
 				fieldName: key,
 				kind: 'plain',
-				pipeline: pipeSteps,
+				pipeline: buildPipeline(entry._pipeSteps),
 				comparator: null,
 				defaultValue: entry._value,
 				ancestorGroupIndices: slotAncestors,
