@@ -268,10 +268,10 @@ comparison.
 
 When a value has both pipes and a custom comparator, the order is:
 
-1. **`.set(raw)`** — raw input enters
-2. **Pipe chain** — transforms run left to right
-3. **`.compareUsing()`** — compared against current stored value
-4. **Write** — if different, the signal updates and subscribers fire
+1. **`.set(raw)`**: raw input enters.
+2. **Pipe chain**: transforms run left to right.
+3. **`.compareUsing()`**: compared against current stored value.
+4. **Write**: if different, the signal updates and subscribers fire.
 
 This means comparison always runs on the _transformed_ value, not the raw input.
 

@@ -199,14 +199,14 @@ expectTypeOf<NonNullable<ScopeConfig['onDestroy']>>().toBeCallableWith({
 
 // onChange receives { scope, changes, changesByScope }
 expectTypeOf<NonNullable<ScopeConfig['onChange']>>().toBeCallableWith({
-	scope: {} as ScopeNode,
+	scope: {} as GenericScopeInstance,
 	changes: new Set<Change>(),
 	changesByScope: new Map<ScopeNode, Change[]>(),
 });
 
 // beforeChange receives { scope, changes, changesByScope, prevent }
 expectTypeOf<NonNullable<ScopeConfig['beforeChange']>>().toBeCallableWith({
-	scope: {} as ScopeNode,
+	scope: {} as GenericScopeInstance,
 	changes: new Set<Change>(),
 	changesByScope: new Map<ScopeNode, Change[]>(),
 	prevent: (() => {}) as (target?: ScopeNode | Change) => void,

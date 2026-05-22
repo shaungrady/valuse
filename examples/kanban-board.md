@@ -74,7 +74,7 @@ const column = valueScope({
 
 ### The board
 
-The board owns the card and column collections via `valueRef` factories — each
+The board owns the card and column collections via `valueRef` factories: each
 `board.create()` gets its own independent maps. The per-field `onChange` on
 `data` hydrates the collections when the async fetch resolves:
 
@@ -111,8 +111,7 @@ const board = valueScope(
       const data = scope.data.get();
       if (!data) return;
 
-      const columns = scope.columns.get();
-      const cards = scope.cards.get();
+      const { columns, cards } = scope;
 
       // Hydrate collections from fetched data
       for (const col of data.columns) columns.set(col.id, col);
@@ -128,7 +127,7 @@ let boardInstance: ReturnType<typeof board.create>;
 
 The board's `data` derivation fetches from the API. When it resolves, the
 per-field `onChange` handler populates the card and column collections
-automatically — no manual `subscribe` needed:
+automatically, no manual `subscribe` needed:
 
 ```ts
 function initBoard(boardId: string) {
@@ -143,7 +142,7 @@ automatically.
 
 ## Drag and drop
 
-Moving a card between columns is two field updates — remove from source, add to
+Moving a card between columns is two field updates: remove from source, add to
 destination. No store-wide spread, no reducer, no action:
 
 ```ts
@@ -153,8 +152,7 @@ function moveCard(
   toColumnId: string,
   toIndex: number,
 ) {
-  const columns = boardInstance.columns.get();
-  const cards = boardInstance.cards.get();
+  const { columns, cards } = boardInstance;
   const fromCol = columns.get(fromColumnId);
   const toCol = columns.get(toColumnId);
   if (!fromCol || !toCol) return;
@@ -182,9 +180,10 @@ and card is untouched.
 ```tsx
 import 'valuse/react';
 
-// Pull collections from the board
-const columns = boardInstance.columns.get();
-const cards = boardInstance.cards.get();
+// Pull collections from the board. valueRef fields ARE the resolved ScopeMaps,
+// so direct destructure rather than `.get()` (which on a ScopeMap takes a key).
+// Assumes initBoard() was called first.
+const { columns, cards } = boardInstance;
 
 function Board() {
   const [columnOrder] = boardInstance.columnOrder.use();
@@ -264,7 +263,7 @@ cards.set('card-1', {
   dueDate: '2026-04-15',
 } as any);
 
-cards.get('card-1')?.priority.get(); // "high"
+cards.get('card-1')?.priority; // "high" (undeclared props are plain values, not reactive wrappers)
 ```
 
 If a dynamic field later needs reactivity or derived state, promote it with

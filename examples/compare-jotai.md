@@ -1,6 +1,6 @@
 # ValUse vs Jotai
 
-Jotai gives you atoms — tiny reactive units that compose via dependency graphs.
+Jotai gives you atoms: tiny reactive units that compose via dependency graphs.
 It's excellent for fine-grained reactivity, but structured data (an entity with
 typed fields, derivations, and lifecycle) requires assembling many atoms,
 keeping them in sync, and managing their lifetimes manually.
@@ -28,7 +28,7 @@ All examples below build the same user model: `firstName`, `lastName`, `email`,
 
 ## Define a model
 
-**ValUse** — fields and derivations in one place:
+**ValUse**: fields and derivations in one place:
 
 ```ts
 const user = valueScope({
@@ -41,7 +41,7 @@ const user = valueScope({
 });
 ```
 
-**Jotai** — one atom per entity, derivation is another atom:
+**Jotai**: one atom per entity, derivation is another atom:
 
 ```ts
 const userAtom = atomFamily((id: string) =>
@@ -106,7 +106,7 @@ and the UI desyncs. Forget `userAtom.remove(id)` and the atom leaks memory.
 
 Track `lastUpdated` whenever any field changes.
 
-**ValUse** — one hook, declared alongside the model:
+**ValUse**: one hook, declared alongside the model:
 
 ```ts
 const user = valueScope(
@@ -119,7 +119,7 @@ const user = valueScope(
 );
 ```
 
-**Jotai** — duplicated in every writable atom:
+**Jotai**: duplicated in every writable atom:
 
 ```ts
 const setUserField = atom(null, (get, set, { id, field, value }) => {
@@ -137,7 +137,7 @@ change" hook.
 
 Editing one user's email must not re-render other rows.
 
-**ValUse** — automatic. Each field `.use()` subscribes to that field only:
+**ValUse**: automatic. Each field `.use()` subscribes to that field only:
 
 ```tsx
 function UserRow({ id }: { id: string }) {
@@ -147,7 +147,7 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-**Jotai** — one atom per user gives isolation, but the component needs separate
+**Jotai**: one atom per user gives isolation, but the component needs separate
 hooks for the entity and each derived value:
 
 ```tsx
@@ -159,7 +159,7 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-Isolation is good here — Jotai's per-atom subscriptions work well. The cost is
+Isolation is good here; Jotai's per-atom subscriptions work well. The cost is
 the proliferation of atoms and hooks needed to wire them together.
 
 ---
@@ -168,7 +168,7 @@ the proliferation of atoms and hooks needed to wire them together.
 
 Fetch a user's profile by email. Abort the previous request when email changes.
 
-**ValUse** — a derivation that happens to be async:
+**ValUse**: a derivation that happens to be async:
 
 ```ts
 const user = valueScope({
@@ -182,7 +182,7 @@ const user = valueScope({
 
 Abort is automatic. Re-fetch is reactive.
 
-**Jotai** — async atom with abort support (since v2):
+**Jotai**: async atom with abort support (since v2):
 
 ```ts
 const profileAtom = atomFamily((id: string) =>
@@ -194,7 +194,7 @@ const profileAtom = atomFamily((id: string) =>
 );
 ```
 
-Jotai supports `AbortSignal` via the second argument to async atoms — both
+Jotai supports `AbortSignal` via the second argument to async atoms, and both
 libraries require you to destructure `signal` and pass it to your fetch. The
 difference is in the re-run lifecycle: ValUse automatically aborts and re-runs
 the derivation when any `use()` dependency changes, while Jotai's re-run
@@ -207,7 +207,7 @@ behavior is tied to the atom dependency graph.
 Derive `avatarUrl` from the async `profile`. This should be a plain sync
 computation.
 
-**ValUse** — just another derivation. Sees `Profile | undefined`, never a
+**ValUse**: just another derivation. Sees `Profile | undefined`, never a
 promise:
 
 ```ts
@@ -217,8 +217,8 @@ avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
 If you later change `profile` from async to sync (or vice versa), `avatarUrl`
 doesn't change at all.
 
-**Jotai** — async is contagious. `avatarUrlAtom` _must_ be async because it
-reads an async atom:
+**Jotai**: async is contagious. `avatarUrlAtom` _must_ be async because it reads
+an async atom:
 
 ```ts
 const avatarUrlAtom = atomFamily((id: string) =>
@@ -250,7 +250,7 @@ const tableA = user.createMap();
 const tableB = user.createMap();
 ```
 
-**Jotai** — separate `Provider` and `Store` per table:
+**Jotai**: separate `Provider` and `Store` per table:
 
 ```tsx
 import { Provider, createStore } from 'jotai';
@@ -272,7 +272,7 @@ wrapping each table in its own provider.
 
 ## Type safety
 
-**ValUse** — field access is fully type-checked via dot-access on the instance:
+**ValUse**: field access is fully type-checked via dot-access on the instance:
 
 ```ts
 user.email.get(); // string
@@ -281,9 +281,9 @@ user.emal; // TS error — typo caught
 user.displayName.set('x'); // TS error — derived fields have no set()
 ```
 
-**Jotai** — each atom is typed individually, but atoms are imported by
-reference. No single place lists what "a user" has. Adding a field means
-creating a new atom and importing it everywhere it's used.
+**Jotai**: each atom is typed individually, but atoms are imported by reference.
+No single place lists what "a user" has. Adding a field means creating a new
+atom and importing it everywhere it's used.
 
 ---
 
@@ -291,8 +291,7 @@ creating a new atom and importing it everywhere it's used.
 
 Add tracking to any scope without modifying the original.
 
-**ValUse** — `.extend()` returns a new scope with additional state and
-lifecycle:
+**ValUse**: `.extend()` returns a new scope with additional state and lifecycle:
 
 ```ts
 const withTracking = (scope) =>
@@ -313,7 +312,7 @@ const trackedUser = withTracking(user);
 const trackedTodo = withTracking(todo);
 ```
 
-**Jotai** — higher-order atom factory:
+**Jotai**: higher-order atom factory:
 
 ```ts
 import { atom, type WritableAtom } from 'jotai';
@@ -339,12 +338,11 @@ function withTracking<T>(baseAtom: WritableAtom<T, [T], void>) {
 const trackedNameAtom = withTracking(nameAtom);
 ```
 
-Jotai's approach is higher-order atom factories — functions that take an atom
-and return a wrapped version. This works, but the wrapper changes the value
-shape (now `{ value, lastUpdated, changeCount }` instead of `T`), and writes to
-the original `baseAtom` bypass the tracking entirely. There's no way to say
-"extend this atom family with extra fields" — each layer is a separate
-`atomFamily`.
+Jotai's approach is higher-order atom factories: functions that take an atom and
+return a wrapped version. This works, but the wrapper changes the value shape
+(now `{ value, lastUpdated, changeCount }` instead of `T`), and writes to the
+original `baseAtom` bypass the tracking entirely. There's no way to say "extend
+this atom family with extra fields"; each layer is a separate `atomFamily`.
 
 ---
 
@@ -353,7 +351,7 @@ the original `baseAtom` bypass the tracking entirely. There's no way to say
 Create a WebSocket on init, announce presence when observed, clean up on
 destroy.
 
-**ValUse** — two hooks with scoped `onCleanup`, declared alongside the model:
+**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
 
 ```ts
 const chatRoom = valueScope(
@@ -379,7 +377,7 @@ rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
 rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
 ```
 
-**Jotai** — `onMount` for lazy activation, manual cleanup for removal:
+**Jotai**: `onMount` for lazy activation, manual cleanup for removal:
 
 ```ts
 const roomAtom = atomFamily((roomId: string) => {
@@ -401,12 +399,12 @@ const roomAtom = atomFamily((roomId: string) => {
 roomAtom.remove('room-1');
 ```
 
-Jotai's `onMount` handles lazy activation well — it fires when the first
+Jotai's `onMount` handles lazy activation well: it fires when the first
 subscriber attaches and its return function fires when the last detaches. The
-limitation is that `onMount` only receives `setAtom` — you cannot read or write
-other atoms during initialization. Cleanup and family removal are two separate
-mechanisms: `onMount`'s return handles side effects, but you must separately
-call `atomFamily.remove(key)` to free the cached atom reference.
+limitation is that `onMount` only receives `setAtom`, so you cannot read or
+write other atoms during initialization. Cleanup and family removal are two
+separate mechanisms: `onMount`'s return handles side effects, but you must
+separately call `atomFamily.remove(key)` to free the cached atom reference.
 
 ---
 
@@ -415,7 +413,7 @@ call `atomFamily.remove(key)` to free the cached atom reference.
 A person with tags that derive from a shared global set. A board where each
 instance gets its own column collection.
 
-**ValUse** — `valueRef` for shared state, factory refs for per-instance state:
+**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
 
 ```ts
 const globalTags = valueSet<string>(['admin', 'root']);
@@ -443,7 +441,7 @@ const b = board.create({ boardId: 'b' });
 // a and b each have independent column maps
 ```
 
-**Jotai** — any atom can `get()` any other atom:
+**Jotai**: any atom can `get()` any other atom:
 
 ```ts
 const globalTagsAtom = atom(new Set(['admin', 'root']));
@@ -461,13 +459,13 @@ const hasSpecialTagAtom = atomFamily((id: string) =>
 );
 ```
 
-This is one of Jotai's strengths — any atom can read any other atom via `get()`,
+This is one of Jotai's strengths: any atom can read any other atom via `get()`,
 and Jotai tracks the dependency automatically. Changes to `globalTagsAtom`
 re-derive every person's `hasSpecialTagAtom`. The tradeoff is that there's no
-structural boundary — the dependency is implicit in the code, and the "model" is
+structural boundary; the dependency is implicit in the code, and the "model" is
 spread across multiple atom families. There's also no per-instance nested state
-concept — you'd need another `atomFamily` for each board's columns and manage
-the relationship manually.
+concept; you'd need another `atomFamily` for each board's columns and manage the
+relationship manually.
 
 ---
 

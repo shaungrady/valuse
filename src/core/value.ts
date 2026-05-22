@@ -8,6 +8,7 @@ import {
 	type SyncPipeStep,
 } from './utils/pipe-internal.js';
 import { applyBrand, hasBrand } from './utils/brand.js';
+import { getReactHooks, stableSubscribe } from './react-bridge.js';
 import type {
 	Comparator,
 	Transform,
@@ -57,6 +58,8 @@ export class Value<In, Out = In> {
 	_comparator: Comparator<Out> | undefined;
 	readonly #bag = new DisposerBag();
 	readonly #activeFactories: ActiveFactoryPipe[] = [];
+	/** Bound, identity-stable `Setter<In>` exposed via `.use()`. @internal */
+	readonly #setter: Setter<In>;
 
 	/** @internal */
 	constructor(initial: Out, pipeSteps?: InternalPipeStep[]) {
@@ -64,6 +67,9 @@ export class Value<In, Out = In> {
 			this._pipeSteps = pipeSteps;
 		}
 		this._signal = signal(initial);
+		this.#setter = (valueOrFn) => {
+			this.set(valueOrFn as In | ((prev: Out) => In));
+		};
 		applyBrand(this, VALUE_INSTANCE_BRAND);
 	}
 
@@ -286,14 +292,18 @@ export class Value<In, Out = In> {
 	 * ```
 	 */
 	use(): [Out, Setter<In>] {
-		// Standalone values return a non-reactive snapshot.
-		// React integration is handled by FieldValue in scope instances.
-		return [
-			this.get(),
-			(valueOrFn) => {
-				this.set(valueOrFn as In | ((prev: Out) => In));
-			},
-		];
+		const hooks = getReactHooks();
+		if (hooks) {
+			const subscribe = stableSubscribe(this, (onChange) =>
+				this.subscribe(() => {
+					onChange();
+				}),
+			);
+			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
+			return [snapshot, this.#setter];
+		}
+		// Non-React (or `valuse/react` not imported): non-reactive snapshot.
+		return [this.get(), this.#setter];
 	}
 
 	/**

@@ -29,26 +29,32 @@ export interface HistoryOptions {
 /** Undo/redo methods added to each scope instance by `withHistory`. */
 export interface HistoryInstance {
 	/** Restore the previous snapshot. No-op at the beginning of history. */
-	undo: () => void;
+	$undo: () => void;
 
 	/** Restore the next snapshot. No-op at the end of history. */
-	redo: () => void;
+	$redo: () => void;
 
 	/** `true` when undo is available. Reactive. */
-	readonly canUndo: boolean;
+	readonly $canUndo: boolean;
 
 	/** `true` when redo is available. Reactive. */
-	readonly canRedo: boolean;
+	readonly $canRedo: boolean;
 
 	/** Drop all history entries. */
-	clearHistory: () => void;
+	$clearHistory: () => void;
 }
 
 /**
  * A template returned by `withHistory`. Produces instances that include the
  * standard `ScopeInstance<Def>` API plus {@link HistoryInstance} methods.
+ *
+ * Extends `ScopeTemplate<Def>` so the template stays composable with
+ * downstream middleware (`withPersistence`, `withDevtools`, etc.) that
+ * accept a `ScopeTemplate<Def>` parameter.
  */
-export interface HistoryTemplate<Def extends Record<string, unknown>> {
+export interface HistoryTemplate<
+	Def extends Record<string, unknown>,
+> extends ScopeTemplate<Def> {
 	create(
 		input?: Partial<ValueInputOf<Def>>,
 	): ScopeInstance<Def> & HistoryInstance;
@@ -90,8 +96,8 @@ function snapshotsEqual(
 }
 
 /**
- * Wrap a scope template with undo/redo. Each instance gains `undo`, `redo`,
- * `canUndo`, `canRedo`, and `clearHistory`.
+ * Wrap a scope template with undo/redo. Each instance gains `$undo`, `$redo`,
+ * `$canUndo`, `$canRedo`, and `$clearHistory`.
  *
  * @param template - the scope template to instrument.
  * @param options - history options.
@@ -186,12 +192,12 @@ export function withHistory<Def extends Record<string, unknown>>(
 				state.unsubscribe = scope.$subscribe(recordChange);
 
 				// Attach HistoryInstance methods to the scope instance.
-				Object.defineProperty(scope, 'canUndo', {
+				Object.defineProperty(scope, '$canUndo', {
 					configurable: true,
 					enumerable: true,
 					get: () => canUndoSignal.value,
 				});
-				Object.defineProperty(scope, 'canRedo', {
+				Object.defineProperty(scope, '$canRedo', {
 					configurable: true,
 					enumerable: true,
 					get: () => canRedoSignal.value,
@@ -211,7 +217,7 @@ export function withHistory<Def extends Record<string, unknown>>(
 					}
 				}
 
-				scope.undo = () => {
+				scope.$undo = () => {
 					const p = position.value;
 					if (p <= 0) return;
 					closeBatch();
@@ -226,7 +232,7 @@ export function withHistory<Def extends Record<string, unknown>>(
 					}
 				};
 
-				scope.redo = () => {
+				scope.$redo = () => {
 					const p = position.value;
 					if (p >= stack.value.length - 1) return;
 					closeBatch();
@@ -241,7 +247,7 @@ export function withHistory<Def extends Record<string, unknown>>(
 					}
 				};
 
-				scope.clearHistory = () => {
+				scope.$clearHistory = () => {
 					state.isRestoring = true;
 					try {
 						const current = pickFields(scope.$getSnapshot(), fields);
@@ -270,9 +276,9 @@ export function withHistory<Def extends Record<string, unknown>>(
 					state.unsubscribe = null;
 				}
 				historyByInstance.delete(scope);
-				delete scope.undo;
-				delete scope.redo;
-				delete scope.clearHistory;
+				delete scope.$undo;
+				delete scope.$redo;
+				delete scope.$clearHistory;
 			},
 		},
 	);

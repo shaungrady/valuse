@@ -3,7 +3,7 @@
 `withDevtools` and its companion connectors wire scopes, maps, and standalone
 values up to the
 [Redux DevTools Extension](https://github.com/reduxjs/redux-devtools). You get
-an action timeline, state snapshots, and time travel — without any Redux in your
+an action timeline, state snapshots, and time travel, without any Redux in your
 app.
 
 ```ts
@@ -55,7 +55,7 @@ states.
 
 ## connectMapDevtools
 
-For a `ScopeMap`, use `connectMapDevtools` instead — it subscribes to the key
+For a `ScopeMap`, use `connectMapDevtools` instead. It subscribes to the key
 list and each instance, emitting a single timeline that shows adds, deletes, and
 per-instance changes:
 
@@ -140,7 +140,7 @@ For `connectMapDevtools`, the jump reconciles the key list: missing keys are
 added with their stored data, current keys that aren't in the snapshot are
 deleted, and overlapping keys get `$setSnapshot` called on them.
 
-Time travel bypasses `beforeChange` — it's a state restoration, not a user
+Time travel bypasses `beforeChange`; it's a state restoration, not a user
 mutation.
 
 ## Production behavior
@@ -154,7 +154,7 @@ if (options.enabled === true) return template; // explicitly on
 ```
 
 You can force it on or off with the `enabled` flag. When disabled, the
-middleware returns the original template untouched — no instrumentation
+middleware returns the original template untouched, with no instrumentation
 overhead.
 
 ## When the extension isn't installed

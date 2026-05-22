@@ -1,5 +1,5 @@
 import type { Change, ScopeNode } from './types.js';
-import type { GenericScopeInstance } from './scope-types.js';
+import type { HookScope, ValueInputOf } from './scope-types.js';
 
 /**
  * Lifecycle hooks and options for a scope.
@@ -8,9 +8,16 @@ import type { GenericScopeInstance } from './scope-types.js';
  * Scope configuration allows you to intercept changes, respond to lifecycle events,
  * and enable advanced features like undeclared property passthrough.
  *
+ * `scope` inside each hook is typed against the surrounding definition
+ * passed to `valueScope`. When the generic is left at its default (e.g.
+ * by middleware that doesn't know the concrete shape), `scope` falls
+ * back to a permissive `GenericScopeInstance`.
+ *
  * @typeParam Def - the scope definition record.
  */
-export interface ScopeConfig {
+export interface ScopeConfig<
+	Def extends Record<string, unknown> = Record<string, unknown>,
+> {
 	/**
 	 * When `true`, preserve properties not declared in the scope definition
 	 * as plain, non-reactive passthrough data.
@@ -37,8 +44,8 @@ export interface ScopeConfig {
 	 * ```
 	 */
 	onCreate?: (context: {
-		scope: GenericScopeInstance;
-		input: Record<string, unknown> | undefined;
+		scope: HookScope<Def>;
+		input: Partial<ValueInputOf<Def>> | undefined;
 		signal: AbortSignal;
 		onCleanup: (fn: () => void) => void;
 	}) => void;
@@ -48,7 +55,7 @@ export interface ScopeConfig {
 	 *
 	 * @param context - object containing the scope instance.
 	 */
-	onDestroy?: (context: { scope: GenericScopeInstance }) => void;
+	onDestroy?: (context: { scope: HookScope<Def> }) => void;
 
 	/**
 	 * Fires on a microtask after one or more value fields change. Changes are batched.
@@ -63,7 +70,7 @@ export interface ScopeConfig {
 	 * ```
 	 */
 	onChange?: (context: {
-		scope: ScopeNode;
+		scope: HookScope<Def>;
 		changes: Set<Change>;
 		changesByScope: Map<ScopeNode, Change[]>;
 	}) => void;
@@ -84,7 +91,7 @@ export interface ScopeConfig {
 	 * ```
 	 */
 	beforeChange?: (context: {
-		scope: ScopeNode;
+		scope: HookScope<Def>;
 		changes: Set<Change>;
 		changesByScope: Map<ScopeNode, Change[]>;
 		prevent: (target?: ScopeNode | Change) => void;
@@ -98,7 +105,7 @@ export interface ScopeConfig {
 	 * @param context.onCleanup - register a cleanup function that runs on detach.
 	 */
 	onUsed?: (context: {
-		scope: GenericScopeInstance;
+		scope: HookScope<Def>;
 		signal: AbortSignal;
 		onCleanup: (fn: () => void) => void;
 	}) => void;
@@ -108,7 +115,7 @@ export interface ScopeConfig {
 	 *
 	 * @param context - object containing the scope instance.
 	 */
-	onUnused?: (context: { scope: GenericScopeInstance }) => void;
+	onUnused?: (context: { scope: HookScope<Def> }) => void;
 
 	/**
 	 * Cross-field validation. A reactive derivation that returns
@@ -116,7 +123,7 @@ export interface ScopeConfig {
 	 * dependency changes. Issues with a `path` matching a field name
 	 * are routed to that field's validation state.
 	 */
-	validate?: (context: { scope: Record<string, unknown> }) => {
+	validate?: (context: { scope: HookScope<Def> }) => {
 		readonly message: string;
 		readonly path?:
 			| ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>

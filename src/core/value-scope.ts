@@ -3,6 +3,7 @@ import {
 	signal as createSignal,
 	computed,
 	effect,
+	batchSets,
 	type ReadonlySignal,
 } from './signal.js';
 import { subscribeFireOnly } from './utils/effect-helpers.js';
@@ -246,9 +247,9 @@ export class ScopeTemplate<
  */
 export function valueScope<Def extends Record<string, unknown>>(
 	definition: Def,
-	config?: ScopeConfig,
+	config?: ScopeConfig<Def>,
 ): ScopeTemplate<Def> {
-	return new ScopeTemplate(definition, config);
+	return new ScopeTemplate(definition, config as ScopeConfig);
 }
 
 // --- Instance creation ---
@@ -372,6 +373,12 @@ function createScopeInstance(
 	const instanceCleanups: (() => void)[] = [];
 	const lifecycleCleanups: (() => void)[] = [];
 
+	// Attach static entries onto both trees BEFORE derivations run. Sync
+	// derivations are eagerly evaluated by `setupSyncDerivations` via the
+	// `effect()` that mirrors the computed into the store, so any static
+	// fields read through `scope.<name>` must be in place first.
+	attachStaticEntries(definition, instance, derivationScope);
+
 	// Set up sync derivations
 	setupSyncDerivations(definition, store, derivationScope, instanceCleanups);
 
@@ -383,9 +390,6 @@ function createScopeInstance(
 		resolvedRefs,
 		instanceCleanups,
 	);
-
-	// Attach static entries (must run before child groups are frozen)
-	attachStaticEntries(definition, instance);
 
 	// Attach resolved refs to the instance tree
 	for (const [path, resolved] of resolvedRefs) {
@@ -403,6 +407,7 @@ function createScopeInstance(
 
 	// Freeze child groups now that all their content (wrappers + static) is present.
 	freezeChildGroups(definition, nodesByGroup);
+	freezeDerivationGroups(definition, derivationScope, definition.groups[0]!);
 
 	// Attach $ methods
 	attachDollarMethods(
@@ -431,18 +436,20 @@ function createScopeInstance(
 	// Brand as scope
 	brandAsScope(instance);
 
-	// Wire hooks
+	// Wire hooks. The runtime `context.scope` is the live ScopeInstance
+	// (branded as ScopeNode at the InstanceStore boundary), so the cast
+	// to the user-facing hook context type is sound at runtime.
 	if (config?.onChange) {
 		const onChange = config.onChange;
 		store.onChangeHook = (context) => {
-			onChange(context);
+			onChange(context as Parameters<typeof onChange>[0]);
 		};
 	}
 
 	if (config?.beforeChange) {
 		const beforeChange = config.beforeChange;
 		store.beforeChangeHook = (context) => {
-			beforeChange(context);
+			beforeChange(context as Parameters<typeof beforeChange>[0]);
 		};
 	}
 
@@ -615,16 +622,31 @@ function buildDerivationGroupNode(
 		node[fieldName] = new DerivationWrap(store, slotIndex);
 	}
 
-	// Add child groups recursively
+	// Add child groups recursively. Groups are NOT frozen here so static
+	// entries can be mirrored onto them after build; freezing happens via
+	// `freezeDerivationGroups` once mirroring is done.
 	for (const childGroupIndex of group.childGroups) {
 		const childGroup = definition.groups[childGroupIndex]!;
 		const fieldName = childGroup.fieldName;
-		node[fieldName] = Object.freeze(
-			buildDerivationGroupNode(definition, store, childGroup),
-		);
+		node[fieldName] = buildDerivationGroupNode(definition, store, childGroup);
 	}
 
 	return node;
+}
+
+/** Recursively freeze nested groups on the derivation scope tree. @internal */
+function freezeDerivationGroups(
+	definition: ScopeDefinitionMeta,
+	derivationScope: Record<string, unknown>,
+	group: GroupMeta,
+): void {
+	for (const childGroupIndex of group.childGroups) {
+		const childGroup = definition.groups[childGroupIndex]!;
+		const fieldName = childGroup.fieldName;
+		const child = derivationScope[fieldName] as Record<string, unknown>;
+		freezeDerivationGroups(definition, child, childGroup);
+		Object.freeze(child);
+	}
 }
 
 /** Build the instance tree: FieldValue/FieldDerived at reactive leaves, frozen plain objects for groups. @internal */
@@ -904,10 +926,23 @@ function setupAsyncDerivations(
 					set: (value: unknown) => {
 						if (controller.signal.aborted) return;
 						lastValue = value;
-						store.signals[slot]!.value = value;
-						if (asyncSignal) {
-							asyncSignal.value = resolvedAsyncState(value);
-						}
+						// Batch the data + asyncState writes so React sees one
+						// atomic update; otherwise downstream computeds (e.g.
+						// sync derivations reading this async slot) can be one
+						// step stale when consumers re-render off the async
+						// state alone.
+						batchSets(() => {
+							// Route through the change-emitting path so
+							// `onChange` observers see async writes.
+							// `beforeChange` is skipped: this is a computed
+							// value, not a user mutation.
+							store._writeToSignal(slot, value, {
+								skipBeforeChange: true,
+							});
+							if (asyncSignal) {
+								asyncSignal.value = resolvedAsyncState(value);
+							}
+						});
 					},
 					onCleanup: (fn: () => void) => {
 						run.cleanups.push(fn);
@@ -930,10 +965,21 @@ function setupAsyncDerivations(
 									return;
 								}
 								lastValue = result;
-								store.signals[slot]!.value = result;
-								if (asyncSignal) {
-									asyncSignal.value = resolvedAsyncState(result);
-								}
+								// Batch the data + asyncState writes so React
+								// sees one atomic update — otherwise downstream
+								// sync derivations reading this slot can be
+								// stale by one render cycle.
+								batchSets(() => {
+									// Route through the change-emitting path so
+									// `onChange` observers see the resolved
+									// value.
+									store._writeToSignal(slot, result, {
+										skipBeforeChange: true,
+									});
+									if (asyncSignal) {
+										asyncSignal.value = resolvedAsyncState(result);
+									}
+								});
 							} else if (asyncSignal && !asyncSignal.peek().hasValue) {
 								asyncSignal.value = initialAsyncState();
 							} else if (asyncSignal) {
@@ -1192,7 +1238,9 @@ function setupValidation(
 		// Run the validate function as a computed derivation
 		const derivedValidateSignal = computed(() => {
 			try {
-				return validateFn({ scope: derivationScope });
+				return validateFn({
+					scope: derivationScope as Parameters<typeof validateFn>[0]['scope'],
+				});
 			} catch (error) {
 				// A throwing validate hook would otherwise propagate out of
 				// the source `.set()` that triggered the recompute, and
@@ -1519,9 +1567,13 @@ function setupValidation(
 function attachStaticEntries(
 	definition: ScopeDefinitionMeta,
 	instance: Record<string, unknown>,
+	derivationScope?: Record<string, unknown>,
 ): void {
 	for (const [path, value] of definition.staticEntries) {
 		setNestedValue(instance, path, value);
+		// Mirror onto the derivation scope too so `scope.<staticField>` resolves
+		// inside derivations / hooks instead of being undefined.
+		if (derivationScope) setNestedValue(derivationScope, path, value);
 	}
 }
 

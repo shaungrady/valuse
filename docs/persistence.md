@@ -46,15 +46,15 @@ const instance = persistedPrefs.create({ theme: 'light', fontSize: 14 });
 lifecycle:
 
 1. **`onCreate`** reads from the adapter. If data exists, the middleware calls
-   `$setSnapshot()` to merge it over the `create()` input — stored values win.
+   `$setSnapshot()` to merge it over the `create()` input; stored values win.
 2. **`onChange`** serializes the selected fields and writes them back through
    the adapter. If `throttle` is set, the write is debounced.
 3. **`onDestroy`** flushes any pending throttled write and tears down the
    cross-tab subscription (if the adapter has one).
 
-Hydration writes are suppressed — when `$setSnapshot` fires during a read
-response, the resulting `onChange` sees a flag and skips the write-back, so you
-don't immediately echo the stored state back to storage.
+Hydration writes are suppressed. When `$setSnapshot` fires during a read
+response, the resulting `onChange` sees a flag and skips the write-back, so the
+stored state isn't immediately echoed back to storage.
 
 ## Options
 
@@ -139,12 +139,12 @@ input first. Once the read resolves, the stored values are merged in via
 `$setSnapshot`. Any code that runs synchronously right after `create()` will see
 the input values, not the stored ones.
 
-No `subscribe` — IndexedDB doesn't emit change events across contexts.
+No `subscribe`; IndexedDB doesn't emit change events across contexts.
 
 ## Custom adapters
 
 The adapter interface is intentionally minimal. URL search params, cookies, a
-REST endpoint, a WebSocket — anything that can round-trip a string fits:
+REST endpoint, a WebSocket; anything that can round-trip a string fits:
 
 ```ts
 import type { PersistenceAdapter } from 'valuse/middleware';
@@ -164,12 +164,12 @@ const urlParamsAdapter: PersistenceAdapter = {
 };
 ```
 
-Adapter methods may be sync or return `Promise`s — the middleware handles both.
+Adapter methods may be sync or return `Promise`s; the middleware handles both.
 
 ## Field filtering
 
 By default every field in `$getSnapshot()` is persisted. Pass `fields` to narrow
-it — useful for skipping large derived blobs or ephemeral UI state:
+it, useful for skipping large derived blobs or ephemeral UI state:
 
 ```ts
 withPersistence(scope, {
@@ -206,7 +206,7 @@ withPersistence(scope, {
 ## Throttled writes
 
 `localStorage` writes are synchronous and block the main thread. On rapid
-updates — dragging a slider, typing in an input — the write cost adds up.
+updates like dragging a slider or typing in an input, the write cost adds up.
 `throttle` collapses bursts of changes into at most one write per window:
 
 ```ts
@@ -224,7 +224,7 @@ flushed synchronously so you don't lose state when the instance tears down.
 
 When the adapter provides `subscribe`, the middleware wires it up. For
 `localStorageAdapter`, that means a tab writing to the same key triggers
-`$setSnapshot` on your instance, and every subscriber fires — per-field
+`$setSnapshot` on your instance, and every subscriber fires: per-field
 `.subscribe()`, whole-scope `$subscribe()`, derivations that `.use()` the field,
 and React components via `.use()`. The hydration flag prevents the update from
 bouncing back out as a write.
@@ -255,7 +255,7 @@ function ThemeLabel({ settings }) {
 | `onDestroy` | Flush pending write, unsubscribe from cross-tab events.       |
 | `DISPATCH`  | (cross-tab) External write — hydrate via `$setSnapshot`.      |
 
-`withPersistence` never removes the stored data — `$destroy` leaves it in place
+`withPersistence` never removes the stored data; `$destroy` leaves it in place
 so the next instance can hydrate.
 
 ## SSR safety
@@ -263,4 +263,4 @@ so the next instance can hydrate.
 `localStorageAdapter`, `sessionStorageAdapter`, and `indexedDBAdapter` all
 return `null` on read and no-op on write when their backing API is unavailable.
 You can apply `withPersistence` unconditionally in code that runs on both server
-and client — the server just sees "no stored data."
+and client; the server just sees "no stored data."

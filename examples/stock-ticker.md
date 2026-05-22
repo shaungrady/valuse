@@ -9,13 +9,13 @@ transitive lifecycle that activates them. See
 ## The problem
 
 You have a watchlist of stock symbols. Each one needs a WebSocket subscription
-for live prices. But you don't want to subscribe to all of them at once — only
+for live prices. But you don't want to subscribe to all of them at once, only
 the ones currently rendered. When a user scrolls a row out of view, or navigates
 away, the subscription should stop. When they come back, it should resume.
 
 In Zustand or Jotai, you'd wire this up with `useEffect` in each component. The
 subscription logic lives in the view layer, tangled with React lifecycle. In
-ValUse, it lives in the model — as an async derivation.
+ValUse, it lives in the model, as an async derivation.
 
 ## The model
 
@@ -85,8 +85,8 @@ The view doesn't know about WebSockets. The model doesn't know about React.
 ## React components
 
 ```tsx
+import { useState } from 'react';
 import 'valuse/react';
-import { value } from 'valuse';
 
 function WatchlistTable() {
   const symbols = watchlist.useKeys();
@@ -150,8 +150,9 @@ function StockRow({ symbol }: { symbol: string }) {
 }
 
 function AddSymbol() {
-  const input = value('');
-  const [text, setText] = input.use();
+  // Local form input — useState is the right tool. A new value() per render
+  // would reset on every keystroke.
+  const [text, setText] = useState('');
 
   const add = () => {
     const sym = text.trim().toUpperCase();
@@ -216,9 +217,9 @@ function VirtualWatchlist() {
 }
 ```
 
-Scroll down — the async derivation runs and the WebSocket opens. Scroll past —
-the instance becomes unused and `onCleanup` closes it. No `useEffect`, no
-cleanup logic in the component. The model handles it.
+Scroll down, the async derivation runs and the WebSocket opens. Scroll past, the
+instance becomes unused and `onCleanup` closes it. No `useEffect`, no cleanup
+logic in the component. The model handles it.
 
 ## How this looks in Zustand
 
@@ -243,7 +244,7 @@ function StockRow({ symbol }: { symbol: string }) {
 
 The WebSocket lifecycle is now a React concern. It lives inside `useEffect`,
 coupled to component mount/unmount. Testing it means rendering React components.
-Reusing it outside React means extracting it into a separate system — which is
+Reusing it outside React means extracting it into a separate system, which is
 what ValUse gives you out of the box.
 
 ## How this looks in Jotai

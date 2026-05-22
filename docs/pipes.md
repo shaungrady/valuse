@@ -278,12 +278,12 @@ each other.
 
 The full pipeline for a value with pipes and a comparator:
 
-1. **`.set(raw)`** — raw input enters
-2. **Sync pipes** — transform left to right (up to the first factory)
-3. **Factory pipe** — receives transformed input, calls `set()` when ready
-4. **Remaining sync pipes** — run after the factory's `set()`
-5. **`.compareUsing()`** — compared against current stored value
-6. **Write** — if different, the signal updates and subscribers fire
+1. **`.set(raw)`**: raw input enters.
+2. **Sync pipes**: transform left to right (up to the first factory).
+3. **Factory pipe**: receives transformed input, calls `set()` when ready.
+4. **Remaining sync pipes**: run after the factory's `set()`.
+5. **`.compareUsing()`**: compared against current stored value.
+6. **Write**: if different, the signal updates and subscribers fire.
 
 Comparison always runs on the final, fully-transformed value.
 

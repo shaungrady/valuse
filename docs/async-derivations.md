@@ -175,7 +175,7 @@ messages: async ({ scope, set, onCleanup }) => {
 
 You can register multiple cleanup functions. They run in registration order. For
 scope-level cleanup patterns (timers, event listeners), see
-[Lifecycle — Cleanup patterns](lifecycle.md#cleanup-patterns).
+[Lifecycle: Cleanup patterns](lifecycle.md#cleanup-patterns).
 
 ## Dependency tracking
 
@@ -236,6 +236,8 @@ long-running process. This is natural for polling, WebSocket streams, or any
 open-ended data source:
 
 ```ts
+import { asyncDelay } from 'valuse/utils';
+
 const ticker = valueScope({
   symbol: value<string>(),
 
@@ -245,7 +247,7 @@ const ticker = valueScope({
       const res = await fetch(`/api/price/${sym}`, { signal });
       const data = await res.json();
       if (!signal.aborted) set(data.price);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await asyncDelay({ ms: 1000, signal });
     }
   },
 });

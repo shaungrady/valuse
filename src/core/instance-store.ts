@@ -304,8 +304,18 @@ export class InstanceStore {
 	 * would still mutate the disposed slot's signal and surface that
 	 * change to any consumer subscribed via a path other than the
 	 * instance's own disposers (e.g. an external `valueRef`).
+	 *
+	 * @param options.skipBeforeChange - skip the `beforeChange` hook. Used by
+	 *   async-derivation result writes, which aren't user mutations and so
+	 *   shouldn't be veto-able. `onChange` still fires so consumers can
+	 *   react to computed results (e.g. hydrate collections from a fetched
+	 *   payload).
 	 */
-	_writeToSignal(slot: number, value: unknown): void {
+	_writeToSignal(
+		slot: number,
+		value: unknown,
+		options?: { skipBeforeChange?: boolean },
+	): void {
 		if (this.destroyed) return;
 		const meta = this.definition.slots[slot]!;
 		const previous = this.signals[slot]!.peek();
@@ -337,7 +347,11 @@ export class InstanceStore {
 		};
 
 		// beforeChange — synchronous, can prevent
-		if (this.beforeChangeHook && this.#instanceRoot) {
+		if (
+			!options?.skipBeforeChange &&
+			this.beforeChangeHook &&
+			this.#instanceRoot
+		) {
 			const { changes, changesByScope } = this.#buildChangeContext([change]);
 			// `prevented` is mutated inside the `prevent` callback, but TS
 			// narrows it to `false` for the post-call check. Use a ref to keep

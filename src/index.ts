@@ -62,6 +62,10 @@ export type {
 	MapDefinition,
 	ExtendDef,
 	ScopeDollarMethods,
+	SyncDerivationContext,
+	AsyncDerivationContext,
+	DerivationScope,
+	LifecycleHookContext,
 } from './core/scope-types.js';
 
 // --- React bridge ---

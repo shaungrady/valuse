@@ -1,0 +1,17 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"rootDir": ".",
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"sourceMap": false,
+		"paths": {
+			"valuse": ["./src/index.ts"],
+			"valuse/react": ["./src/react.ts"],
+			"valuse/utils": ["./src/utils.ts"],
+			"valuse/middleware": ["./src/middleware.ts"]
+		}
+	},
+	"include": ["examples/src", "src"]
+}

@@ -226,4 +226,4 @@ upstream values change but the derived result stays the same, there is no
 re-render.
 
 For async derivations with loading states, see
-[Async Derivations — React integration](async-derivations.md#react-integration).
+[Async Derivations: React integration](async-derivations.md#react-integration).

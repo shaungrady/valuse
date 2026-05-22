@@ -159,6 +159,8 @@ function withTimestamps<T extends Record<string, unknown>>(
     },
     {
       onChange: ({ scope }) => {
+        // The `T` generic doesn't know about the fields this middleware
+        // adds, so the cast is the price of staying generic over the base.
         (scope as any).updatedAt.set(Date.now());
       },
     },

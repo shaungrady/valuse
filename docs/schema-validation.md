@@ -415,8 +415,8 @@ function SubmitButton() {
 
 ## `$getValidation` / `$useValidation`
 
-When a boolean isn't enough — typically because you want to render errors next
-to inputs or in a summary banner — every scope instance also exposes
+When a boolean isn't enough (typically because you want to render errors next to
+inputs or in a summary banner), every scope instance also exposes
 `$getValidation()` and `$useValidation()`. These return the full aggregated
 result:
 
@@ -458,7 +458,7 @@ Every issue surfaces with a scope-relative `path` following these rules:
 
 `$getValidation()`'s `isValid` is just `issues.length === 0`, so the boolean and
 the issue list never disagree. The lighter-weight `$getIsValid()` is still
-useful when you only need the gate — it short-circuits on the first failure and
+useful when you only need the gate; it short-circuits on the first failure and
 skips issue construction.
 
 **Deduplication.** A `validate` hook issue routed to a field via its `path`

@@ -3,38 +3,87 @@ import { ValueSet } from './value-set.js';
 import { ValueMap } from './value-map.js';
 
 /**
+ * The runtime field type a `valueRef` becomes on a scope instance.
+ *
+ * {@link valueScope} resolves the ref when an instance is built and attaches
+ * the underlying source directly to the instance. For factory refs
+ * (`valueRef(() => createSomething())`) the field is the factory's return
+ * type; for non-factory refs the field is the source itself.
+ *
+ * @typeParam TSource - the source type passed to `valueRef()`.
+ */
+export type ResolvedRef<TSource> = TSource extends () => infer R ? R : TSource;
+
+/**
+ * What `valueRef(source).get()` returns. Mirrors the resolution logic in
+ * `createRefFromSource`:
+ *
+ * - `Value<In, Out>` → `Out`
+ * - `ValueSet<T>` → `Set<T>`
+ * - `ValueMap<K, V>` → `Map<K, V>`
+ * - anything with `$get()` (scope instance) → its `$get()` result
+ * - anything with `.get()` → its `.get()` result
+ * - factory `() => T` → `T`
+ * - otherwise → the source itself
+ *
+ * @typeParam TSource - the source type passed to `valueRef()`.
+ */
+export type RefValue<TSource> =
+	TSource extends Value<unknown, infer Out> ? Out
+	: TSource extends ValueSet<infer T> ? Set<T>
+	: TSource extends ValueMap<infer K, infer V> ? Map<K, V>
+	: TSource extends { $get(): infer R } ? R
+	: TSource extends { get(): infer R } ? R
+	: TSource extends () => infer R ? R
+	: TSource;
+
+/**
  * A read-only reference to an external reactive source.
  * Used inside scope definitions to share state across instances.
  *
  * @remarks
- * A `ValueRef` allows a scope to read from an external reactive source (like a `Value`,
- * `ValueSet`, or another scope instance) without copying the state. Every instance of
- * the scope will read from the same underlying source.
+ * A `ValueRef` allows a scope to read from an external reactive source (like
+ * a {@link Value}, {@link ValueSet}, or another scope instance) without
+ * copying the state. Every instance of the scope will read from the same
+ * underlying source (or, for factory refs, get its own per-instance source).
  *
- * @typeParam T - the type returned by `get()`.
+ * On a scope instance, the field is **not** a `ValueRef` wrapper — it is the
+ * resolved source directly. Use the {@link ResolvedRef} helper to compute
+ * the instance field type from a source type.
+ *
+ * @typeParam TSource - the source type passed to `valueRef()`.
  *
  * @see {@link valueRef} factory function for creating instances.
  */
-export class ValueRef<T> {
-	readonly #getter: () => T;
+export class ValueRef<TSource> {
+	readonly #getter: () => unknown;
 	/** The original source object. @internal */
-	readonly source: unknown;
+	readonly source: TSource;
 	/** Factory function for per-instance sources. @internal */
 	readonly factory: (() => unknown) | undefined;
 
 	/** @internal */
-	constructor(getter: () => T, source?: unknown, factory?: () => unknown) {
+	constructor(
+		getter: () => unknown,
+		source?: TSource,
+		factory?: () => unknown,
+	) {
 		this.#getter = getter;
-		this.source = source;
+		this.source = source as TSource;
 		this.factory = factory;
 	}
 
 	/**
 	 * Read the referenced value.
+	 *
+	 * For factory refs, `.get()` on the standalone ref returns `undefined`
+	 * because the factory only runs per-scope-instance. Access the resolved
+	 * value via `scope.<field>` on an instance.
+	 *
 	 * @returns the current value from the external source.
 	 */
-	get(): T {
-		return this.#getter();
+	get(): RefValue<TSource> {
+		return this.#getter() as RefValue<TSource>;
 	}
 }
 
@@ -56,16 +105,18 @@ interface DollarGetSource<T = unknown> {
  * Create a ref to a {@link Value}.
  *
  * @param source - the value instance to reference.
- * @returns a ref whose `.get()` returns the current output of the value.
+ * @returns a ref whose `.get()` returns the value's current output.
  */
-export function valueRef<In, Out>(source: Value<In, Out>): ValueRef<Out>;
+export function valueRef<In, Out>(
+	source: Value<In, Out>,
+): ValueRef<Value<In, Out>>;
 /**
  * Create a ref to a {@link ValueSet}.
  *
  * @param source - the value set to reference.
  * @returns a ref whose `.get()` returns the underlying `Set`.
  */
-export function valueRef<T>(source: ValueSet<T>): ValueRef<Set<T>>;
+export function valueRef<T>(source: ValueSet<T>): ValueRef<ValueSet<T>>;
 /**
  * Create a ref to a {@link ValueMap}.
  *
@@ -74,25 +125,26 @@ export function valueRef<T>(source: ValueSet<T>): ValueRef<Set<T>>;
  */
 export function valueRef<K extends string | number, V>(
 	source: ValueMap<K, V>,
-): ValueRef<Map<K, V>>;
+): ValueRef<ValueMap<K, V>>;
 /**
- * Create a ref to a scope instance (has `$get()`).
+ * Create a ref to a scope instance (has `$get()`). The source type is
+ * preserved so the instance field is typed as the scope instance itself,
+ * letting consumers reach into its fields with the usual `.get()` / `.use()`.
  *
  * @param source - the scope instance to reference.
- * @returns a ref whose `.get()` returns the result of the instance's `$get()`.
+ * @returns a ref carrying the scope instance's full type.
  */
-export function valueRef<T>(source: DollarGetSource<T>): ValueRef<T>;
+export function valueRef<S extends DollarGetSource>(source: S): ValueRef<S>;
 /**
  * Create a ref to any reactive source with a `.get()` method.
  *
  * @param source - the reactive source to reference.
- * @returns a ref whose `.get()` delegates to the source's `.get()`.
+ * @returns a ref carrying the source's full type.
  */
-// eslint-disable-next-line @typescript-eslint/unified-signatures
-export function valueRef<T>(source: ReactiveSource<T>): ValueRef<T>;
+export function valueRef<S extends ReactiveSource>(source: S): ValueRef<S>;
 /**
  * Create a ref from a factory function. Each scope instance calls the factory
- * to get its own source.
+ * to get its own source. The instance field is typed as the factory's return.
  *
  * @param factory - a function that returns a reactive source.
  * @returns a ref that will be instantiated per scope instance.
@@ -104,8 +156,7 @@ export function valueRef<T>(source: ReactiveSource<T>): ValueRef<T>;
  * });
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/unified-signatures
-export function valueRef<T>(factory: () => T): ValueRef<T>;
+export function valueRef<T>(factory: () => T): ValueRef<() => T>;
 // Implementation
 export function valueRef(source: unknown): ValueRef<unknown> {
 	if (typeof source === 'function' && !isReactiveSource(source)) {

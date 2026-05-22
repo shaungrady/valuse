@@ -187,7 +187,7 @@ batchSets(() => {
 
 Even without explicit `batchSets`, assignments in the same synchronous turn are
 batched because `onChange` fires on a microtask. For more on batching semantics,
-see [Reactive Values — Batching writes](reactive-values.md#batching-writes).
+see [Reactive Values: Batching writes](reactive-values.md#batching-writes).
 
 `beforeChange` is not batched. It fires once per `.set()` call, synchronously,
 before the write. This is intentional: prevention decisions need to happen

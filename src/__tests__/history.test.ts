@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { value } from '../core/value.js';
 import { valueScope } from '../core/value-scope.js';
 import { withHistory } from '../middleware/history.js';
+import { withDevtools } from '../middleware/devtools.js';
+import { withPersistence } from '../middleware/persistence/persistence.js';
+import { localStorageAdapter } from '../middleware/persistence/local-storage-adapter.js';
 
 describe('withHistory', () => {
 	it('undo restores the previous value', () => {
@@ -16,14 +19,14 @@ describe('withHistory', () => {
 		instance.count.set(2);
 		instance.name.set('Bob');
 
-		instance.undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(2);
 		expect(instance.name.get()).toBe('Alice');
 
-		instance.undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(1);
 
-		instance.undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(0);
 	});
 
@@ -35,13 +38,13 @@ describe('withHistory', () => {
 		instance.count.set(1);
 		instance.count.set(2);
 
-		instance.undo();
-		instance.undo();
+		instance.$undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(0);
 
-		instance.redo();
+		instance.$redo();
 		expect(instance.count.get()).toBe(1);
-		instance.redo();
+		instance.$redo();
 		expect(instance.count.get()).toBe(2);
 	});
 
@@ -50,20 +53,20 @@ describe('withHistory', () => {
 		const undoable = withHistory(scope);
 		const instance = undoable.create({ count: 0 });
 
-		expect(instance.canUndo).toBe(false);
-		expect(instance.canRedo).toBe(false);
+		expect(instance.$canUndo).toBe(false);
+		expect(instance.$canRedo).toBe(false);
 
 		instance.count.set(1);
-		expect(instance.canUndo).toBe(true);
-		expect(instance.canRedo).toBe(false);
+		expect(instance.$canUndo).toBe(true);
+		expect(instance.$canRedo).toBe(false);
 
-		instance.undo();
-		expect(instance.canUndo).toBe(false);
-		expect(instance.canRedo).toBe(true);
+		instance.$undo();
+		expect(instance.$canUndo).toBe(false);
+		expect(instance.$canRedo).toBe(true);
 
-		instance.redo();
-		expect(instance.canUndo).toBe(true);
-		expect(instance.canRedo).toBe(false);
+		instance.$redo();
+		expect(instance.$canUndo).toBe(true);
+		expect(instance.$canRedo).toBe(false);
 	});
 
 	it('undo at the beginning is a no-op', () => {
@@ -72,7 +75,7 @@ describe('withHistory', () => {
 		const instance = undoable.create({ count: 0 });
 
 		expect(() => {
-			instance.undo();
+			instance.$undo();
 		}).not.toThrow();
 		expect(instance.count.get()).toBe(0);
 	});
@@ -84,7 +87,7 @@ describe('withHistory', () => {
 
 		instance.count.set(1);
 		expect(() => {
-			instance.redo();
+			instance.$redo();
 		}).not.toThrow();
 		expect(instance.count.get()).toBe(1);
 	});
@@ -96,14 +99,14 @@ describe('withHistory', () => {
 
 		instance.count.set(1);
 		instance.count.set(2);
-		instance.undo();
-		expect(instance.canRedo).toBe(true);
+		instance.$undo();
+		expect(instance.$canRedo).toBe(true);
 
 		// Fork the history.
 		instance.count.set(99);
-		expect(instance.canRedo).toBe(false);
+		expect(instance.$canRedo).toBe(false);
 
-		instance.undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(1);
 	});
 
@@ -119,13 +122,13 @@ describe('withHistory', () => {
 
 		// Stack should contain only 3 entries now.
 		// Oldest entries dropped — we can undo at most 2 times.
-		instance.undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(3);
-		instance.undo();
+		instance.$undo();
 		expect(instance.count.get()).toBe(2);
 
 		// canUndo is false now: dropped initial {0} and {1}.
-		expect(instance.canUndo).toBe(false);
+		expect(instance.$canUndo).toBe(false);
 	});
 
 	it('clearHistory resets the stack', () => {
@@ -135,11 +138,11 @@ describe('withHistory', () => {
 
 		instance.count.set(1);
 		instance.count.set(2);
-		expect(instance.canUndo).toBe(true);
+		expect(instance.$canUndo).toBe(true);
 
-		instance.clearHistory();
-		expect(instance.canUndo).toBe(false);
-		expect(instance.canRedo).toBe(false);
+		instance.$clearHistory();
+		expect(instance.$canUndo).toBe(false);
+		expect(instance.$canRedo).toBe(false);
 		// Current value is preserved.
 		expect(instance.count.get()).toBe(2);
 	});
@@ -152,9 +155,9 @@ describe('withHistory', () => {
 		instance.count.set(1);
 		instance.count.set(2);
 
-		instance.undo();
+		instance.$undo();
 		// Was at position 2, now at position 1. Redo should still be available.
-		expect(instance.canRedo).toBe(true);
+		expect(instance.$canRedo).toBe(true);
 	});
 
 	it('fields option limits tracked state', () => {
@@ -171,7 +174,7 @@ describe('withHistory', () => {
 		// untracked changes still push a new entry (there is an onChange), but
 		// the recorded snapshot only contains 'tracked'. Undo should restore
 		// tracked without clobbering untracked value.
-		instance.undo();
+		instance.$undo();
 		expect(instance.tracked.get()).toBe(0);
 		// untracked is unaffected since it isn't in the snapshot.
 		expect(instance.untracked.get()).toBe('b');
@@ -192,7 +195,7 @@ describe('withHistory', () => {
 
 		// A single batch window — one undo should go back to the initial ''.
 		vi.advanceTimersByTime(300);
-		instance.undo();
+		instance.$undo();
 		expect(instance.text.get()).toBe('');
 
 		vi.useRealTimers();
@@ -209,9 +212,9 @@ describe('withHistory', () => {
 		instance.text.set('b');
 		vi.advanceTimersByTime(301);
 
-		instance.undo();
+		instance.$undo();
 		expect(instance.text.get()).toBe('a');
-		instance.undo();
+		instance.$undo();
 		expect(instance.text.get()).toBe('');
 
 		vi.useRealTimers();
@@ -242,15 +245,15 @@ describe('withHistory', () => {
 		const instance = undoable.create({ text: '' });
 
 		instance.text.set('a');
-		instance.undo();
+		instance.$undo();
 		expect(instance.text.get()).toBe('');
-		expect(instance.canRedo).toBe(true);
+		expect(instance.$canRedo).toBe(true);
 
 		// Still inside the batch window — but this write should append a new
 		// entry, not overwrite the undone-to state.
 		instance.text.set('b');
-		expect(instance.canUndo).toBe(true);
-		instance.undo();
+		expect(instance.$canUndo).toBe(true);
+		instance.$undo();
 		expect(instance.text.get()).toBe('');
 
 		vi.useRealTimers();
@@ -263,14 +266,14 @@ describe('withHistory', () => {
 
 		instance.count.set(1);
 		instance.count.set(2);
-		expect(instance.canUndo).toBe(true);
+		expect(instance.$canUndo).toBe(true);
 
 		instance.$destroy();
 
 		// After destroy, undo/redo/clearHistory should be removed
-		expect(instance.undo).toBeUndefined();
-		expect(instance.redo).toBeUndefined();
-		expect(instance.clearHistory).toBeUndefined();
+		expect(instance.$undo).toBeUndefined();
+		expect(instance.$redo).toBeUndefined();
+		expect(instance.$clearHistory).toBeUndefined();
 	});
 
 	it('$destroy with pending batch timer clears it', () => {
@@ -289,5 +292,62 @@ describe('withHistory', () => {
 			vi.advanceTimersByTime(300);
 		}).not.toThrow();
 		vi.useRealTimers();
+	});
+
+	describe('composition with other middleware', () => {
+		it('composes under withPersistence (history result is a ScopeTemplate)', () => {
+			localStorage.clear();
+			const base = valueScope({ text: value<string>('') });
+			// withPersistence takes a ScopeTemplate<Def>. Before HistoryTemplate
+			// extended ScopeTemplate, this composition was a type error even
+			// though it worked at runtime. Lock it in.
+			const stacked = withPersistence(withHistory(base), {
+				key: 'history-composition-test',
+				adapter: localStorageAdapter,
+				throttle: 0,
+			});
+			const instance = stacked.create({ text: 'a' });
+
+			expect(instance.text.get()).toBe('a');
+			instance.text.set('b');
+			expect(instance.$canUndo).toBe(true);
+
+			instance.$undo();
+			expect(instance.text.get()).toBe('a');
+
+			instance.$destroy();
+			localStorage.clear();
+		});
+
+		it('composes under withDevtools', () => {
+			const base = valueScope({ text: value<string>('') });
+			const stacked = withDevtools(withHistory(base), { name: 'composed' });
+			const instance = stacked.create({ text: 'a' });
+
+			instance.text.set('b');
+			expect(instance.$canUndo).toBe(true);
+			instance.$undo();
+			expect(instance.text.get()).toBe('a');
+			instance.$destroy();
+		});
+
+		it('three-layer stack: withDevtools(withPersistence(withHistory(...)))', () => {
+			localStorage.clear();
+			const base = valueScope({ text: value<string>('') });
+			const stacked = withDevtools(
+				withPersistence(withHistory(base), {
+					key: 'history-three-layer',
+					adapter: localStorageAdapter,
+					throttle: 0,
+				}),
+				{ name: 'three-layer' },
+			);
+			const instance = stacked.create({ text: 'a' });
+
+			instance.text.set('b');
+			expect(instance.$canUndo).toBe(true);
+			instance.$destroy();
+			localStorage.clear();
+		});
 	});
 });

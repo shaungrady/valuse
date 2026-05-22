@@ -389,4 +389,83 @@ describe('async derivations', () => {
 			expect(cleanup).toHaveBeenCalledOnce();
 		});
 	});
+
+	describe('onChange visibility', () => {
+		it('fires onChange when an async derivation resolves', async () => {
+			const onChange = vi.fn();
+			const scope = valueScope(
+				{
+					id: value<string>(),
+					data: async ({ scope }: { scope: any }) => {
+						scope.id.use();
+						await Promise.resolve();
+						return { name: 'resolved' };
+					},
+				},
+				{ onChange },
+			);
+			scope.create({ id: 'x' });
+
+			await flush();
+			expect(onChange).toHaveBeenCalled();
+			const calls = onChange.mock.calls as [
+				{ changes: Set<{ path: string }> },
+			][];
+			const allPaths = calls.flatMap(([ctx]) =>
+				[...ctx.changes].map((c) => c.path),
+			);
+			expect(allPaths).toContain('data');
+		});
+
+		it('async resolution is atomic: downstream derivations match async state', async () => {
+			// Regression: previously the async path wrote the data signal and
+			// the asyncState signal separately, so a React component reading
+			// both could observe `status === 'set'` while a downstream sync
+			// derivation was still showing its pre-resolved value.
+			const scope = valueScope({
+				id: value<string>(),
+				data: async ({ scope }: { scope: any }) => {
+					scope.id.use();
+					await Promise.resolve();
+					return [1, 2, 3];
+				},
+				count: ({ scope }: { scope: any }) =>
+					(scope.data.use() as number[] | undefined)?.length ?? 0,
+			});
+			const inst = scope.create({ id: 'x' });
+
+			await flush();
+
+			// Both must reflect the resolved state at the same observation.
+			expect(inst.data.getAsync().status).toBe('set');
+			expect(inst.count.get()).toBe(3);
+		});
+
+		it('async writes skip beforeChange (computed, not user mutation)', async () => {
+			const beforeChange = vi.fn();
+			const scope = valueScope(
+				{
+					id: value<string>(),
+					data: async ({ scope }: { scope: any }) => {
+						scope.id.use();
+						await Promise.resolve();
+						return 'resolved';
+					},
+				},
+				{ beforeChange },
+			);
+			scope.create({ id: 'x' });
+
+			await flush();
+
+			// beforeChange should NOT see 'data' — async results aren't user mutations.
+			const calls = beforeChange.mock.calls as [
+				{ changes: Set<{ path: string }> },
+			][];
+			const paths = calls.flatMap(([ctx]) =>
+				[...ctx.changes].map((c) => c.path),
+			);
+			expect(paths).not.toContain('data');
+		});
+	});
 });

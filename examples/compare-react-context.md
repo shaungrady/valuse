@@ -1,6 +1,6 @@
 # ValUse vs React Context
 
-React Context is the "no library" baseline — `useReducer` + `createContext`, no
+React Context is the "no library" baseline: `useReducer` + `createContext`, no
 external dependencies. It works, but it was designed for infrequently changing
 values (theme, locale, auth), not fine-grained state management. Using it for
 structured, frequently updating data exposes fundamental limitations around
@@ -29,7 +29,7 @@ All examples below build the same user model: `firstName`, `lastName`, `email`,
 
 ## Define a model
 
-**ValUse** — fields and derivations in one place:
+**ValUse**: fields and derivations in one place:
 
 ```ts
 const user = valueScope({
@@ -42,7 +42,7 @@ const user = valueScope({
 });
 ```
 
-**Context** — type alias, then a reducer to come:
+**Context**: type alias, then a reducer to come:
 
 ```ts
 type User = {
@@ -111,7 +111,7 @@ action type, a new reducer case, and a new spread.
 
 Track `lastUpdated` whenever any field changes.
 
-**ValUse** — one hook, declared alongside the model:
+**ValUse**: one hook, declared alongside the model:
 
 ```ts
 const user = valueScope(
@@ -124,7 +124,7 @@ const user = valueScope(
 );
 ```
 
-**Context** — duplicated in every reducer case:
+**Context**: duplicated in every reducer case:
 
 ```ts
 case 'SET_FIELD':
@@ -146,7 +146,7 @@ Every reducer case that modifies a user must remember to update `lastUpdated`.
 
 Editing one user's email must not re-render other rows.
 
-**ValUse** — automatic. Each field `.use()` subscribes to that field only:
+**ValUse**: automatic. Each field `.use()` subscribes to that field only:
 
 ```tsx
 function UserRow({ id }: { id: string }) {
@@ -156,7 +156,7 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-**Context** — requires `memo` and split contexts. Even then, isolation is
+**Context**: requires `memo` and split contexts. Even then, isolation is
 incomplete:
 
 ```tsx
@@ -174,7 +174,7 @@ const UserRow = memo(function UserRow({ id }: { id: string }) {
 `memo` prevents re-renders from parent props, but `useContext(UsersContext)`
 subscribes to the entire state object. Any change to _any_ user triggers a
 re-render in _every_ row. True per-row isolation requires splitting into
-per-user contexts — a provider per row — which is impractical.
+per-user contexts (a provider per row), which is impractical.
 
 ---
 
@@ -182,7 +182,7 @@ per-user contexts — a provider per row — which is impractical.
 
 Fetch a user's profile by email. Abort the previous request when email changes.
 
-**ValUse** — a derivation that happens to be async:
+**ValUse**: a derivation that happens to be async:
 
 ```ts
 const user = valueScope({
@@ -196,7 +196,7 @@ const user = valueScope({
 
 Abort is automatic. Re-fetch is reactive.
 
-**Context** — manual AbortController inside `useEffect`:
+**Context**: manual AbortController inside `useEffect`:
 
 ```tsx
 useEffect(() => {
@@ -240,13 +240,13 @@ alongside `users`. All per component.
 
 Derive `avatarUrl` from the async `profile`.
 
-**ValUse** — just another derivation:
+**ValUse**: just another derivation:
 
 ```ts
 avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
 ```
 
-**Context** — inline in the component:
+**Context**: inline in the component:
 
 ```tsx
 const avatarUrl =
@@ -268,7 +268,7 @@ const tableA = user.createMap();
 const tableB = user.createMap();
 ```
 
-**Context** — already scoped to a provider, but everything else must be
+**Context**: already scoped to a provider, but everything else must be
 duplicated or parameterized:
 
 ```tsx
@@ -292,7 +292,7 @@ action types, and contexts are all tightly coupled to the component tree.
 
 ## Type safety
 
-**ValUse** — field access is fully type-checked via dot-access on the instance:
+**ValUse**: field access is fully type-checked via dot-access on the instance:
 
 ```ts
 user.email.get(); // string
@@ -301,7 +301,7 @@ user.emal; // TS error — typo caught
 user.displayName.set('x'); // TS error — derived fields have no set()
 ```
 
-**Context** — `dispatch({ field: 'email' })` is only as safe as the `Action`
+**Context**: `dispatch({ field: 'email' })` is only as safe as the `Action`
 union. String literal unions help, but the reducer typically uses `keyof` with
 casts, and there's no compile-time distinction between settable and derived
 fields.
@@ -312,8 +312,7 @@ fields.
 
 Add tracking to any scope without modifying the original.
 
-**ValUse** — `.extend()` returns a new scope with additional state and
-lifecycle:
+**ValUse**: `.extend()` returns a new scope with additional state and lifecycle:
 
 ```ts
 const withTracking = (scope) =>
@@ -334,7 +333,7 @@ const trackedUser = withTracking(user);
 const trackedTodo = withTracking(todo);
 ```
 
-**Context** — higher-order reducer:
+**Context**: higher-order reducer:
 
 ```ts
 type Tracked<S> = S & { lastUpdated: number; changeCount: number };
@@ -364,7 +363,7 @@ const [state, dispatch] = useReducer(trackedReducer, {
 Higher-order reducers are a clean pattern borrowed from Redux. But the caller
 must provide the initial tracking fields, action type discrimination can break
 down when composing reducers (often leading to `as` casts), and each composition
-layer creates a new object even if nothing changed — defeating React's bailout
+layer creates a new object even if nothing changed, defeating React's bailout
 optimization without manual `Object.is` checks.
 
 ---
@@ -374,7 +373,7 @@ optimization without manual `Object.is` checks.
 Create a WebSocket on init, announce presence when observed, clean up on
 destroy.
 
-**ValUse** — two hooks with scoped `onCleanup`, declared alongside the model:
+**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
 
 ```ts
 const chatRoom = valueScope(
@@ -400,7 +399,7 @@ rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
 rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
 ```
 
-**Context** — `useEffect` tied to component lifecycle:
+**Context**: `useEffect` tied to component lifecycle:
 
 ```tsx
 function ChatRoom({ roomId }: { roomId: string }) {
@@ -424,9 +423,9 @@ function ChatRoom({ roomId }: { roomId: string }) {
 }
 ```
 
-React's `useEffect` is the lifecycle mechanism — setup on mount, cleanup on
+React's `useEffect` is the lifecycle mechanism: setup on mount, cleanup on
 unmount. This ties lifecycle to the component tree, not the data. If you remove
-a room from state, nothing automatically cleans up — cleanup only fires when the
+a room from state, nothing automatically cleans up; cleanup only fires when the
 component rendering that room unmounts. Init and cleanup logic live in entirely
 different places (reducer vs. effect), and there's no "start when first
 subscribed, stop when last unsubscribes" without manual reference counting.
@@ -438,7 +437,7 @@ subscribed, stop when last unsubscribes" without manual reference counting.
 A person with tags that derive from a shared global set. A board where each
 instance gets its own column collection.
 
-**ValUse** — `valueRef` for shared state, factory refs for per-instance state:
+**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
 
 ```ts
 const globalTags = valueSet<string>(['admin', 'root']);
@@ -466,7 +465,7 @@ const b = board.create({ boardId: 'b' });
 // a and b each have independent column maps
 ```
 
-**Context** — multiple providers, consumed separately:
+**Context**: multiple providers, consumed separately:
 
 ```tsx
 const GlobalTagsContext = createContext<Set<string>>(new Set());
@@ -484,7 +483,7 @@ function PersonCard({ person }: { person: Person }) {
 ```
 
 Multiple contexts work, but every consumer of `GlobalTagsContext` re-renders
-when any tag changes — there's no selector mechanism. Derived state that spans
+when any tag changes; there's no selector mechanism. Derived state that spans
 contexts must be computed inline with `useMemo`, duplicated wherever you need
 it. For per-instance nested state, you'd need a separate `useReducer` + provider
 per board, with no shared model definition between them.

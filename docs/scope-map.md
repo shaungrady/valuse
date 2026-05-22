@@ -223,4 +223,4 @@ Destroying the collection (or letting it be garbage collected) does not
 automatically destroy instances. Always call `.clear()` or `.delete()` to
 trigger proper cleanup. For per-instance child collections owned by a parent
 scope, see
-[Refs — Per-instance child collections](refs.md#per-instance-child-collections).
+[Refs: Per-instance child collections](refs.md#per-instance-child-collections).

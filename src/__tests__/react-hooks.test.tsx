@@ -864,4 +864,137 @@ describe('React hooks via .use() (v2)', () => {
 			expect(screen.getByTestId('val').textContent).toBe('Hi Bob');
 		});
 	});
+
+	// Standalone primitives outside scopes should still be reactive in React.
+	// The contract is the same as field-form usage: subscribe via
+	// useSyncExternalStore, return [value, stable-setter].
+	describe('Standalone primitives via .use()', () => {
+		it('Value.use() re-renders when the value changes', () => {
+			const name = value('Alice');
+			function App() {
+				const [n] = name.use();
+				return <span data-testid="val">{n}</span>;
+			}
+			render(<App />);
+			expect(screen.getByTestId('val').textContent).toBe('Alice');
+
+			act(() => name.set('Bob'));
+			expect(screen.getByTestId('val').textContent).toBe('Bob');
+		});
+
+		it('Value.use() setter is identity-stable across renders', () => {
+			const name = value('Alice');
+			const setters: unknown[] = [];
+			function App() {
+				const [, setName] = name.use();
+				setters.push(setName);
+				return <span data-testid="val">{name.get()}</span>;
+			}
+			const { rerender } = render(<App />);
+			rerender(<App />);
+			act(() => name.set('Bob'));
+			expect(setters.length).toBeGreaterThanOrEqual(2);
+			// Every setter reference points to the same function.
+			for (const s of setters) expect(s).toBe(setters[0]);
+		});
+
+		it('Value.use() setter writes back through the pipeline', () => {
+			const count = value(0);
+			function App() {
+				const [n, setN] = count.use();
+				return (
+					<button data-testid="btn" onClick={() => setN((prev) => prev + 1)}>
+						{n}
+					</button>
+				);
+			}
+			render(<App />);
+			expect(screen.getByTestId('btn').textContent).toBe('0');
+
+			act(() => screen.getByTestId('btn').click());
+			expect(screen.getByTestId('btn').textContent).toBe('1');
+		});
+
+		it('valueSet.use() re-renders when the set changes', () => {
+			const tags = valueSet<string>(['a']);
+			function App() {
+				const [s] = tags.use();
+				return <span data-testid="val">{[...s].join(',')}</span>;
+			}
+			render(<App />);
+			expect(screen.getByTestId('val').textContent).toBe('a');
+
+			act(() => tags.add('b'));
+			expect(screen.getByTestId('val').textContent).toBe('a,b');
+		});
+
+		it('valueMap.use() re-renders on whole-map change', () => {
+			const scores = valueMap<string, number>([['a', 1]]);
+			function App() {
+				const [m] = scores.use();
+				return <span data-testid="val">{m.size}</span>;
+			}
+			render(<App />);
+			expect(screen.getByTestId('val').textContent).toBe('1');
+
+			act(() => scores.set((draft) => draft.set('b', 2)));
+			expect(screen.getByTestId('val').textContent).toBe('2');
+		});
+
+		it('valueMap.use(key) re-renders only on that key', () => {
+			const scores = valueMap<string, number>([
+				['a', 1],
+				['b', 2],
+			]);
+			let aRenders = 0;
+			function ARow() {
+				aRenders++;
+				const [v] = scores.use('a');
+				return <span data-testid="a">{v ?? 'unset'}</span>;
+			}
+			render(<ARow />);
+			expect(screen.getByTestId('a').textContent).toBe('1');
+			const baseline = aRenders;
+
+			act(() => scores.set((draft) => draft.set('b', 99)));
+			expect(aRenders).toBe(baseline); // 'a' didn't change
+
+			act(() => scores.set((draft) => draft.set('a', 42)));
+			expect(screen.getByTestId('a').textContent).toBe('42');
+			expect(aRenders).toBeGreaterThan(baseline);
+		});
+
+		it('valueArray.use() re-renders when the array changes', () => {
+			const items = valueArray<string>(['a']);
+			function App() {
+				const [arr] = items.use();
+				return <span data-testid="val">{arr.join(',')}</span>;
+			}
+			render(<App />);
+			expect(screen.getByTestId('val').textContent).toBe('a');
+
+			act(() => items.push('b'));
+			expect(screen.getByTestId('val').textContent).toBe('a,b');
+		});
+
+		it('valueArray.use(index) re-renders only on that index', () => {
+			const items = valueArray<string>(['a', 'b']);
+			let firstRenders = 0;
+			function First() {
+				firstRenders++;
+				const [v] = items.use(0);
+				return <span data-testid="first">{v ?? '?'}</span>;
+			}
+			render(<First />);
+			expect(screen.getByTestId('first').textContent).toBe('a');
+			const baseline = firstRenders;
+
+			act(() => items.set(1, 'B'));
+			expect(firstRenders).toBe(baseline); // index 0 didn't change
+
+			act(() => items.set(0, 'A'));
+			expect(screen.getByTestId('first').textContent).toBe('A');
+			expect(firstRenders).toBeGreaterThan(baseline);
+		});
+	});
 });

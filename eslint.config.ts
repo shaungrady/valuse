@@ -150,6 +150,10 @@ export default tseslint.config(
 		},
 	},
 	{
-		ignores: ['dist/', 'node_modules/', '*.config.*'],
+		// Examples are user-facing demo code that'll be rewritten during
+		// the variadic-scope refactor (#54); linting them now would gate
+		// on cleanup that's about to be thrown away. Typecheck still
+		// runs via `pnpm typecheck:examples`.
+		ignores: ['dist/', 'node_modules/', '*.config.*', 'examples/'],
 	},
 );

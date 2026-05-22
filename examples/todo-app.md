@@ -1,7 +1,7 @@
 # Example: Todo App
 
 A classic todo app, built with ValUse scopes. Each todo is a structured reactive
-model — not a bag of atoms or a slice of a global store.
+model, not a bag of atoms or a slice of a global store.
 
 ## The model
 
@@ -54,6 +54,7 @@ updates the existing one if it does. No `addTodo` action needed.
 ## React components
 
 ```tsx
+import { useState } from 'react';
 import { value, valueScope } from 'valuse';
 import { pipeEnum } from 'valuse/utils';
 
@@ -112,7 +113,9 @@ function TodoItem({ id }: { id: string }) {
 }
 
 function AddTodo() {
-  const [text, setText] = value('').use();
+  // Local form input — useState is the right tool. A new value() per render
+  // would reset on every keystroke.
+  const [text, setText] = useState('');
 
   const add = () => {
     if (!text.trim()) return;
@@ -243,6 +246,6 @@ const todoAtom = atomFamily((id: string) =>
 ```
 
 Each field access requires deriving a new atom or using `selectAtom`. There's no
-concept of "a todo" as a unit — it's atoms all the way down. Adding lifecycle
+concept of "a todo" as a unit; it's atoms all the way down. Adding lifecycle
 (auto-persist, timestamps) means wrapping atoms in custom hooks with
 `useEffect`.

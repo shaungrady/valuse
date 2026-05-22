@@ -1,8 +1,8 @@
 # ValUse vs MobX
 
-MobX is the closest philosophical match — observable objects with computed
-values and reactions. It pioneered fine-grained reactivity in React. But MobX
-uses classes, decorators, and proxy magic where ValUse uses plain objects and
+MobX is the closest philosophical match: observable objects with computed values
+and reactions. It pioneered fine-grained reactivity in React. But MobX uses
+classes, decorators, and proxy magic where ValUse uses plain objects and
 explicit `use()` calls. And MobX has no built-in collection primitive and no
 async derivation with abort. It does have lifecycle hooks
 (`onBecomeObserved`/`onBecomeUnobserved`) and `reaction()` for responding to
@@ -31,7 +31,7 @@ All examples below build the same user model: `firstName`, `lastName`, `email`,
 
 ## Define a model
 
-**ValUse** — fields and derivations in one place, plain object:
+**ValUse**: fields and derivations in one place, plain object:
 
 ```ts
 const user = valueScope({
@@ -44,7 +44,7 @@ const user = valueScope({
 });
 ```
 
-**MobX** — class with decorators or `makeObservable`:
+**MobX**: class with decorators or `makeObservable`:
 
 ```ts
 class UserModel {
@@ -64,7 +64,7 @@ class UserModel {
 ```
 
 MobX's class approach is familiar, but it ties your model to a class hierarchy.
-`makeAutoObservable` uses proxies under the hood — property access is implicitly
+`makeAutoObservable` uses proxies under the hood; property access is implicitly
 tracked, which is powerful but can be surprising when passing observables to
 non-MobX code.
 
@@ -86,7 +86,7 @@ users.delete('alice');
 users.has('bob');
 ```
 
-**MobX** — observable map with class instantiation:
+**MobX**: observable map with class instantiation:
 
 ```ts
 const users = observable.map<string, UserModel>();
@@ -106,7 +106,7 @@ users.has('bob');
 
 MobX has `observable.map` and the class constructor can accept partial data, so
 the per-entry API is similar. The difference is that MobX requires you to define
-the class, its constructor, and `makeAutoObservable` call — ValUse's `createMap`
+the class, its constructor, and `makeAutoObservable` call. ValUse's `createMap`
 derives the collection API from the scope definition with no extra code.
 
 ---
@@ -115,7 +115,7 @@ derives the collection API from the scope definition with no extra code.
 
 Track `lastUpdated` whenever any field changes.
 
-**ValUse** — one hook, declared alongside the model:
+**ValUse**: one hook, declared alongside the model:
 
 ```ts
 const user = valueScope(
@@ -128,7 +128,7 @@ const user = valueScope(
 );
 ```
 
-**MobX** — `reaction()` or `autorun()`, set up separately:
+**MobX**: `reaction()` or `autorun()`, set up separately:
 
 ```ts
 class UserModel {
@@ -158,7 +158,7 @@ remembering to add it to the reaction list too.
 
 Editing one user's email must not re-render other rows.
 
-**ValUse** — automatic. Each field `.use()` subscribes to that field only:
+**ValUse**: automatic. Each field `.use()` subscribes to that field only:
 
 ```tsx
 function UserRow({ id }: { id: string }) {
@@ -168,7 +168,7 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-**MobX** — automatic with `observer()`, but requires wrapping every component:
+**MobX**: automatic with `observer()`, but requires wrapping every component:
 
 ```tsx
 const UserRow = observer(function UserRow({ id }: { id: string }) {
@@ -184,7 +184,7 @@ const UserRow = observer(function UserRow({ id }: { id: string }) {
 });
 ```
 
-MobX's proxy tracking gives excellent per-row isolation — but only if you wrap
+MobX's proxy tracking gives excellent per-row isolation, but only if you wrap
 the component with `observer()`. Forget it and the component silently stops
 reacting.
 
@@ -194,7 +194,7 @@ reacting.
 
 Fetch a user's profile by email. Abort the previous request when email changes.
 
-**ValUse** — a derivation that happens to be async:
+**ValUse**: a derivation that happens to be async:
 
 ```ts
 const user = valueScope({
@@ -208,7 +208,7 @@ const user = valueScope({
 
 Abort is automatic. Re-fetch is reactive.
 
-**MobX** — `flow()` for async, but abort and re-trigger are manual:
+**MobX**: `flow()` for async, but abort and re-trigger are manual:
 
 ```ts
 class UserModel {
@@ -257,14 +257,14 @@ re-trigger are all manual.
 
 Derive `avatarUrl` from the async `profile`.
 
-**ValUse** — just another derivation. Sees `Profile | undefined`, never a
+**ValUse**: just another derivation. Sees `Profile | undefined`, never a
 promise:
 
 ```ts
 avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
 ```
 
-**MobX** — computed getter reads the observable, but you must handle the loading
+**MobX**: computed getter reads the observable, but you must handle the loading
 state yourself:
 
 ```ts
@@ -273,7 +273,7 @@ get avatarUrl() {
 }
 ```
 
-This works — MobX computeds can read any observable. But there's no type-safe
+This works; MobX computeds can read any observable. But there's no type-safe
 distinction between "not yet loaded" and "loaded with null." You're reading a
 property that might not be populated yet, with no `AsyncState` to tell you why.
 
@@ -290,7 +290,7 @@ const tableA = user.createMap();
 const tableB = user.createMap();
 ```
 
-**MobX** — classes are already per-instance, but you need a collection wrapper:
+**MobX**: classes are already per-instance, but you need a collection wrapper:
 
 ```ts
 class UserStore {
@@ -306,14 +306,14 @@ const storeB = new UserStore();
 ```
 
 MobX classes are naturally multi-instance, but you end up building your own
-collection class with factory logic — which is essentially what `createMap()`
+collection class with factory logic, which is essentially what `createMap()`
 does out of the box.
 
 ---
 
 ## Type safety
 
-**ValUse** — field access is fully type-checked via dot-access on the instance:
+**ValUse**: field access is fully type-checked via dot-access on the instance:
 
 ```ts
 user.email.get(); // string
@@ -322,7 +322,7 @@ user.emal; // TS error — typo caught
 user.displayName.set('x'); // TS error — derived fields have no set()
 ```
 
-**MobX** — direct property access is fully typed:
+**MobX**: direct property access is fully typed:
 
 ```ts
 user.email; // string
@@ -343,8 +343,7 @@ definition.
 
 Add tracking to any scope without modifying the original.
 
-**ValUse** — `.extend()` returns a new scope with additional state and
-lifecycle:
+**ValUse**: `.extend()` returns a new scope with additional state and lifecycle:
 
 ```ts
 const withTracking = (scope) =>
@@ -365,7 +364,7 @@ const trackedUser = withTracking(user);
 const trackedTodo = withTracking(todo);
 ```
 
-**MobX** — class inheritance with `makeObservable`:
+**MobX**: class inheritance with `makeObservable`:
 
 ```ts
 import { makeObservable, observable, action } from 'mobx';
@@ -409,10 +408,10 @@ class TrackedUser extends Tracked {
 }
 ```
 
-MobX supports class inheritance, but `makeAutoObservable` — the convenient API —
+MobX supports class inheritance, but `makeAutoObservable` (the convenient API)
 cannot be used in both a base class and its subclass. You must fall back to
 `makeObservable` with explicit annotations at every level. Each setter must
-manually call `recordUpdate()` — there's no centralized "on any write" hook that
+manually call `recordUpdate()`; there's no centralized "on any write" hook that
 composes across the hierarchy.
 
 ---
@@ -422,7 +421,7 @@ composes across the hierarchy.
 Create a WebSocket on init, announce presence when observed, clean up on
 destroy.
 
-**ValUse** — two hooks with scoped `onCleanup`, declared alongside the model:
+**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
 
 ```ts
 const chatRoom = valueScope(
@@ -448,8 +447,8 @@ rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
 rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
 ```
 
-**MobX** — constructor for init, `onBecomeObserved`/`onBecomeUnobserved` for
-lazy activation, manual `dispose()` for cleanup:
+**MobX**: constructor for init, `onBecomeObserved`/`onBecomeUnobserved` for lazy
+activation, manual `dispose()` for cleanup:
 
 ```ts
 import { makeAutoObservable, onBecomeObserved, onBecomeUnobserved } from 'mobx';
@@ -487,12 +486,12 @@ class ChatRoom {
 }
 ```
 
-MobX has genuine lazy activation support —
+MobX has genuine lazy activation support;
 `onBecomeObserved`/`onBecomeUnobserved` fire when the first observer subscribes
-and when the last detaches. However, there's no built-in `onDestroy` — you
+and when the last detaches. However, there's no built-in `onDestroy`, so you
 implement a `dispose()` method and collect disposers manually. The caller must
 remember to call it. The property names passed to `onBecomeObserved` are strings
-with no compile-time check — a typo silently does nothing.
+with no compile-time check; a typo silently does nothing.
 
 ---
 
@@ -501,7 +500,7 @@ with no compile-time check — a typo silently does nothing.
 A person with tags that derive from a shared global set. A board where each
 instance gets its own column collection.
 
-**ValUse** — `valueRef` for shared state, factory refs for per-instance state:
+**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
 
 ```ts
 const globalTags = valueSet<string>(['admin', 'root']);
@@ -529,7 +528,7 @@ const b = board.create({ boardId: 'b' });
 // a and b each have independent column maps
 ```
 
-**MobX** — constructor injection of shared observables:
+**MobX**: constructor injection of shared observables:
 
 ```ts
 import { makeAutoObservable, observable } from 'mobx';
@@ -559,11 +558,11 @@ const alice = new Person(registry);
 const bob = new Person(registry); // same registry
 ```
 
-MobX handles shared state well — pass shared observables via constructor and
+MobX handles shared state well: pass shared observables via constructor and
 MobX's dependency tracking reacts automatically. `hasSpecialTag` re-derives when
 either `this.tags` or `this.globalTags.tags` changes. The tradeoff is manual
 wiring: you must pass shared instances through constructors or a root store.
-There's no per-instance factory concept — if a `Board` needs its own `columns`
+There's no per-instance factory concept; if a `Board` needs its own `columns`
 store, you instantiate it in the constructor and manage its lifetime yourself.
 
 ---
@@ -774,5 +773,5 @@ const UserRow = observer(function UserRow({ id }: { id: string }) {
 
 Two classes, two `reaction()` setups, a generator-based `flow()` for async with
 manual abort, and `observer()` on every component. MobX is powerful and the
-property access is clean, but the ceremony adds up — especially around async and
+property access is clean, but the ceremony adds up, especially around async and
 lifecycle.

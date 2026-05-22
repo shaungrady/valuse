@@ -5,6 +5,10 @@ reusable template. You define the shape once with `valueScope()`, then call
 `.create()` to produce independent instances. Each instance has its own signals,
 its own derivations, and its own lifecycle.
 
+For composition across scopes, use [`valueRef`](refs.md) to point at live state
+in another scope, and [`.extend()`](extending.md) to layer additional fields and
+hooks onto an existing template.
+
 ## Table of contents
 
 - [Defining a scope](#defining-a-scope)
@@ -138,8 +142,13 @@ bob.$setSnapshot({
 ```
 
 To re-run [lifecycle hooks](lifecycle.md) during a snapshot restore (useful for
-rehydration or undo), pass `{ recreate: true }`. This fires `onDestroy`, applies
-the snapshot, then fires `onCreate` fresh:
+rehydration or undo), pass `{ recreate: true }`. The instance steps through:
+
+1. Aborts the previous `onCreate` signal.
+2. Fires all registered cleanups.
+3. Runs `onDestroy`.
+4. Applies the snapshot.
+5. Runs `onCreate` fresh.
 
 ```ts
 bob.$setSnapshot(savedState, { recreate: true });

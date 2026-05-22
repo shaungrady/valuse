@@ -1,8 +1,9 @@
 # Undo & Redo
 
 `withHistory` adds an undo/redo stack to a scope. It tracks snapshots of value
-fields, exposes `undo()`, `redo()`, `canUndo`, `canRedo`, and `clearHistory()`
-on every instance, and keeps memory bounded with a ring buffer.
+fields, exposes `$undo()`, `$redo()`, `$canUndo`, `$canRedo`, and
+`$clearHistory()` on every instance, and keeps memory bounded with a ring
+buffer.
 
 ```ts
 import { valueScope, value } from 'valuse';
@@ -20,17 +21,17 @@ const doc = editor.create({ title: 'Untitled', body: '' });
 doc.title.set('Draft');
 doc.title.set('Draft (v2)');
 
-doc.canUndo; // true
-doc.undo(); // title: 'Draft'
-doc.undo(); // title: 'Untitled'
-doc.redo(); // title: 'Draft'
+doc.$canUndo; // true
+doc.$undo(); // title: 'Draft'
+doc.$undo(); // title: 'Untitled'
+doc.$redo(); // title: 'Draft'
 ```
 
 ## Table of contents
 
 - [Options](#options)
 - [Instance extensions](#instance-extensions)
-- [Reactive canUndo / canRedo](#reactive-canundo--canredo)
+- [Reactive $canUndo / $canRedo](#reactive-canundo--canredo)
 - [Recording is synchronous](#recording-is-synchronous)
 - [Batched changes](#batched-changes)
 - [Forking the redo stack](#forking-the-redo-stack)
@@ -71,30 +72,32 @@ Each instance returned by the wrapped template has, in addition to the standard
 
 ```ts
 interface HistoryInstance {
-  undo: () => void;
-  redo: () => void;
-  readonly canUndo: boolean;
-  readonly canRedo: boolean;
-  clearHistory: () => void;
+  $undo: () => void;
+  $redo: () => void;
+  readonly $canUndo: boolean;
+  readonly $canRedo: boolean;
+  $clearHistory: () => void;
 }
 ```
 
-- `undo()` and `redo()` restore a previous/next snapshot in one atomic
+- `$undo()` and `$redo()` restore a previous/next snapshot in one atomic
   `$setSnapshot` call. Derivations recompute naturally.
-- `canUndo` and `canRedo` are backed by signals — read them in a derivation and
+- `$canUndo` and `$canRedo` are backed by signals. Read them in a derivation and
   the derivation re-runs when availability changes.
-- `clearHistory()` drops the stack back to the current state. `canUndo` becomes
-  `false` immediately.
+- `$clearHistory()` drops the stack back to the current state. `$canUndo`
+  becomes `false` immediately.
 
-## Reactive canUndo / canRedo
+## Reactive $canUndo / $canRedo
 
-Because `canUndo` / `canRedo` are signal-backed getters, you can wire them
-directly into React components, derivations, or a sibling scope:
+Because `$canUndo` / `$canRedo` are signal-backed getters, you can wire them
+into React components via `$use()` (which subscribes to any change on the
+instance, so the getter stays reactive), or into derivations and sibling scopes:
 
 ```tsx
 function UndoButton({ doc }) {
+  doc.$use(); // subscribe to any change so $canUndo stays current
   return (
-    <button disabled={!doc.use().canUndo} onClick={doc.undo}>
+    <button disabled={!doc.$canUndo} onClick={doc.$undo}>
       Undo
     </button>
   );
@@ -107,7 +110,7 @@ Or in a derivation:
 const editor = withHistory(
   valueScope({
     body: value<string>(''),
-    status: ({ scope }) => (scope.canUndo ? 'dirty' : 'clean'),
+    status: ({ scope }) => (scope.$canUndo ? 'dirty' : 'clean'),
   }),
 );
 ```
@@ -115,15 +118,15 @@ const editor = withHistory(
 ## Recording is synchronous
 
 Unlike `onChange` (which batches on a microtask), history recording is
-synchronous. You can call `undo()` immediately after `.set()`:
+synchronous. You can call `$undo()` immediately after `.set()`:
 
 ```ts
 doc.title.set('A');
 doc.title.set('B');
-doc.undo(); // 'A', without awaiting a microtask
+doc.$undo(); // 'A', without awaiting a microtask
 ```
 
-This is deliberate — undo in a typing context needs to feel instant. The
+This is deliberate; undo in a typing context needs to feel instant. The
 middleware uses `$subscribe` (backed by a Preact signals `effect`) rather than
 `onChange` so each set produces a synchronous snapshot.
 
@@ -143,7 +146,7 @@ doc.body.set('hell');
 doc.body.set('hello');
 // All within 300ms → one entry.
 
-doc.undo(); // body: ''
+doc.$undo(); // body: ''
 ```
 
 The first change in a new window pushes a fresh entry. Subsequent changes within
@@ -156,22 +159,22 @@ undoable.
 
 ## Forking the redo stack
 
-Standard undo/redo rules apply: setting a new value after `undo()` clears the
+Standard undo/redo rules apply: setting a new value after `$undo()` clears the
 forward history.
 
 ```ts
 doc.title.set('A');
 doc.title.set('B');
-doc.undo(); // title: 'A', canRedo: true
+doc.$undo(); // title: 'A', $canRedo: true
 
 doc.title.set('C'); // fork — redo stack dropped
-doc.canRedo; // false
+doc.$canRedo; // false
 ```
 
 ## Bounded depth
 
 `maxDepth` keeps memory usage bounded. When the stack would exceed the limit,
-the oldest entries are dropped (not the newest — you always keep the latest
+the oldest entries are dropped (not the newest, so you always keep the latest
 state).
 
 ```ts
@@ -183,9 +186,9 @@ doc.count.set(3);
 doc.count.set(4);
 
 // Stack contains only 3 entries.
-doc.undo(); // count: 3
-doc.undo(); // count: 2
-doc.canUndo; // false — entries for {0} and {1} were dropped.
+doc.$undo(); // count: 3
+doc.$undo(); // count: 2
+doc.$canUndo; // false — entries for {0} and {1} were dropped.
 ```
 
 ## Tracking a subset of fields
@@ -197,20 +200,19 @@ volatile state like focus, scroll position, or transient UI flags:
 withHistory(scope, { fields: ['title', 'body'] });
 ```
 
-Fields not listed are still reactive — they just aren't restored by `undo()` /
-`redo()`. Useful for state that should be preserved across a time-travel event
+Fields not listed are still reactive; they just aren't restored by `$undo()` /
+`$redo()`. Useful for state that should be preserved across a time-travel event
 (e.g. "which item is focused") rather than rolled back.
 
 ## Undo/redo and other hooks
 
-- **Time travel via `undo` / `redo` calls `$setSnapshot`.** Like devtools time
-  travel, it skips `beforeChange` — the user didn't mutate; you're restoring
+- **Time travel via `$undo` / `$redo` calls `$setSnapshot`.** Like devtools time
+  travel, it skips `beforeChange`; the user didn't mutate, you're restoring
   state.
 - **`onChange` still fires.** Whatever other middleware is layered on top
   (persistence, devtools, logging) sees the restoration as a normal batch of
   field changes.
-- **Layer composition.** Apply `withHistory` before `withPersistence` if you
-  want undo stacks persisted with the rest of your state? Don't — the stack
-  lives on the instance, not in fields, and isn't part of `$getSnapshot()`. If
-  you need durable undo across sessions, that's a feature you'd build on top
-  with a custom `fields` list and serialization.
+- **Layer composition.** Don't expect `withPersistence` to persist the undo
+  stack. The stack lives on the instance, not in fields, and isn't part of
+  `$getSnapshot()`. For durable undo across sessions, build it on top with a
+  custom `fields` list and serialization.

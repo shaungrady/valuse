@@ -229,7 +229,7 @@ Within a subscriber lifecycle cycle:
 
 Lifecycle hooks merge when using `.extend()`. Both the base and extension hooks
 fire, base first. See
-[Extending scopes — Lifecycle hook merging](extending.md#lifecycle-hook-merging)
+[Extending scopes: Lifecycle hook merging](extending.md#lifecycle-hook-merging)
 for details.
 
 ```ts

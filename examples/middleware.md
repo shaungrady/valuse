@@ -101,21 +101,25 @@ const todoWithHistory = withHistory(
 const todos = todoWithHistory.createMap();
 ```
 
-Each instance now exposes `undo()`, `redo()`, `clearHistory()`, and reactive
-`canUndo` / `canRedo`:
+Each instance now exposes `$undo()`, `$redo()`, `$clearHistory()`, and reactive
+`$canUndo` / `$canRedo`:
 
 ```tsx
 function TodoEditor({ id }: { id: string }) {
   const todo = todos.get(id)!;
+  // `text.use()` doubles as the reactivity hook for `$canUndo`/`$canRedo`:
+  // every recorded write fires `$subscribe`, which triggers a re-render and
+  // re-reads the getters. For a component that doesn't otherwise subscribe to
+  // a field, call `todo.$use()` explicitly to keep them in sync.
   const [text, setText] = todo.text.use();
 
   return (
     <div>
       <input value={text} onChange={(e) => setText(e.target.value)} />
-      <button disabled={!todo.canUndo} onClick={todo.undo}>
+      <button disabled={!todo.$canUndo} onClick={todo.$undo}>
         Undo
       </button>
-      <button disabled={!todo.canRedo} onClick={todo.redo}>
+      <button disabled={!todo.$canRedo} onClick={todo.$redo}>
         Redo
       </button>
     </div>
@@ -125,10 +129,10 @@ function TodoEditor({ id }: { id: string }) {
 
 Notable options:
 
-- `maxDepth` — cap the history stack (default `50`).
-- `batchMs` — collapse changes landing within N ms into a single entry, so
-  typing produces one undo step per pause rather than per keystroke.
-- `fields` — restrict tracking to a subset of fields.
+- `maxDepth`: cap the history stack (default `50`).
+- `batchMs`: collapse changes landing within N ms into a single entry, so typing
+  produces one undo step per pause rather than per keystroke.
+- `fields`: restrict tracking to a subset of fields.
 
 See [docs/history.md](../docs/history.md) for the full API.
 

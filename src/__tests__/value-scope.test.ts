@@ -134,6 +134,49 @@ describe('valueScope', () => {
 			// mutate the runtime shape.
 			expect(Object.isFrozen(bob.job)).toBe(true);
 		});
+
+		it('static entries are readable from derivations via scope', () => {
+			const scope = valueScope({
+				count: value(0),
+				multiplier: 10 as const,
+				product: ({ scope }: { scope: any }) =>
+					scope.count.use() * scope.multiplier,
+			});
+			const inst = scope.create();
+			expect(inst.product.get()).toBe(0);
+			inst.count.set(5);
+			expect(inst.product.get()).toBe(50);
+		});
+
+		it('nested-group static entries are readable from derivations', () => {
+			const scope = valueScope({
+				job: {
+					title: value<string>(''),
+					department: 'Engineering' as const,
+				},
+				label: ({ scope }: { scope: any }) =>
+					`${scope.job.title.use()} (${scope.job.department})`,
+			});
+			const inst = scope.create({ job: { title: 'CTO' } });
+			expect(inst.label.get()).toBe('CTO (Engineering)');
+		});
+
+		it('static entries are readable from lifecycle hooks via scope', () => {
+			let seen: unknown;
+			const scope = valueScope(
+				{
+					name: value<string>(''),
+					maxLen: 100 as const,
+				},
+				{
+					onCreate: ({ scope }: { scope: any }) => {
+						seen = scope.maxLen;
+					},
+				},
+			);
+			scope.create();
+			expect(seen).toBe(100);
+		});
 	});
 
 	describe('sync derivations', () => {

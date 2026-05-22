@@ -82,10 +82,11 @@ const persistenceByInstance = new WeakMap<object, PersistenceState>();
  * @param options - persistence options (`key` and `adapter` required).
  * @returns a new {@link ScopeTemplate} with persistence wired in.
  */
-export function withPersistence<Def extends Record<string, unknown>>(
-	template: ScopeTemplate<Def>,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function withPersistence<T extends ScopeTemplate<any>>(
+	template: T,
 	options: PersistenceOptions,
-): ScopeTemplate<Def> {
+): T {
 	const {
 		key,
 		adapter,
@@ -230,5 +231,5 @@ export function withPersistence<Def extends Record<string, unknown>>(
 				persistenceByInstance.delete(scope);
 			},
 		},
-	);
+	) as unknown as T;
 }

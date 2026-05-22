@@ -8,17 +8,19 @@ reflect both: `?view=grid&period=weekly`.
 ```ts
 import { value, valuePlain, valueScope } from 'valuse';
 import { pipeEnum } from 'valuse/utils';
-import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
+import type { useRouter } from 'next/navigation';
+
+type RouterSlot = {
+  replace: ReturnType<typeof useRouter>['replace'];
+  pathname: string;
+} | null;
 
 const pageState = valueScope(
   {
     view: value('list').pipe(pipeEnum(['list', 'grid'])),
     period: value('weekly').pipe(pipeEnum(['daily', 'weekly', 'monthly'])),
 
-    router: valuePlain<{
-      replace: AppRouterInstance['replace'];
-      pathname: string;
-    } | null>(null),
+    router: valuePlain<RouterSlot>(null),
 
     showCompactCards: ({ scope }) => scope.view.use() === 'grid',
     periodLabel: ({ scope }) => {
@@ -59,7 +61,9 @@ export function usePageState() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const instanceRef = useRef<ReturnType<typeof pageState.create>>();
+  const instanceRef = useRef<ReturnType<typeof pageState.create> | undefined>(
+    undefined,
+  );
 
   if (!instanceRef.current) {
     instanceRef.current = pageState.create({

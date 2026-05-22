@@ -7,9 +7,9 @@ lifecycle hooks built in, so your state mirrors how your data actually works
 instead of how your framework wants it. Creating independent instances doesn't
 require factory wrappers or providers.
 
-**Let's compare:** [Zustand](examples/compare-zustand.md) |
-[Jotai](examples/compare-jotai.md) | [MobX](examples/compare-mobx.md) |
-[Valtio](examples/compare-valtio.md) |
+**Let's compare:** [Overview](examples/comparison.md) |
+[Zustand](examples/compare-zustand.md) | [Jotai](examples/compare-jotai.md) |
+[MobX](examples/compare-mobx.md) | [Valtio](examples/compare-valtio.md) |
 [React Context](examples/compare-react-context.md)
 
 What can you build with it?
@@ -1150,7 +1150,7 @@ const final = withDevtools(
 
 const instance = final.create();
 instance.fontSize.set(18);
-instance.undo(); // history
+instance.$undo(); // history
 // also: persisted to localStorage, and visible in Redux DevTools
 ```
 

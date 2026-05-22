@@ -1,4 +1,4 @@
-# valueRef — Scope Composition
+# valueRef: Scope Composition
 
 `valueRef()` brings external reactive state into a scope definition. Instead of
 copying values, a ref points to a live source. All instances of the scope read
@@ -194,7 +194,7 @@ const inst = dashboard.create();
 This means you can define data sources as standalone scopes with `onUsed`
 activation, then compose them into larger scopes via refs. The lifecycle
 management is automatic. For full details on `onUsed`/`onUnused`, see
-[Lifecycle — onUsed](lifecycle.md#onused).
+[Lifecycle: onUsed](lifecycle.md#onused).
 
 ## Patterns
 

@@ -1,9 +1,8 @@
 # ValUse vs Zustand
 
 Zustand gives you a single store with getters, setters, and selectors. It's
-simple to start with, but structured data — collections of entities with
-per-item derived state, change tracking, and async — requires increasingly
-manual wiring.
+simple to start with, but structured data (collections of entities with per-item
+derived state, change tracking, and async) requires increasingly manual wiring.
 
 All examples below build the same user model: `firstName`, `lastName`, `email`,
 `role`, a derived `displayName`, change tracking via `lastUpdated`, and an async
@@ -28,7 +27,7 @@ All examples below build the same user model: `firstName`, `lastName`, `email`,
 
 ## Define a model
 
-**ValUse** — fields and derivations in one place:
+**ValUse**: fields and derivations in one place:
 
 ```ts
 const user = valueScope({
@@ -41,7 +40,7 @@ const user = valueScope({
 });
 ```
 
-**Zustand** — type, store, and derived state are separate concepts:
+**Zustand**: type, store, and derived state are separate concepts:
 
 ```ts
 type User = {
@@ -105,7 +104,7 @@ per-operation boilerplate remains.)
 
 Track `lastUpdated` whenever any field changes.
 
-**ValUse** — one hook, declared alongside the model:
+**ValUse**: one hook, declared alongside the model:
 
 ```ts
 const user = valueScope(
@@ -118,7 +117,7 @@ const user = valueScope(
 );
 ```
 
-**Zustand** — duplicated in every setter:
+**Zustand**: duplicated in every setter:
 
 ```ts
 setField: (id, field, value) =>
@@ -139,7 +138,7 @@ silently breaks.
 
 Editing one user's email must not re-render other rows.
 
-**ValUse** — automatic. Each field `.use()` subscribes to that field only:
+**ValUse**: automatic. Each field `.use()` subscribes to that field only:
 
 ```tsx
 function UserRow({ id }: { id: string }) {
@@ -149,7 +148,7 @@ function UserRow({ id }: { id: string }) {
 }
 ```
 
-**Zustand** — requires selectors. Either one per field, or a shallow-compared
+**Zustand**: requires selectors. Either one per field, or a shallow-compared
 object selector:
 
 ```tsx
@@ -181,7 +180,7 @@ field changes.
 
 Fetch a user's profile by email. Abort the previous request when email changes.
 
-**ValUse** — a derivation that happens to be async:
+**ValUse**: a derivation that happens to be async:
 
 ```ts
 const user = valueScope({
@@ -193,10 +192,10 @@ const user = valueScope({
 });
 ```
 
-Abort is automatic. Re-fetch is reactive — change `email`, previous request
+Abort is automatic. Re-fetch is reactive: change `email`, previous request
 aborts, new one starts.
 
-**Zustand** — manual AbortController, manual state fields, imperative trigger:
+**Zustand**: manual AbortController, manual state fields, imperative trigger:
 
 ```ts
 // AbortControllers kept outside the store — non-serializable, non-reactive
@@ -249,7 +248,7 @@ useEffect(() => {
 ```
 
 Manual loading/error state, a `try`/`catch` with abort guard, and a `useEffect`
-to trigger the fetch. None of this is reactive — the component must know when to
+to trigger the fetch. None of this is reactive; the component must know when to
 call `fetchProfile`.
 
 ---
@@ -259,7 +258,7 @@ call `fetchProfile`.
 Derive `avatarUrl` from the async `profile`. This should be a plain sync
 computation.
 
-**ValUse** — just another derivation. Sees `Profile | undefined`, never a
+**ValUse**: just another derivation. Sees `Profile | undefined`, never a
 promise:
 
 ```ts
@@ -269,7 +268,7 @@ avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
 If you later change `profile` from async to sync (or vice versa), `avatarUrl`
 doesn't change at all.
 
-**Zustand** — no derivation layer. Computed inline with null checks:
+**Zustand**: no derivation layer. Computed inline with null checks:
 
 ```tsx
 const avatarUrl =
@@ -291,7 +290,7 @@ const tableA = user.createMap();
 const tableB = user.createMap();
 ```
 
-**Zustand** — factory wrapper + context provider:
+**Zustand**: factory wrapper + context provider:
 
 ```ts
 function createUserStore() {
@@ -319,7 +318,7 @@ context, and a provider per instance.
 
 ## Type safety
 
-**ValUse** — field access is fully type-checked via dot-access on the instance:
+**ValUse**: field access is fully type-checked via dot-access on the instance:
 
 ```ts
 user.email.get(); // string
@@ -328,7 +327,7 @@ user.emal; // TS error — typo caught
 user.displayName.set('x'); // TS error — derived fields have no set()
 ```
 
-**Zustand** — `setField(id, 'email', value)` accepts any string for the field
+**Zustand**: `setField(id, 'email', value)` accepts any string for the field
 name at runtime. Type safety depends on how carefully the store interface is
 written and how disciplined the selectors are.
 
@@ -338,8 +337,7 @@ written and how disciplined the selectors are.
 
 Add tracking to any scope without modifying the original.
 
-**ValUse** — `.extend()` returns a new scope with additional state and
-lifecycle:
+**ValUse**: `.extend()` returns a new scope with additional state and lifecycle:
 
 ```ts
 const withTracking = (scope) =>
@@ -361,7 +359,7 @@ const trackedUser = withTracking(user);
 const trackedTodo = withTracking(todo);
 ```
 
-**Zustand** — custom middleware wrapping `set`:
+**Zustand**: custom middleware wrapping `set`:
 
 ```ts
 import { type StateCreator, type StoreMutatorIdentifier } from 'zustand';
@@ -393,8 +391,8 @@ const useUserStore = create(
 );
 ```
 
-Zustand's middleware pattern is powerful — `devtools`, `persist`, and `immer`
-are all built this way. The tradeoff is that the type signature for custom
+Zustand's middleware pattern is powerful: `devtools`, `persist`, and `immer` are
+all built this way. The tradeoff is that the type signature for custom
 middleware is complex (the `StoreMutatorIdentifier` generics are notoriously
 difficult), and most custom implementations resort to `as any` casts.
 
@@ -405,7 +403,7 @@ difficult), and most custom implementations resort to `as any` casts.
 Create a WebSocket on init, announce presence when observed, clean up on
 destroy.
 
-**ValUse** — two hooks with scoped `onCleanup`, declared alongside the model:
+**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
 
 ```ts
 const chatRoom = valueScope(
@@ -431,7 +429,7 @@ rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
 rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
 ```
 
-**Zustand** — imperative logic in action methods:
+**Zustand**: imperative logic in action methods:
 
 ```ts
 const connections = new Map<string, WebSocket>();
@@ -461,8 +459,8 @@ const useRoomStore = create((set, get) => ({
 Zustand has no entity lifecycle. Init and cleanup logic lives inside action
 methods. Side-effect resources (WebSockets, timers, controllers) must be tracked
 outside the store. There's no "start when first subscribed, stop when last
-unsubscribes" — lazy activation requires manually wrapping `subscribe` with
-reference counting.
+unsubscribes" semantics; lazy activation requires manually wrapping `subscribe`
+with reference counting.
 
 ---
 
@@ -471,7 +469,7 @@ reference counting.
 A person with tags that derive from a shared global set. A board where each
 instance gets its own column collection.
 
-**ValUse** — `valueRef` for shared state, factory refs for per-instance state:
+**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
 
 ```ts
 const globalTags = valueSet<string>(['admin', 'root']);
@@ -499,7 +497,7 @@ const b = board.create({ boardId: 'b' });
 // a and b each have independent column maps
 ```
 
-**Zustand** — normalized IDs in one store, or `getState()` across stores:
+**Zustand**: normalized IDs in one store, or `getState()` across stores:
 
 ```ts
 // Single store with normalized state — IDs as references
@@ -531,17 +529,17 @@ const usePersonStore = create((set, get) => ({
 ```
 
 Zustand uses normalized state (ID references) within a single store, or
-`getState()` across stores. Neither provides reactive cross-store references —
+`getState()` across stores. Neither provides reactive cross-store references;
 `getState()` is a point-in-time read, and `getBoardColumns` returns a new array
 on every call with no memoization. Components that need reactivity across stores
 must subscribe to each independently. There's no concept of per-instance nested
-state — every entity shares the same flat store.
+state, because every entity shares the same flat store.
 
 ---
 
 ## The full picture
 
-All concerns combined — model, collection, derivations, change tracking, async
+All concerns combined: model, collection, derivations, change tracking, async
 with abort, and React components.
 
 ### ValUse

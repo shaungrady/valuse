@@ -64,15 +64,17 @@ const prefsStep = valueScope({
 ```ts
 const wizard = valueScope({
   currentStep: value<number>(0),
-  account: valueRef(accountStep),
-  personal: valueRef(personalStep),
-  prefs: valueRef(prefsStep),
 
-  stepCount: () => 3,
+  // Factory refs: each wizard instance gets its own step instances.
+  // Passing a template directly to `valueRef()` would not create instances.
+  account: valueRef(() => accountStep.create()),
+  personal: valueRef(() => personalStep.create()),
+  prefs: valueRef(() => prefsStep.create()),
+
+  stepCount: 3, // plain readonly data
 
   canGoBack: ({ scope }) => scope.currentStep.use() > 0,
-  canGoForward: ({ scope }) =>
-    scope.currentStep.use() < scope.stepCount.use() - 1,
+  canGoForward: ({ scope }) => scope.currentStep.use() < scope.stepCount - 1,
 });
 ```
 
@@ -84,7 +86,10 @@ const wizard = valueScope({
 import { useEffect } from 'react';
 import { value } from 'valuse';
 
-// Shared reactive reference to the form instance
+// Shared reactive reference to the form instance. The module-level shape keeps
+// the example terse, but assumes a single mounted <Wizard>. For multiple
+// instances, swap for `useRef(() => wizard.create())` and lift wizardForm to
+// context.
 export const wizardForm = value<ReturnType<typeof wizard.create>>();
 
 export function Wizard() {
@@ -118,7 +123,9 @@ function AccountStep() {
   const form = wizardForm.get();
   if (!form) return null;
 
-  const account = form.account.get();
+  // `form.account` IS the referenced scope instance (factory ref), so reach
+  // into its fields directly.
+  const { account } = form;
 
   return (
     <div>
@@ -146,7 +153,6 @@ function WizardNav() {
 
   const [canGoBack] = form.canGoBack.use();
   const [canGoForward] = form.canGoForward.use();
-  const [stepCount] = form.stepCount.use();
   const [currentStep, setStep] = form.currentStep.use();
 
   return (
@@ -155,7 +161,7 @@ function WizardNav() {
         Back
       </button>
       <span>
-        Step {currentStep + 1} of {stepCount}
+        Step {currentStep + 1} of {form.stepCount}
       </span>
       <button disabled={!canGoForward} onClick={() => setStep((s) => s + 1)}>
         Next

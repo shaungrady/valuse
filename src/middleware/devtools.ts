@@ -1,7 +1,6 @@
 import type { ScopeTemplate } from '../core/value-scope.js';
 import type { ScopeMap } from '../core/scope-map.js';
 import type { Value } from '../core/value.js';
-import type { GenericScopeInstance } from '../core/scope-types.js';
 import type { Change, Unsubscribe } from '../core/types.js';
 import { pickFields } from '../core/utils/pick-fields.js';
 
@@ -170,10 +169,11 @@ const stateByInstance = new WeakMap<object, DevtoolsState>();
  * @param options - devtools options (name is required).
  * @returns a new ScopeTemplate with devtools wired in.
  */
-export function withDevtools<Def extends Record<string, unknown>>(
-	template: ScopeTemplate<Def>,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function withDevtools<T extends ScopeTemplate<any>>(
+	template: T,
 	options: DevtoolsOptions,
-): ScopeTemplate<Def> {
+): T {
 	const extension = getEnabledExtension(options);
 	if (!extension) return template;
 
@@ -224,10 +224,7 @@ export function withDevtools<Def extends Record<string, unknown>>(
 				const actionName = buildActionName(changes);
 				const payload = buildSetPayload(changes);
 				const stateSnapshot = serialize(
-					pickFields(
-						(scope as unknown as GenericScopeInstance).$getSnapshot(),
-						options.fields,
-					),
+					pickFields(scope.$getSnapshot(), options.fields),
 				);
 
 				state.connection.send({ type: actionName, payload }, stateSnapshot);
@@ -241,7 +238,7 @@ export function withDevtools<Def extends Record<string, unknown>>(
 				}
 			},
 		},
-	);
+	) as unknown as T;
 }
 
 // --- connectMapDevtools ---
