@@ -9,7 +9,12 @@ export type {
 	ValidationState,
 	SyncStandardSchema,
 } from './core/value-schema.js';
-export { valueScope, ScopeTemplate } from './core/value-scope.js';
+export {
+	valueScope,
+	ScopeTemplate,
+	asUnknownValueScope,
+} from './core/value-scope.js';
+export type { UnknownValueScope, ValueScope } from './core/value-scope.js';
 export type { ScopeConfig } from './core/scope-config.js';
 export { valueArray, ValueArray } from './core/value-array.js';
 export { valueRef, ValueRef } from './core/value-ref.js';
@@ -60,11 +65,10 @@ export type {
 	ValueInputOf,
 	SnapshotOf,
 	MapDefinition,
-	ExtendDef,
 	ScopeDollarMethods,
 	SyncDerivationContext,
 	AsyncDerivationContext,
-	DerivationScope,
+	DerivScope,
 	LifecycleHookContext,
 } from './core/scope-types.js';
 

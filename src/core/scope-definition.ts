@@ -152,6 +152,10 @@ function walkTree(
 				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
 				comparator: (valueInstance._comparator as Comparator<unknown>) ?? null,
 				defaultValue: valueInstance._signal.peek(),
+				// Pre-actor seed captured at the template's first factory-pipe
+				// step. Used by `activateFactoryPipes` to prime instance actors
+				// consistently with this standalone Value.
+				factorySeed: valueInstance._factorySeed,
 				ancestorGroupIndices: slotAncestors,
 				derivationFn: null,
 				schema: null,

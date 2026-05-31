@@ -83,17 +83,27 @@ npm install valuse
 ```ts
 import { value, valueScope } from 'valuse';
 
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
-});
+const person = valueScope(
+  {
+    firstName: value<string>(),
+    lastName: value<string>(),
+  },
+  {
+    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+  },
+);
 
 const bob = person.create({ firstName: 'Bob', lastName: 'Jones' });
 bob.firstName.get(); // 'Bob'
 bob.firstName.set('Robert');
 bob.fullName.get(); // 'Robert Jones'
 ```
+
+`valueScope()` takes one or more **layers**: fields first, then zero or more
+derivation layers, then an optional config layer. The layered shape lets
+TypeScript fully infer `scope` inside every derivation without a manual type
+annotation. It also makes the dependency order visible at the call site and
+makes circular derivations structurally impossible.
 
 In React, import the side-effect bridge once anywhere in your app. It wires up
 `useSyncExternalStore` so `.use()` hooks re-render on change:
@@ -276,20 +286,23 @@ A scope definition can mix:
 - **Derivations**, [sync](docs/derivations.md) or
   [async](docs/async-derivations.md), that read other fields and recompute when
   their dependencies change.
-- **[Nested groups](docs/scopes.md#nesting)** of plain objects, so you can write
-  `scope.job.title` without creating a separate scope.
+- **[Nested objects](docs/scopes.md#nesting)** in the field layer, so you can
+  write `scope.job.title` without creating a separate scope. A nested object is
+  just a plain object whose entries follow the same field-layer rules.
 - **Refs to other scopes** via [`valueRef()`](docs/refs.md), so reactivity and
   lifecycle flow across template boundaries (shared globally, or per-instance
   via a factory).
-- **[Lifecycle hooks](docs/lifecycle.md)** in the scope config: `onCreate`,
-  `onUsed`, `onUnused`, `onDestroy`, plus
-  [`beforeChange` / `onChange`](docs/change-hooks.md) for side effects and
+- **[Lifecycle hooks](docs/lifecycle.md)** in the
+  [config layer](docs/scopes.md#config-layer): `onCreate`, `onUsed`, `onUnused`,
+  `onDestroy`, plus [`beforeChange` / `onChange`](docs/change-hooks.md) for side
+  effects and
   [`validate`](docs/schema-validation.md#cross-field-validation-with-validate)
   for cross-field rules.
 
-Scopes also compose: [`.extend()`](docs/extending.md) layers extra fields and
-hooks onto an existing template, which makes middleware just a function from
-scope to scope.
+Scopes also compose:
+[`.extendValues()` and `.extendConfig()`](docs/extending.md) layer extra values,
+derivations, and hooks onto an existing template, which makes middleware just a
+function from scope to scope.
 
 Fields are accessed as properties on the instance, each with `.get()`, `.set()`,
 and `.use()`. Derivations have the same surface minus `.set()`.
@@ -298,14 +311,17 @@ and `.use()`. Derivations have the same surface minus `.set()`.
 > [docs/derivations.md](docs/derivations.md)
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  mood: value<string>('happy'),
-  hobbies: valueSet<string>(),
-
-  fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
-});
+const person = valueScope(
+  {
+    firstName: value<string>(),
+    lastName: value<string>(),
+    mood: value<string>('happy'),
+    hobbies: valueSet<string>(),
+  },
+  {
+    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+  },
+);
 ```
 
 ### Creating instances
@@ -390,19 +406,22 @@ Scope definitions support [nesting](docs/scopes.md#nesting). Reactive `value()`
 nodes can appear at any depth, with plain data as static readonly leaves:
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
+const person = valueScope(
+  {
+    firstName: value<string>(),
 
-  schemaVersion: 1, // plain data — readonly, not reactive
+    schemaVersion: 1, // plain data — readonly, not reactive
 
-  job: {
-    title: value<string>(),
-    company: value<string>(),
+    job: {
+      title: value<string>(),
+      company: value<string>(),
+    },
   },
-
-  label: ({ scope }) =>
-    `${scope.firstName.use()}, ${scope.job.title.use()} at ${scope.job.company.use()}`,
-});
+  {
+    label: ({ scope }) =>
+      `${scope.firstName.use()}, ${scope.job.title.use()} at ${scope.job.company.use()}`,
+  },
+);
 
 const bob = person.create({
   firstName: 'Bob',
@@ -425,14 +444,17 @@ Derivations are functions that compute values from other fields. They receive a
 `scope` context for reading state:
 
 ```ts
-const scope = valueScope({
-  query: value<string>(''),
-  locale: value<string>('en'),
-
-  // .use() — tracked. Re-runs when query changes.
-  // .get() — untracked. Reads locale without re-running when it changes.
-  results: ({ scope }) => search(scope.query.use(), scope.locale.get()),
-});
+const scope = valueScope(
+  {
+    query: value<string>(''),
+    locale: value<string>('en'),
+  },
+  {
+    // .use() — tracked. Re-runs when query changes.
+    // .get() — untracked. Reads locale without re-running when it changes.
+    results: ({ scope }) => search(scope.query.use(), scope.locale.get()),
+  },
+);
 ```
 
 - **`.use()`**: tracked read. The derivation re-runs when this value changes.
@@ -447,16 +469,17 @@ When a derivation is `async`, ValUse automatically manages abort, status
 tracking, and cleanup:
 
 ```ts
-const user = valueScope({
-  userId: value<string>(),
-
-  profile: async ({ scope, signal }) => {
-    const id = scope.userId.use();
-    if (!id) return undefined;
-    const res = await fetch(`/api/users/${id}`, { signal });
-    return res.json();
+const user = valueScope(
+  { userId: value<string>() },
+  {
+    profile: async ({ scope, signal }) => {
+      const id = scope.userId.use();
+      if (!id) return undefined;
+      const res = await fetch(`/api/users/${id}`, { signal });
+      return res.json();
+    },
   },
-});
+);
 
 const bob = user.create({ userId: 'bob' });
 ```
@@ -470,9 +493,8 @@ Async derivations have an `AsyncState` for status tracking:
 ```tsx
 const [profile, profileState] = bob.profile.useAsync();
 
-if (profileState.status === 'setting') return <Spinner />;
-if (profileState.status === 'error')
-  return <Error error={profileState.error} />;
+if (profileState.isPending) return <Spinner />;
+if (profileState.isError) return <Error error={profileState.error} />;
 return <Profile data={profile} />;
 ```
 
@@ -483,20 +505,22 @@ Sync derivations can depend on async ones without knowing they're async.
 `.use()` returns `T | undefined`; no promises, no `await`:
 
 ```ts
-const person = valueScope({
-  userId: value<string>(),
-
-  profile: async ({ scope, signal }) => {
-    const res = await fetch(`/api/users/${scope.userId.use()}`, { signal });
-    return res.json();
+const person = valueScope(
+  { userId: value<string>() },
+  {
+    profile: async ({ scope, signal }) => {
+      const res = await fetch(`/api/users/${scope.userId.use()}`, { signal });
+      return res.json();
+    },
   },
-
-  // Sync — just sees User | undefined. Recomputes when profile resolves.
-  greeting: ({ scope }) => {
-    const profile = scope.profile.use();
-    return profile ? `Hello, ${profile.name}!` : 'Hello, friend!';
+  {
+    // Sync — just sees User | undefined. Recomputes when profile resolves.
+    greeting: ({ scope }) => {
+      const profile = scope.profile.use();
+      return profile ? `Hello, ${profile.name}!` : 'Hello, friend!';
+    },
   },
-});
+);
 ```
 
 If you later change `profile` from sync to async (or vice versa), `greeting`
@@ -516,8 +540,9 @@ const bob = person.create({
 
 ### Plain data in scopes
 
-Any non-`value()`, non-function entry in a scope is static readonly data. It
-travels with the instance but doesn't participate in reactivity:
+Any entry in the field layer that isn't a reactive primitive or a nested object
+is treated as static readonly data. It travels with the instance but doesn't
+participate in reactivity:
 
 ```ts
 const board = valueScope({
@@ -576,7 +601,7 @@ nodes.set('node-1', slateNode);
 
 There are two ways to wire side effects to state changes:
 [subscribe](docs/change-hooks.md#per-field-subscribe) to a specific field or a
-whole instance for a value-as-it-changes stream, or use the scope config's
+whole instance for a value-as-it-changes stream, or use the config layer's
 [`beforeChange`](docs/change-hooks.md#beforechange) /
 [`onChange`](docs/change-hooks.md#onchange) hooks to intercept and respond to
 writes with full structured change metadata. `beforeChange` runs synchronously
@@ -654,7 +679,7 @@ const person = valueScope(
       // Prevent a specific field
       if (change.path === 'job.title') prevent(change);
 
-      // Prevent everything under a group
+      // Prevent everything under a nested subtree
       if (change.to === '') prevent(scope.job);
 
       // Prevent based on the change itself
@@ -671,7 +696,8 @@ const person = valueScope(
 Beyond a single scope instance, ValUse covers the patterns that usually come
 next: keyed collections of the same shape ([`ScopeMap`](docs/scope-map.md)),
 composition across independent scopes ([`valueRef`](docs/refs.md)), derived
-templates and middleware ([`.extend()`](docs/extending.md)),
+templates and middleware
+([`.extendValues()` / `.extendConfig()`](docs/extending.md)),
 [long-running async work](docs/async-derivations.md#long-running-derivations),
 [lifecycle setup and teardown](docs/lifecycle.md),
 [schema validation](docs/schema-validation.md), and a small kit of shipped
@@ -763,11 +789,15 @@ Per-instance refs with factories. Each instance gets its own nested scope:
 ```ts
 const column = valueScope({ id: value<string>(), name: value<string>() });
 
-const board = valueScope({
-  boardId: value<string>(),
-  columns: valueRef(() => column.createMap()),
-  columnCount: ({ scope }) => scope.columns.use().size,
-});
+const board = valueScope(
+  {
+    boardId: value<string>(),
+    columns: valueRef(() => column.createMap()),
+  },
+  {
+    columnCount: ({ scope }) => scope.columns.use().size,
+  },
+);
 ```
 
 Reactivity flows through refs. A derivation that reads a ref's fields via
@@ -783,44 +813,39 @@ referenced scopes are notified as well.
 
 > **Deep dive:** [docs/extending.md](docs/extending.md)
 
-`.extend()` returns a new scope that includes everything from the original plus
-new state, derivations, and hooks:
+`.extendValues()` adds new state and derivations; `.extendConfig()` attaches
+lifecycle hooks. Both return new templates that include everything from the
+original:
 
 ```ts
-const trackedPerson = person.extend(
-  {
-    lastUpdated: value<number>(Date.now()),
-  },
-  {
+const trackedPerson = person
+  .extendValues({ lastUpdated: value<number>(Date.now()) })
+  .extendConfig({
     onChange: ({ scope }) => {
       scope.lastUpdated.set(Date.now());
     },
-  },
-);
+  });
 ```
 
 Remove fields with `undefined`:
 
 ```ts
-const simplified = person.extend({
-  job: undefined, // removes the job group. TypeScript catches broken refs.
+const simplified = person.extendValues({
+  job: undefined, // removes the nested job object. TypeScript catches broken refs.
 });
 ```
 
-Since `.extend()` takes a scope and returns a scope, middleware is just a
-function:
+Since `.extendValues()` and `.extendConfig()` take a scope and return a scope,
+middleware is just a function:
 
 ```ts
 const withTracking = (scope) =>
-  scope.extend(
-    { lastUpdated: value<number>(Date.now()) },
-    {
-      onChange: ({ scope }) => scope.lastUpdated.set(Date.now()),
-    },
-  );
+  scope.extendValues({ lastUpdated: value<number>(Date.now()) }).extendConfig({
+    onChange: ({ scope }) => scope.lastUpdated.set(Date.now()),
+  });
 
 const withSoftDelete = (scope) =>
-  scope.extend({ deleted: value<boolean>(false) });
+  scope.extendValues({ deleted: value<boolean>(false) });
 
 const fullPerson = withSoftDelete(withTracking(person));
 ```
@@ -839,6 +864,9 @@ interface AsyncState<T> {
   hasValue: boolean;
   status: 'unset' | 'setting' | 'set' | 'error';
   error: unknown;
+  isPending: boolean; // setting && !hasValue — "first load, show a spinner"
+  isUpdating: boolean; // setting && hasValue — new value computing, keep current on screen
+  isError: boolean; // status === 'error'
 }
 ```
 
@@ -904,20 +932,21 @@ WebSocket streams, or any open-ended data source:
 ```ts
 import { asyncDelay } from 'valuse/utils';
 
-const stockPrice = valueScope({
-  symbol: value<string>(),
-
-  price: async ({ scope, set, signal }) => {
-    const sym = scope.symbol.use();
-    if (!sym) return;
-    while (!signal.aborted) {
-      const price = await fetchPrice(sym);
-      if (!signal.aborted) set(price);
-      await asyncDelay({ ms: 1000, signal });
-    }
-    // Loop runs until signal aborts; values come from set()
+const stockPrice = valueScope(
+  { symbol: value<string>() },
+  {
+    price: async ({ scope, set, signal }) => {
+      const sym = scope.symbol.use();
+      if (!sym) return;
+      while (!signal.aborted) {
+        const price = await fetchPrice(sym);
+        if (!signal.aborted) set(price);
+        await asyncDelay({ ms: 1000, signal });
+      }
+      // Loop runs until signal aborts; values come from set()
+    },
   },
-});
+);
 ```
 
 When `symbol` changes, the previous loop is aborted and a new one starts. When
@@ -935,7 +964,7 @@ the instance is destroyed, it's aborted automatically.
 | `onUnused`  | Subscriber count transitions from 1 to 0 |
 
 These four are the instance-lifetime hooks. The change-related hooks
-(`beforeChange`, `onChange`) and `validate` live in the same scope config; see
+(`beforeChange`, `onChange`) and `validate` live in the same config layer; see
 the [Scope config](#scope-config) reference for the full list.
 
 `onCreate` and `onUsed` provide `signal` and `onCleanup` for automatic teardown.
@@ -985,17 +1014,19 @@ parameterize them:
 
 ```ts
 const createCounter = (initial: number, step: number) =>
-  valueScope({
-    count: value(initial),
-    increment:
-      ({ scope }) =>
-      () =>
-        scope.count.set((c) => c + step),
-    decrement:
-      ({ scope }) =>
-      () =>
-        scope.count.set((c) => c - step),
-  });
+  valueScope(
+    { count: value(initial) },
+    {
+      increment:
+        ({ scope }) =>
+        () =>
+          scope.count.set((c) => c + step),
+      decrement:
+        ({ scope }) =>
+        () =>
+          scope.count.set((c) => c - step),
+    },
+  );
 
 const byOnes = createCounter(0, 1);
 const byTens = createCounter(100, 10);
@@ -1099,12 +1130,12 @@ subscopes transitively, prefixing nested paths with the ref field name (and
 ScopeMap entry key) so a child's `path: ['email']` surfaces at the parent as
 `path: ['account', 'email']`.
 
-`validate` lives in the scope config alongside `onCreate` and the other
+`validate` lives in the config layer alongside `onCreate` and the other
 lifecycle hooks, but it isn't an event hook. It is a reactive derivation that
 returns an `Issue[]`, re-evaluating whenever a `.use()`'d dependency changes.
 
-It composes with `.extend()`: both base and extension `validate` rules run, and
-issues are concatenated.
+It composes with `.extendConfig()`: both base and extension `validate` rules
+run, and issues are concatenated.
 
 Async schemas are rejected at the type level; pair a sync schema with an async
 derivation if you need to check something like username availability.
@@ -1154,8 +1185,8 @@ instance.$undo(); // history
 // also: persisted to localStorage, and visible in Redux DevTools
 ```
 
-For standalone values and `ScopeMap`s that don't flow through `.extend()`, the
-devtools package also exports `connectDevtools(value, …)` and
+For standalone values and `ScopeMap`s that don't flow through `.extendConfig()`,
+the devtools package also exports `connectDevtools(value, …)` and
 `connectMapDevtools(map, …)`; see [docs/devtools.md](docs/devtools.md).
 
 ---
@@ -1304,6 +1335,7 @@ of the factory name. Function-form derivations don't have a factory, so they use
 | `.subscribe(fn)`    | Listen for changes, returns unsubscribe              |
 | `.pipe(fn)`         | Transform on set, chainable, can change type         |
 | `.pipe(factory)`    | Factory pipe for stateful transforms                 |
+| `.flush()`          | Async — cascade flush of pipe chain (Promise<void>)  |
 | `.compareUsing(fn)` | Custom equality check                                |
 | `.destroy()`        | Tear down all subscriptions                          |
 
@@ -1330,17 +1362,19 @@ of the factory name. Function-form derivations don't have a factory, so they use
 
 ### Scope definition
 
-| Method                           | Description                                       |
-| -------------------------------- | ------------------------------------------------- |
-| `valueScope({ ... })`            | Define a scope template                           |
-| `valueScope({ ... }, config)`    | Define a scope with lifecycle hooks               |
-| `scope.create(data)`             | Create a single instance                          |
-| `scope.createMap()`              | Create an empty keyed collection                  |
-| `scope.createMap(data, 'field')` | Create collection from array, keyed by field name |
-| `scope.createMap(data, fn)`      | Create collection from array, keyed by callback   |
-| `scope.createMap(map)`           | Create collection from a `Map` or `[key, data][]` |
-| `scope.extend({ ... })`          | Derive a new scope with additional state          |
-| `scope.extend({ ... }, config)`  | Derive a new scope with extra state plus hooks    |
+| Method                                       | Description                                       |
+| -------------------------------------------- | ------------------------------------------------- |
+| `valueScope(fields)`                         | Define a scope template (fields only)             |
+| `valueScope(fields, ...derivations)`         | Add up to 11 derivation layers, in dep order      |
+| `valueScope(fields, ...derivations, config)` | Plus an optional config layer (lifecycle hooks)   |
+| `scope.create(data)`                         | Create a single instance                          |
+| `scope.createMap()`                          | Create an empty keyed collection                  |
+| `scope.createMap(data, 'field')`             | Create collection from array, keyed by field name |
+| `scope.createMap(data, fn)`                  | Create collection from array, keyed by callback   |
+| `scope.createMap(map)`                       | Create collection from a `Map` or `[key, data][]` |
+| `scope.extendValues(valuesOrDerivs)`         | Derive a new scope (values-layer OR deriv-layer)  |
+| `scope.extendValues(values, ...derivations)` | Variadic layered extension (no config slot)       |
+| `scope.extendConfig(config)`                 | Attach lifecycle hooks; doesn't change definition |
 
 ### Instance fields
 
@@ -1350,6 +1384,7 @@ of the factory name. Function-form derivations don't have a factory, so they use
 | `.set(value)`      | Write value (callback: `prev => next`). Values only.                   |
 | `.use()`           | React hook — `[value, setter]` or `[value]` for derivations            |
 | `.subscribe(fn)`   | Per-field change listener — `fn(value, previousValue)`                 |
+| `.flush()`         | Async — expedite deferred work, await settle. Values & async derivs.   |
 | `.recompute()`     | Re-run this derivation. Derived fields only.                           |
 | `.useAsync()`      | React hook — `[value, AsyncState<T>]`. Async derived fields only.      |
 | `.getAsync()`      | Read `AsyncState<T>`. Async derived fields only.                       |
@@ -1358,20 +1393,21 @@ of the factory name. Function-form derivations don't have a factory, so they use
 
 ### Instance $ methods
 
-| Method                           | Description                                                 |
-| -------------------------------- | ----------------------------------------------------------- |
-| `.$get()`                        | Resolved values, scope refs stay live                       |
-| `.$getSnapshot()`                | Plain data — everything recursively resolved                |
-| `.$setSnapshot(d)`               | Partial write — reactive fields only                        |
-| `.$setSnapshot(d, { recreate })` | Write + re-run onDestroy then onCreate                      |
-| `.$use()`                        | React hook — `[snapshot, setter]`, re-renders on any change |
-| `.$subscribe(fn)`                | Whole-scope change listener                                 |
-| `.$destroy()`                    | Tear down, fire onDestroy, detach all subscribers           |
-| `.$recompute()`                  | Re-run all derivations                                      |
-| `.$getIsValid(opts?)`            | True when all schema fields and `validate` pass             |
-| `.$useIsValid(opts?)`            | React hook — re-renders when overall validity changes       |
-| `.$getValidation(opts?)`         | `{ isValid, issues }` with scope-relative paths             |
-| `.$useValidation(opts?)`         | React hook — re-renders when issue list changes             |
+| Method                           | Description                                                   |
+| -------------------------------- | ------------------------------------------------------------- |
+| `.$get()`                        | Resolved values, scope refs stay live                         |
+| `.$getSnapshot()`                | Plain data — everything recursively resolved                  |
+| `.$setSnapshot(d)`               | Partial write — reactive fields only                          |
+| `.$setSnapshot(d, { recreate })` | Write + re-run onDestroy then onCreate                        |
+| `.$use()`                        | React hook — `[snapshot, setter]`, re-renders on any change   |
+| `.$subscribe(fn)`                | Whole-scope change listener                                   |
+| `.$destroy()`                    | Tear down, fire onDestroy, detach all subscribers             |
+| `.$recompute()`                  | Re-run all derivations                                        |
+| `.$flush()`                      | Async — expedite pending deferred work, layer-ordered cascade |
+| `.$getIsValid(opts?)`            | True when all schema fields and `validate` pass               |
+| `.$useIsValid(opts?)`            | React hook — re-renders when overall validity changes         |
+| `.$getValidation(opts?)`         | `{ isValid, issues }` with scope-relative paths               |
+| `.$useValidation(opts?)`         | React hook — re-renders when issue list changes               |
 
 ### ScopeMap methods
 
@@ -1407,6 +1443,7 @@ of the factory name. Function-form derivations don't have a factory, so they use
 | `signal`        | _(Async)_ AbortSignal — aborted on dep change or destroy      |
 | `set(value)`    | _(Async)_ Push intermediate values                            |
 | `onCleanup(fn)` | _(Async)_ Register cleanup for re-run or destroy              |
+| `deferBy(ms)`   | _(Async)_ Abortable + flushable sleep                         |
 | `previousValue` | _(Async)_ The last resolved value, or `undefined`             |
 
 ### Type guards

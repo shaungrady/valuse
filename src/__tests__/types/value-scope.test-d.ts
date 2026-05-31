@@ -132,7 +132,7 @@ type DerivedInput = ValueInputOf<WithDerivedDef>;
 // Only value keys appear in input, derivations excluded
 expectTypeOf<DerivedInput>().toHaveProperty('name');
 // @ts-expect-error — derivation key excluded from input
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+
 type _CheckGreetingExcluded = DerivedInput['greeting'];
 
 // ── SnapshotOf ──────────────────────────────────────────────────────

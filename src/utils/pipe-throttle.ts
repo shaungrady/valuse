@@ -1,8 +1,13 @@
 import type { PipeFactoryDescriptor } from '../core/types.js';
 
 /**
- * Throttle pipe: passes the first value immediately, then ignores subsequent
- * values within the `ms` window. The last value in a window is always emitted.
+ * Throttle pipe: passes the first value immediately, then ignores
+ * subsequent values within the `ms` window. The last value in a window is
+ * always emitted (trailing edge). The host value's `.flush()` runs the
+ * trailing-edge commit immediately.
+ *
+ * An accumulating actor: the window survives across writes, so a new write
+ * inside the window updates the trailing value rather than restarting.
  *
  * @typeParam T - the value type.
  * @param ms - throttle window in milliseconds.
@@ -15,29 +20,30 @@ import type { PipeFactoryDescriptor } from '../core/types.js';
  */
 export function pipeThrottle<T>(ms: number): PipeFactoryDescriptor<T, T> {
 	return {
-		create: ({ set, onCleanup }) => {
-			let timer: ReturnType<typeof setTimeout> | null = null;
-			let lastValue: T | undefined;
-			let hasTrailing = false;
-
-			onCleanup(() => {
-				if (timer !== null) clearTimeout(timer);
-			});
-
-			return (value: T) => {
-				lastValue = value;
-				if (timer === null) {
-					set(value);
-					timer = setTimeout(() => {
-						timer = null;
-						if (hasTrailing) {
-							hasTrailing = false;
-							set(lastValue as T);
-						}
-					}, ms);
-				} else {
-					hasTrailing = true;
-				}
+		create: (host) => {
+			let inWindow = false;
+			let trailing: { value: T } | null = null;
+			return {
+				onWrite(value) {
+					if (inWindow) {
+						trailing = { value };
+						return;
+					}
+					host.set(value); // leading edge
+					inWindow = true;
+					void host.deferBy(ms).then(
+						() => {
+							if (trailing) {
+								host.set(trailing.value); // trailing edge
+								trailing = null;
+							}
+							inWindow = false;
+						},
+						() => {
+							// Window aborted (host destroyed) — drop the trailing value.
+						},
+					);
+				},
 			};
 		},
 	};

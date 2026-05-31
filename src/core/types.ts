@@ -43,18 +43,60 @@ export type Unsubscribe = () => void;
 export type Setter<T> = (value: T | ((prev: T) => T)) => void;
 
 /**
- * A factory pipe descriptor. The `create` function is called once per value
- * instance and returns a writer that receives each incoming value. Cleanup
- * runs on destroy.
+ * Host handed to a factory pipe's `create`. Provides the downstream
+ * `set`, lifetime `onCleanup`, a destroy `signal`, and a host-tracked
+ * `deferBy` for flushable timers. See `docs/proposals/flush-pipeline.md`.
+ *
+ * @typeParam Out - the output value type committed downstream.
+ */
+export interface PipeHost<Out> {
+	/** Commit a value downstream (to the next pipe step, or the signal). */
+	set: (value: Out) => void;
+	/** Register teardown that runs when the host value is destroyed. */
+	onCleanup: (fn: () => void) => void;
+	/** Aborts when the host value is destroyed. */
+	signal: AbortSignal;
+	/**
+	 * Abortable + flushable sleep, governed by the host's destroy signal.
+	 * Host-tracked: each call is registered so the actor's default
+	 * `pendingPromise` / `flush` behavior covers it.
+	 */
+	deferBy: (ms: number) => Promise<void>;
+}
+
+/**
+ * A factory pipe instance ("actor"). `onWrite` handles each upstream
+ * write; the actor holds its own state across writes. A new write does
+ * not abort prior in-flight work, so accumulating pipes (throttle,
+ * batch, scan) keep their state.
+ *
+ * @typeParam In - the incoming value type.
+ */
+export interface PipeActor<In> {
+	/** Handle one upstream write. */
+	onWrite(value: In): void;
+	/**
+	 * In-flight work, or null when idle. Optional — defaults to the
+	 * host-tracked `deferBy` calls. Override for work the host can't see
+	 * (a raw `fetch`, an external promise).
+	 */
+	pendingPromise?: Promise<void> | null;
+	/**
+	 * Expedite pending work. Optional — defaults to flushing host-tracked
+	 * `deferBy` calls.
+	 */
+	flush?(): void;
+}
+
+/**
+ * A factory pipe descriptor. `create(host)` is called once per value
+ * instance and returns a {@link PipeActor}.
  *
  * @typeParam In - the incoming value type
  * @typeParam Out - the output value type (defaults to In)
  */
 export interface PipeFactoryDescriptor<In, Out = In> {
-	create: (context: {
-		set: (value: Out) => void;
-		onCleanup: (fn: () => void) => void;
-	}) => (value: In) => void;
+	create(host: PipeHost<Out>): PipeActor<In>;
 }
 
 /**

@@ -62,20 +62,23 @@ const prefsStep = valueScope({
 ### The wizard itself
 
 ```ts
-const wizard = valueScope({
-  currentStep: value<number>(0),
+const wizard = valueScope(
+  {
+    currentStep: value<number>(0),
 
-  // Factory refs: each wizard instance gets its own step instances.
-  // Passing a template directly to `valueRef()` would not create instances.
-  account: valueRef(() => accountStep.create()),
-  personal: valueRef(() => personalStep.create()),
-  prefs: valueRef(() => prefsStep.create()),
+    // Factory refs: each wizard instance gets its own step instances.
+    // Passing a template directly to `valueRef()` would not create instances.
+    account: valueRef(() => accountStep.create()),
+    personal: valueRef(() => personalStep.create()),
+    prefs: valueRef(() => prefsStep.create()),
 
-  stepCount: 3, // plain readonly data
-
-  canGoBack: ({ scope }) => scope.currentStep.use() > 0,
-  canGoForward: ({ scope }) => scope.currentStep.use() < scope.stepCount - 1,
-});
+    stepCount: 3, // plain readonly data
+  },
+  {
+    canGoBack: ({ scope }) => scope.currentStep.use() > 0,
+    canGoForward: ({ scope }) => scope.currentStep.use() < scope.stepCount - 1,
+  },
+);
 ```
 
 ## React components
@@ -209,13 +212,13 @@ function SchemaField({
 }
 ```
 
-## extend() for step variants
+## extendValues() for step variants
 
 Say some users see an "Organization" step between Account and Personal. Use
-`extend()` to add fields without duplicating the base:
+`.extendValues()` to add fields without duplicating the base:
 
 ```ts
-const orgStep = personalStep.extend({
+const orgStep = personalStep.extendValues({
   orgName: valueSchema(type('string > 0'), ''),
   orgSize: valueSchema(type("'small' | 'medium' | 'large'"), 'small'),
   taxId: valueSchema(

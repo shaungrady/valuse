@@ -11,7 +11,7 @@ interface AsyncRetryOptions {
 
 /** Retries `fn` on failure with linear backoff. Returns the first successful result. */
 export const asyncRetry = async <T>(
-	{ max = 3, backoff = 1000, signal }: AsyncRetryOptions,
+	{ max = 3, backoff = 1_000, signal }: AsyncRetryOptions,
 	fn: () => T | Promise<T>,
 ): Promise<T> => {
 	// A pre-aborted signal must not invoke `fn` at all — otherwise we'd

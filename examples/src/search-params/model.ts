@@ -30,18 +30,17 @@ export const pageStateScope = valueScope(
 		// `valuePlain` keeps the router reference inert: writes don't trigger
 		// re-renders or onChange — it's just where the side-effect target lives.
 		router: valuePlain<Router | null>(null),
-
-		showCompactCards: ({ scope }: { scope: any }) =>
-			scope.view.use() === 'grid',
-		periodLabel: ({ scope }: { scope: any }) =>
-			periodLabels[scope.period.use() as Period],
+	},
+	{
+		showCompactCards: ({ scope }) => scope.view.use() === 'grid',
+		periodLabel: ({ scope }) => periodLabels[scope.period.use()],
 	},
 	{
 		// Push the URL back whenever a tracked field changes. `router.get()`
 		// is non-reactive (valuePlain) so reading it here doesn't establish
 		// a dependency on the slot.
-		onChange: ({ scope }: { scope: any }) => {
-			const router = scope.router.get() as Router | null;
+		onChange: ({ scope }) => {
+			const router = scope.router.get();
 			if (!router) return;
 			const params = new URLSearchParams();
 			params.set('view', scope.view.get());

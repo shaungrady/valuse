@@ -22,11 +22,13 @@ export function pipeScan<T, Acc>(
 	initial: Acc,
 ): PipeFactoryDescriptor<T, Acc> {
 	return {
-		create: ({ set }) => {
+		create: (host) => {
 			let accumulator = initial;
-			return (value: T) => {
-				accumulator = reducer(accumulator, value);
-				set(accumulator);
+			return {
+				onWrite(value) {
+					accumulator = reducer(accumulator, value);
+					host.set(accumulator);
+				},
 			};
 		},
 	};

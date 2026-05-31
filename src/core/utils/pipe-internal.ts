@@ -18,16 +18,6 @@ interface FactoryPipeStep<In = unknown, Out = unknown> {
 export type InternalPipeStep = SyncPipeStep | FactoryPipeStep;
 
 /**
- * An activated factory pipe — created by Value when a factory step is added.
- * `write` receives a value from upstream; `cleanups` are the teardown
- * functions registered via the factory's `onCleanup`.
- */
-export interface ActiveFactoryPipe {
-	write: (value: unknown) => void;
-	cleanups: (() => void)[];
-}
-
-/**
  * Apply every sync transform in a pipe step list, in order, to a starting
  * value. Factory steps are ignored — they are activated separately and handle
  * their own value flow.

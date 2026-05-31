@@ -29,7 +29,9 @@ import type { Value } from './value.js';
 import type { ValueSchema } from './value-schema.js';
 import type { ValuePlain } from './value-plain.js';
 import type { ValueRef, ResolvedRef } from './value-ref.js';
-import type { ScopeMap } from './scope-map.js';
+import type { ValueArray } from './value-array.js';
+import type { ValueMap } from './value-map.js';
+import type { ValueSet } from './value-set.js';
 import type {
 	FieldValue,
 	FieldValueSchema,
@@ -49,14 +51,20 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
 /**
- * `true` when `T` is a plain-object group (not a `Value`, not a function).
- * @internal
+ * `true` when `T` is a plain-object subtree (nested fields), `false` for
+ * reactive primitives, refs, collections, and functions. Used by both
+ * the instance mapping (`MapEntry`) and the derivation context mapping
+ * (`DerivLeaf`) to decide when to recurse into a subtree vs treat it as
+ * a leaf.
  */
-type IsGroup<T> =
+export type IsGroup<T> =
 	T extends Value<any, any> ? false
 	: T extends ValueSchema<any, any> ? false
 	: T extends ValuePlain<any, any> ? false
 	: T extends ValueRef<any> ? false
+	: T extends ValueArray<any, any> ? false
+	: T extends ValueMap<any, any> ? false
+	: T extends ValueSet<any> ? false
 	: T extends (...args: any[]) => any ? false
 	: T extends Record<string, unknown> ? true
 	: false;
@@ -83,6 +91,9 @@ type MapEntry<T> =
 	: T extends ValuePlain<infer V, true> ? Pick<FieldValuePlain<V, V>, 'get'>
 	: T extends ValuePlain<infer V, boolean> ? FieldValuePlain<V, V>
 	: T extends ValueRef<infer S> ? ResolvedRef<S>
+	: T extends ValueArray<any, any> ? T
+	: T extends ValueMap<any, any> ? T
+	: T extends ValueSet<any> ? T
 	: T extends (...args: any[]) => Promise<infer A> ?
 		FieldAsyncDerived<Exclude<A, void>>
 	: T extends (...args: any[]) => infer R ? FieldDerived<R>
@@ -132,25 +143,29 @@ export type MapDefinition<Def> = {
 
 /**
  * The shape of a field as it appears in a derivation context. Each leaf
- * is a `{ get, use }` wrapper — `.use()` returns the value directly
+ * is a `{ get, use }` wrapper. `.use()` returns the value directly
  * (NOT a `[value, setter]` tuple as on `ScopeInstance`), and is
  * tracked for re-evaluation when the field changes.
  *
  * For `valueRef(scopeMap)`, the wrapper's `.use()` / `.get()` hand back
- * the underlying `ScopeMap` (so callers reach in with `.get(key)` etc).
- * For `valueRef(scopeInstance)`, the wrapper hands back the live
- * instance. For scalar refs, the wrapper hands back the resolved value.
+ * the underlying `ScopeMap`. For `valueRef(scopeInstance)`, the wrapper
+ * hands back the live instance. For scalar refs, the wrapper hands back
+ * the resolved value.
  *
- * @internal
+ * @typeParam T - a single definition entry type.
  */
-type DerivationLeaf<T> =
+export type DerivLeaf<T> =
 	T extends Value<any, infer Out> ? { get(): Out; use(): Out }
 	: T extends ValueSchema<any, infer Out> ? { get(): Out; use(): Out }
 	: T extends ValuePlain<infer V, any> ? { get(): V; use(): V }
 	: T extends ValueRef<infer S> ?
-		ResolvedRef<S> extends ScopeMap<any, any> ?
-			{ get(): ResolvedRef<S>; use(): ResolvedRef<S> }
-		:	{ get(): ResolvedRef<S>; use(): ResolvedRef<S> }
+		{ get(): ResolvedRef<S>; use(): ResolvedRef<S> }
+	: T extends ValueArray<any, infer Out> ?
+		{ get(): readonly Out[]; use(): readonly Out[] }
+	: T extends ValueMap<infer K, infer V> ?
+		{ get(): ReadonlyMap<K, V>; use(): ReadonlyMap<K, V> }
+	: T extends ValueSet<infer V> ?
+		{ get(): ReadonlySet<V>; use(): ReadonlySet<V> }
 	: T extends (...args: any[]) => Promise<infer A> ?
 		{
 			get(): Exclude<A, void> | undefined;
@@ -160,22 +175,196 @@ type DerivationLeaf<T> =
 	: T;
 
 /**
- * Map a field-only definition to its derivation-context scope shape.
+ * Alias retained while the variadic refactor lands so callers that still
+ * import `DerivationLeaf` continue to compile. Prefer `DerivLeaf`.
+ * @deprecated Use `DerivLeaf` instead.
+ * @internal
+ */
+export type DerivationLeaf<T> = DerivLeaf<T>;
+
+/**
+ * Map a definition to its derivation-context scope shape.
  *
- * Each field becomes a `DerivationLeaf<T>` (a `{ get, use }` wrapper).
- * Nested groups recurse. This intentionally differs from
+ * Each field becomes a {@link DerivLeaf} (a `{ get, use }` wrapper).
+ * Nested subtrees recurse. This intentionally differs from
  * `ScopeInstance<Def>` because reads inside a derivation go through
  * `DerivationWrap`, which returns values directly (not React-hook
  * tuples).
  *
  * @typeParam Def - the field-only definition record.
  */
-export type DerivationScope<Def extends Record<string, unknown>> = {
+export type DerivScope<Def extends Record<string, unknown>> = {
 	readonly [K in keyof Def]: Def[K] extends Record<string, unknown> ?
 		IsGroup<Def[K]> extends true ?
-			Readonly<DerivationScope<Def[K]>>
-		:	DerivationLeaf<Def[K]>
-	:	DerivationLeaf<Def[K]>;
+			Readonly<DerivScope<Def[K]>>
+		:	DerivLeaf<Def[K]>
+	:	DerivLeaf<Def[K]>;
+};
+
+/**
+ * Unified derivation context for sync AND async derivations. All five
+ * fields are always provided by the runtime; which ones are meaningful
+ * depends on the derivation's style.
+ *
+ * - `scope` and `previousValue` are useful in BOTH sync and async
+ *   derivations. `previousValue` enables stateful sync patterns like
+ *   trend detection (`current > previousValue`) or smoothing.
+ * - `signal`, `set`, and `onCleanup` are async-only. Sync derivations
+ *   should ignore them.
+ *
+ * The fields show up on every derivation's ctx because TypeScript can't
+ * discriminate per-entry between sync and async slots without
+ * destabilizing inference (see `docs/proposals/variadic-scope-api.md`).
+ *
+ * @typeParam Prior - the accumulated definition seen by this layer.
+ */
+export interface DerivCtx<Prior extends Record<string, unknown>> {
+	/**
+	 * Reactive scope. Read other fields via `scope.<field>.use()` (tracked)
+	 * or `.get()` (untracked).
+	 */
+	scope: DerivScope<Prior>;
+	/**
+	 * AbortSignal that fires when a tracked dependency changes or the
+	 * instance is destroyed. Async-only; sync derivations should ignore.
+	 */
+	signal: AbortSignal;
+	/**
+	 * Push an intermediate value before the final `return`. Async-only;
+	 * sync derivations should ignore (they push via `return`).
+	 */
+	set: (value: unknown) => void;
+	/**
+	 * Register cleanup for re-run or destroy. Async-only; sync derivations
+	 * should ignore (they have no lifecycle between calls).
+	 */
+	onCleanup: (fn: () => void) => void;
+	/**
+	 * Abortable + flushable sleep. Resolves after `ms`, rejects if the run
+	 * aborts (dep change or destroy), resolves early if the derivation's
+	 * `.flush()` is called. Async-only; sync derivations should ignore.
+	 */
+	deferBy: (ms: number) => Promise<void>;
+	/**
+	 * The previous value this derivation produced, or `undefined` on the
+	 * first run. Useful in both sync and async derivations for patterns
+	 * that depend on the prior result (trend detection, smoothing, etc.).
+	 * Cast to the derivation's return type when reading.
+	 */
+	previousValue: unknown;
+}
+
+/**
+ * Type expected at a Derivation Layer arg slot. Each entry is a function
+ * whose ctx is contextually typed against `Prior`. Used as an
+ * intersection (`L & DerivationLayer<Prior, L>`) on the overload's
+ * parameter to provide contextual typing without introducing an `any`
+ * constraint that would defeat the purpose.
+ *
+ * @typeParam Prior - the accumulated definition seen by this layer.
+ * @typeParam L - the user-provided layer literal.
+ */
+export type DerivationLayer<Prior extends Record<string, unknown>, L> = {
+	[K in keyof L]: (ctx: DerivCtx<Prior>) => unknown;
+};
+
+/**
+ * Strict variant of {@link DerivationLayer} for the LAST derivation-layer
+ * slot at each arity (i.e., when no config layer follows). Entries with
+ * config-shaped key names collapse to `never`, so the call falls through
+ * to the matching config-layer overload.
+ *
+ * This is what makes `valueScope(fields, { onCreate: hook })` resolve to
+ * the config-layer overload while `valueScope(fields, { onCreate: deriv },
+ * {})` (with a trailing `{}` disambiguator) resolves to the
+ * derivation-layer-then-config overload.
+ *
+ * @typeParam Prior - the accumulated definition seen by this layer.
+ * @typeParam L - the user-provided layer literal.
+ */
+export type LastDerivationLayer<Prior extends Record<string, unknown>, L> = {
+	[K in keyof L]: K extends ConfigKey ? never
+	:	(ctx: DerivCtx<Prior>) => unknown;
+};
+
+/**
+ * Reserved key names that appear at the config-layer position. Used by
+ * {@link LastDerivationLayer} to discriminate config from derivation in
+ * 2-arg `(fields, X)` and (N+1)-arg `(fields, ...derivs, X)` calls.
+ *
+ * @internal
+ */
+type ConfigKey =
+	| 'onCreate'
+	| 'onDestroy'
+	| 'onChange'
+	| 'beforeChange'
+	| 'onUsed'
+	| 'onUnused'
+	| 'validate'
+	| 'allowUndeclaredProperties';
+
+/**
+ * Same as {@link DerivationLayer}, but for `.extend()` derivation layers.
+ * Sees the full prior definition, including any keys being overridden in
+ * this layer.
+ *
+ * Type-level sibling/self-exclusion via `Omit<Prior, keyof L>` was
+ * attempted but doesn't reliably fire: TypeScript resolves `keyof L` to
+ * `string` (wide) during contextual typing of the literal, which makes
+ * `Omit` strip *all* keys rather than just the ones being defined. The
+ * runtime catches actual cycles (sibling-cycle or self-reference) on
+ * first evaluation via Preact-signals' computed cycle detection.
+ *
+ * @typeParam Prior - the accumulated definition seen by this layer.
+ * @typeParam L - the user-provided layer literal.
+ */
+export type ExtendDerivationLayer<
+	Prior extends Record<string, unknown>,
+	L,
+> = DerivationLayer<Prior, L>;
+
+/**
+ * Field Layer entry constraint: rejects functions so a function in the
+ * field-layer slot fails at the type level. Used as an intersection
+ * (`L & FieldLayer<L>`) on the field-layer overload parameter.
+ *
+ * @typeParam L - the user-provided layer literal.
+ */
+export type FieldLayer<L> = { [K in keyof L]: FieldEntry<L[K]> };
+
+/**
+ * @internal — the per-entry predicate for {@link FieldLayer}.
+ */
+type FieldEntry<T> = T extends (...args: any[]) => any ? never : T;
+
+/**
+ * Deep merge `B` into `A`. Plain-object subtrees recurse; reactive leaves
+ * and functions are leaves that follow shallow-override semantics (B
+ * replaces A). Used as the type-level layer accumulator.
+ *
+ * Keys in `B` whose value type is exactly `undefined` are removed from
+ * the merged result, matching the runtime field-removal directive
+ * (`extendValues({ field: undefined })`).
+ *
+ * @typeParam A - the prior accumulated definition.
+ * @typeParam B - the new layer being merged.
+ */
+export type DeepMerge<A, B> = {
+	[K in keyof A | keyof B as K extends keyof B ?
+		[B[K]] extends [undefined] ?
+			never
+		:	K
+	:	K]: K extends keyof B ?
+		K extends keyof A ?
+			IsGroup<A[K]> extends true ?
+				IsGroup<B[K]> extends true ?
+					DeepMerge<A[K], B[K]>
+				:	B[K]
+			:	B[K]
+		:	B[K]
+	: K extends keyof A ? A[K]
+	: never;
 };
 
 /**
@@ -197,7 +386,7 @@ export type DerivationScope<Def extends Record<string, unknown>> = {
  * ```
  */
 export interface SyncDerivationContext<Def extends Record<string, unknown>> {
-	scope: DerivationScope<Def>;
+	scope: DerivScope<Def>;
 }
 
 /**
@@ -213,7 +402,7 @@ export interface SyncDerivationContext<Def extends Record<string, unknown>> {
  * @typeParam Def - the field-only definition record (no derivations).
  */
 export interface AsyncDerivationContext<Def extends Record<string, unknown>> {
-	scope: DerivationScope<Def>;
+	scope: DerivScope<Def>;
 	signal: AbortSignal;
 	set: (value: unknown) => void;
 	onCleanup: (fn: () => void) => void;
@@ -267,6 +456,7 @@ export interface ScopeDollarMethods<Def extends Record<string, unknown>> {
 	$subscribe: (fn: () => void) => Unsubscribe;
 	$use: () => [SnapshotOf<Def>, (data: Partial<ValueInputOf<Def>>) => void];
 	$recompute: () => void;
+	$flush: () => Promise<void>;
 	$get: () => SnapshotOf<Def>;
 	$getIsValid: (options?: { deep?: boolean }) => boolean;
 	$useIsValid: (options?: { deep?: boolean }) => boolean;
@@ -303,6 +493,7 @@ export interface GenericScopeInstance extends Record<string, unknown> {
 		(data: Record<string, unknown>) => void,
 	];
 	$recompute: () => void;
+	$flush: () => Promise<void>;
 	$get: () => Record<string, unknown>;
 }
 
@@ -364,17 +555,3 @@ export type SnapshotOf<Def> = {
 	: Def[K] extends Record<string, unknown> ? SnapshotOf<Def[K]>
 	: Def[K];
 };
-
-// ── Extend merging ──────────────────────────────────────────────────
-
-/**
- * Merge a base definition with an extension.
- * Keys in Ext override Base; `undefined` values remove the key.
- */
-export type ExtendDef<Base, Ext> = Simplify<
-	{
-		[K in Exclude<keyof Base, keyof Ext>]: Base[K];
-	} & {
-		[K in keyof Ext as Ext[K] extends undefined ? never : K]: Ext[K];
-	}
->;

@@ -1,4 +1,7 @@
-import type { ScopeTemplate } from '../../core/value-scope.js';
+import {
+	asUnknownValueScope,
+	type ScopeTemplate,
+} from '../../core/value-scope.js';
 import { pickFields } from '../../core/utils/pick-fields.js';
 
 /** A pluggable storage backend for `withPersistence`. */
@@ -82,6 +85,10 @@ const persistenceByInstance = new WeakMap<object, PersistenceState>();
  * @param options - persistence options (`key` and `adapter` required).
  * @returns a new {@link ScopeTemplate} with persistence wired in.
  */
+// `T extends ScopeTemplate<any>` preserves wrapper types (e.g.,
+// `HistoryTemplate<Def>`) through composition. `any` is required because
+// `ScopeTemplate` is invariant in `Def` — a stricter constraint would
+// reject narrower wrapper templates.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function withPersistence<T extends ScopeTemplate<any>>(
 	template: T,
@@ -131,105 +138,102 @@ export function withPersistence<T extends ScopeTemplate<any>>(
 		}
 	}
 
-	return template.extend(
-		{},
-		{
-			onCreate({ scope }) {
-				function writeNow(snapshot: Record<string, unknown>): void {
-					const selected = pickFields(snapshot, fields);
-					try {
-						void adapter.write(key, serialize(selected));
-					} catch {
-						// Ignore write errors (quota, SSR, etc.)
-					}
-				}
-
-				const state: PersistenceState = {
-					isHydrating: false,
-					writeTimer: null,
-					pendingSnapshot: null,
-					externalUnsubscribe: null,
-					writeNow,
-					getSnapshot: () => scope.$getSnapshot(),
-				};
-				persistenceByInstance.set(scope, state);
-
-				function hydrateFrom(raw: string | null): void {
-					const parsed = parseOrNull(raw);
-					if (!parsed) return;
-					state.isHydrating = true;
-					try {
-						scope.$setSnapshot(parsed);
-					} finally {
-						// Defer the flag reset so the synchronous onChange
-						// that follows setSnapshot sees isHydrating = true.
-						queueMicrotask(() => {
-							state.isHydrating = false;
-						});
-					}
-				}
-
-				// Hydrate. If adapter.read is async, await it in the background.
+	return asUnknownValueScope(template).extendConfig({
+		onCreate({ scope }) {
+			function writeNow(snapshot: Record<string, unknown>): void {
+				const selected = pickFields(snapshot, fields);
 				try {
-					const readResult = adapter.read(key);
-					if (readResult instanceof Promise) {
-						readResult
-							.then((raw) => {
-								hydrateFrom(raw);
-							})
-							.catch(() => {
-								// Ignore read errors.
-							});
-					} else {
-						hydrateFrom(readResult);
-					}
+					void adapter.write(key, serialize(selected));
 				} catch {
-					// Ignore sync read errors.
+					// Ignore write errors (quota, SSR, etc.)
 				}
+			}
 
-				// Cross-tab / external subscription.
-				if (adapter.subscribe) {
-					state.externalUnsubscribe = adapter.subscribe(key, (raw) => {
-						hydrateFrom(raw);
+			const state: PersistenceState = {
+				isHydrating: false,
+				writeTimer: null,
+				pendingSnapshot: null,
+				externalUnsubscribe: null,
+				writeNow,
+				getSnapshot: () => scope.$getSnapshot(),
+			};
+			persistenceByInstance.set(scope, state);
+
+			function hydrateFrom(raw: string | null): void {
+				const parsed = parseOrNull(raw);
+				if (!parsed) return;
+				state.isHydrating = true;
+				try {
+					scope.$setSnapshot(parsed);
+				} finally {
+					// Defer the flag reset so the synchronous onChange
+					// that follows setSnapshot sees isHydrating = true.
+					queueMicrotask(() => {
+						state.isHydrating = false;
 					});
 				}
-			},
+			}
 
-			onChange({ scope }) {
-				const state = persistenceByInstance.get(scope);
-				if (!state) return;
-				if (state.isHydrating) return;
-
-				const snapshot = state.getSnapshot();
-
-				if (throttle > 0) {
-					state.pendingSnapshot = snapshot;
-					if (state.writeTimer === null) {
-						state.writeTimer = setTimeout(() => {
-							state.writeTimer = null;
-							const pending = state.pendingSnapshot;
-							state.pendingSnapshot = null;
-							if (pending) state.writeNow(pending);
-						}, throttle);
-					}
+			// Hydrate. If adapter.read is async, await it in the background.
+			try {
+				const readResult = adapter.read(key);
+				if (readResult instanceof Promise) {
+					readResult
+						.then((raw) => {
+							hydrateFrom(raw);
+						})
+						.catch(() => {
+							// Ignore read errors.
+						});
 				} else {
-					state.writeNow(snapshot);
+					hydrateFrom(readResult);
 				}
-			},
+			} catch {
+				// Ignore sync read errors.
+			}
 
-			onDestroy({ scope }) {
-				const state = persistenceByInstance.get(scope);
-				if (!state) return;
-
-				flush(state, state.writeNow);
-
-				if (state.externalUnsubscribe) {
-					state.externalUnsubscribe();
-					state.externalUnsubscribe = null;
-				}
-
-				persistenceByInstance.delete(scope);
-			},
+			// Cross-tab / external subscription.
+			if (adapter.subscribe) {
+				state.externalUnsubscribe = adapter.subscribe(key, (raw) => {
+					hydrateFrom(raw);
+				});
+			}
 		},
-	) as unknown as T;
+
+		onChange({ scope }) {
+			const state = persistenceByInstance.get(scope);
+			if (!state) return;
+			if (state.isHydrating) return;
+
+			const snapshot = state.getSnapshot();
+
+			if (throttle > 0) {
+				state.pendingSnapshot = snapshot;
+				if (state.writeTimer === null) {
+					state.writeTimer = setTimeout(() => {
+						state.writeTimer = null;
+						const pending = state.pendingSnapshot;
+						state.pendingSnapshot = null;
+						if (pending) state.writeNow(pending);
+					}, throttle);
+				}
+			} else {
+				state.writeNow(snapshot);
+			}
+		},
+
+		onDestroy({ scope }) {
+			const state = persistenceByInstance.get(scope);
+			if (!state) return;
+
+			flush(state, state.writeNow);
+
+			if (state.externalUnsubscribe) {
+				state.externalUnsubscribe();
+				state.externalUnsubscribe = null;
+			}
+
+			persistenceByInstance.delete(scope);
+		},
+	}) as unknown as T;
 }

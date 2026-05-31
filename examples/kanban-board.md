@@ -40,36 +40,45 @@ const card = valueScope(
 );
 ```
 
-### Card type specialization via extend()
+### Card type specialization via extendValues()
 
 ```ts
-const bugCard = card.extend({
-  severity: value<'low' | 'medium' | 'high' | 'critical'>('medium'),
-  stepsToReproduce: value<string>(''),
+const bugCard = card.extendValues(
+  {
+    severity: value<'low' | 'medium' | 'high' | 'critical'>('medium'),
+    stepsToReproduce: value<string>(''),
+  },
+  {
+    isCritical: ({ scope }) => scope.severity.use() === 'critical',
+  },
+);
 
-  isCritical: ({ scope }) => scope.severity.use() === 'critical',
-});
-
-const featureCard = card.extend({
-  storyPoints: value<number>(0),
-  acceptanceCriteria: value<string>(''),
-
-  isEstimated: ({ scope }) => scope.storyPoints.use() > 0,
-});
+const featureCard = card.extendValues(
+  {
+    storyPoints: value<number>(0),
+    acceptanceCriteria: value<string>(''),
+  },
+  {
+    isEstimated: ({ scope }) => scope.storyPoints.use() > 0,
+  },
+);
 ```
 
 ### Columns
 
 ```ts
-const column = valueScope({
-  id: value<string>(),
-  name: value<string>(),
-  // ordered list of unique card IDs in this column
-  cardIds: value<string[]>([]).pipe((ids) => [...new Set(ids)]),
-
-  cardCount: ({ scope }) => scope.cardIds.use().length,
-  isEmpty: ({ scope }) => scope.cardIds.use().length === 0,
-});
+const column = valueScope(
+  {
+    id: value<string>(),
+    name: value<string>(),
+    // ordered list of unique card IDs in this column
+    cardIds: value<string[]>([]).pipe((ids) => [...new Set(ids)]),
+  },
+  {
+    cardCount: ({ scope }) => scope.cardIds.use().length,
+    isEmpty: ({ scope }) => scope.cardIds.use().length === 0,
+  },
+);
 ```
 
 ### The board
@@ -87,7 +96,8 @@ const board = valueScope(
     // Per-instance collections — each board gets its own maps
     cards: valueRef(() => card.createMap()),
     columns: valueRef(() => column.createMap()),
-
+  },
+  {
     // Async derivation: fetches board data when boardId changes.
     // Aborts the previous fetch automatically.
     data: async ({ scope, signal }) => {
@@ -95,19 +105,19 @@ const board = valueScope(
       const res = await fetch(`/api/boards/${id}`, { signal });
       return res.json();
     },
-
+  },
+  {
     // Sync derivations read the async data without knowing it's async.
     name: ({ scope }) => scope.data.use()?.name ?? 'Loading...',
     columnOrder: ({ scope }) =>
-      scope.data.use()?.columns?.map((c: any) => c.id) ?? [],
+      scope.data.use()?.columns?.map((c) => c.id) ?? [],
 
     // Derivation reacts to column map key changes
     columnCount: ({ scope }) => scope.columns.use().size,
   },
   {
-    onChange: ({ scope, changes }) => {
-      const dataChanged = [...changes].some((c) => c.path === 'data');
-      if (!dataChanged) return;
+    onChange: ({ scope, changesByScope }) => {
+      if (!changesByScope.has(scope.data)) return;
       const data = scope.data.get();
       if (!data) return;
 
@@ -267,14 +277,16 @@ cards.get('card-1')?.priority; // "high" (undeclared props are plain values, not
 ```
 
 If a dynamic field later needs reactivity or derived state, promote it with
-`extend()`:
+`.extendValues()`:
 
 ```ts
-const prioritizedCard = card.extend({
-  priority: value<'low' | 'medium' | 'high'>('medium'),
-  isUrgent: ({ scope }) =>
-    scope.priority.use() === 'high' && scope.assignee.use() === null,
-});
+const prioritizedCard = card.extendValues(
+  { priority: value<'low' | 'medium' | 'high'>('medium') },
+  {
+    isUrgent: ({ scope }) =>
+      scope.priority.use() === 'high' && scope.assignee.use() === null,
+  },
+);
 ```
 
 ### Board-level filtering
@@ -305,18 +317,27 @@ Add persistence to the card scope without touching the components. The `changes`
 map lets you skip UI-only fields:
 
 ```ts
+// `debounce` is any standard debounce helper (e.g. lodash). Hoisted once so
+// repeated changes coalesce into a single save; recreating it per change
+// would defeat the debounce.
+const persistCard = debounce(
+  (id: string, snapshot: CardSnapshot) => saveCard(id, snapshot),
+  500,
+);
+
 const card = valueScope(
   {
     /* ...fields from above... */
   },
   {
     onChange: ({ scope, changes }) => {
-      // Persist only when a non-UI field changed
+      // Persist only when a non-UI field changed. Compare against the field
+      // node (`c.scope`) rather than the path string for a structural check.
       const shouldPersist = [...changes].some(
-        (c) => c.path !== 'isDragging' && c.path !== 'isSelected',
+        (c) => c.scope !== scope.isDragging && c.scope !== scope.isSelected,
       );
       if (!shouldPersist) return;
-      debounce(() => saveCard(scope.id.get(), scope.$getSnapshot()), 500);
+      persistCard(scope.id.get(), scope.$getSnapshot());
     },
   },
 );

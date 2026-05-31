@@ -8,7 +8,7 @@ patterns like data fetching, WebSocket streams, and polling.
 ## Table of contents
 
 - [Basic async derivation](#basic-async-derivation)
-- [The async context](#the-async-context)
+- [The derivation context](#the-derivation-context)
 - [Abort and re-run](#abort-and-re-run)
 - [Status tracking with AsyncState](#status-tracking-with-asyncstate)
 - [Intermediate values with set()](#intermediate-values-with-set)
@@ -27,38 +27,60 @@ patterns like data fetching, WebSocket streams, and polling.
 Mark a derivation as `async` and it becomes an async derivation:
 
 ```ts
-const userScope = valueScope({
-  userId: value<string>(),
-
-  profile: async ({ scope, signal }) => {
-    const id = scope.userId.use();
-    const res = await fetch(`/api/users/${id}`, { signal });
-    return res.json();
+const userScope = valueScope(
+  { userId: value<string>() },
+  {
+    profile: async ({ scope, signal }) => {
+      const id = scope.userId.use();
+      const res = await fetch(`/api/users/${id}`, { signal });
+      return res.json();
+    },
   },
-});
+);
 ```
 
 The derivation runs immediately on instance creation. When `userId` changes, the
 previous run is aborted and a new one starts. The return value is stored as the
 field's value.
 
-## The async context
+## The derivation context
 
-Async derivations receive a richer context than sync ones:
+Every derivation function (sync or async) receives the same context object:
 
-| Property        | Description                                        |
-| --------------- | -------------------------------------------------- |
-| `scope`         | Same scope context as sync derivations             |
-| `signal`        | `AbortSignal` that fires on dep change or destroy  |
-| `set(value)`    | Push intermediate values before the final `return` |
-| `onCleanup(fn)` | Register cleanup for re-run or destroy             |
-| `previousValue` | The last resolved value (or `undefined`)           |
+| Property        | Description                                                                         |
+| --------------- | ----------------------------------------------------------------------------------- |
+| `scope`         | Reactive scope: read other fields via `.use()` / `.get()`                           |
+| `signal`        | `AbortSignal` that fires on dep change or destroy                                   |
+| `set(value)`    | Push intermediate values before the final `return`                                  |
+| `onCleanup(fn)` | Register cleanup for re-run or destroy                                              |
+| `deferBy(ms)`   | Abortable + flushable sleep (see [Deferring with deferBy](#deferring-with-deferby)) |
+| `previousValue` | The last resolved value (or `undefined`)                                            |
 
 ```ts
-profile: async ({ scope, signal, set, onCleanup, previousValue }) => {
+profile: async ({ scope, signal, set, onCleanup, deferBy, previousValue }) => {
   // ...
 };
 ```
+
+Four of the fields after `scope` (`signal`, `set`, `onCleanup`, `deferBy`) are
+async-only and should be ignored in sync derivations. `previousValue` is useful
+in both: sync derivations can read the prior return value for patterns like
+trend detection (`current > previousValue`) or smoothing. The fields show up on
+every derivation's ctx because the type system can't discriminate per-entry
+between sync and async slots.
+
+By convention, sync derivations destructure only `({ scope })`:
+
+```ts
+fullName: ({ scope }) => `${scope.first.use()} ${scope.last.use()}`,
+```
+
+This convention makes the intent visible at a glance and keeps sync derivations
+free of async-only fields they shouldn't be using.
+
+> One upside of the unified context: swapping a derivation from sync to async
+> (or back) is a one-keyword change. No context-type annotation to swap, no
+> wrapper to add or remove.
 
 ## Abort and re-run
 
@@ -92,8 +114,19 @@ interface AsyncState<T> {
   hasValue: boolean; // true once any value has been produced
   status: 'unset' | 'setting' | 'set' | 'error';
   error: unknown; // the error if status === 'error'
+  isPending: boolean; // setting && !hasValue — "first load, show a spinner"
+  isUpdating: boolean; // setting && hasValue — new value computing, keep current on screen
+  isError: boolean; // status === 'error'
 }
 ```
+
+`isPending`, `isUpdating`, and `isError` are convenience flags derived from
+`status` / `hasValue`. `isPending` is the "first load" check (in flight with
+nothing to show yet); `isUpdating` is its complement (in flight with a value
+already present, so you can keep the current value on screen and show a subtle
+indicator) — the two partition the `'setting'` status and are mutually
+exclusive. Use `status` directly when you need to distinguish all four states or
+want TypeScript to narrow on it.
 
 The status transitions are:
 
@@ -238,24 +271,112 @@ open-ended data source:
 ```ts
 import { asyncDelay } from 'valuse/utils';
 
-const ticker = valueScope({
-  symbol: value<string>(),
-
-  price: async ({ scope, set, signal }) => {
-    const sym = scope.symbol.use();
-    while (!signal.aborted) {
-      const res = await fetch(`/api/price/${sym}`, { signal });
-      const data = await res.json();
-      if (!signal.aborted) set(data.price);
-      await asyncDelay({ ms: 1000, signal });
-    }
+const ticker = valueScope(
+  { symbol: value<string>() },
+  {
+    price: async ({ scope, set, signal }) => {
+      const sym = scope.symbol.use();
+      while (!signal.aborted) {
+        const res = await fetch(`/api/price/${sym}`, { signal });
+        const data = await res.json();
+        if (!signal.aborted) set(data.price);
+        await asyncDelay({ ms: 1000, signal });
+      }
+    },
   },
-});
+);
 ```
 
 When `symbol` changes, the loop's `signal` is aborted, the `while` exits, and a
 new loop starts with the new symbol. When the instance is destroyed, the loop
 stops automatically.
+
+## Deferring with deferBy
+
+`deferBy(ms)` is an abortable, flushable sleep. It returns a Promise that:
+
+- Resolves after `ms` milliseconds.
+- Rejects if the derivation's `signal` aborts (dep change or instance
+  destroyed).
+- Resolves early if `.flush()` is called on the derivation from outside.
+
+The canonical use is in-derivation debounce for search-as-you-type:
+
+```ts
+results: async ({ scope, signal, deferBy }) => {
+  const q = scope.query.use().trim();
+  if (q.length < 2) return [];
+
+  await deferBy(200); // typing again aborts; .flush() expedites
+
+  const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal });
+  return res.json();
+};
+```
+
+A new keystroke aborts the pending fetch _before it even fires_. The view can
+call `instance.results.flush()` on Enter to short-circuit the wait and run
+immediately with whatever the current input is.
+
+`deferBy(ms)` is the same primitive used in
+[factory pipes](pipes.md#actor-factory-pipes). One deferral helper, one mental
+model, used identically in both places.
+
+## Flushing async derivations
+
+Every async derivation has a `.flush(): Promise<void>` method that **settles the
+run to its next output**. It expedites the active `deferBy()` and keeps chasing
+— re-expediting any freshly-armed deferral — until the run either:
+
+- **emits a value** via `set()`,
+- **completes** (returns or throws), or
+- hits a safety cap (1,000 chase iterations) so a degenerate loop that defers
+  without ever producing output can't hang flush forever (a `console.warn` flags
+  it when reached).
+
+If the derivation isn't currently running, the Promise resolves immediately.
+
+```tsx
+function SearchInput({ instance }) {
+  const [query, setQuery] = instance.query.use();
+  return (
+    <input
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') instance.results.flush(); // fire-and-forget
+      }}
+    />
+  );
+}
+
+// Or await when you need a settle signal:
+async function submitSearch() {
+  await form.results.flush();
+  send(form.results.get());
+}
+```
+
+**Flush expedites deferrals, not arbitrary awaits.** If the derivation is past
+its `deferBy()` and waiting on a `fetch()`, `.flush()` has nothing to skip — the
+Promise resolves when the fetch resolves (and any `set()` or `return` it
+triggers). Flush means "expedite the deferral," not "speed up the network."
+
+**Streaming derivations work too.** A loop with `set()` (see
+[Long-running derivations](#long-running-derivations)) never returns, but each
+iteration produces an emit. `.flush()` on such a derivation resolves once the
+next emit lands — useful for "give me the next value" semantics.
+
+`.flush()` is different from `.recompute()`:
+
+- **`.recompute()`** — aborts the current run and starts a fresh one from
+  scratch. Any in-flight work is discarded.
+- **`.flush()`** — expedites the _current_ run, chasing any `deferBy()` calls
+  forward until the run produces its next output. The run continues with
+  whatever inputs it was already operating on.
+
+Use `.flush()` when the inputs haven't changed and you just want to skip the
+deferral. Use `.recompute()` when you want to retry from scratch.
 
 ## Sync derivations depending on async
 
@@ -263,24 +384,27 @@ Sync derivations can depend on async ones without knowing they are async.
 `.use()` returns `T | undefined`; no promises, no `await`:
 
 ```ts
-const person = valueScope({
-  userId: value<string>(),
-
-  profile: async ({ scope, signal }) => {
-    const res = await fetch(`/api/users/${scope.userId.use()}`, { signal });
-    return res.json(); // { name: string }
+const person = valueScope(
+  { userId: value<string>() },
+  {
+    profile: async ({ scope, signal }) => {
+      const res = await fetch(`/api/users/${scope.userId.use()}`, { signal });
+      return res.json(); // { name: string }
+    },
   },
-
-  greeting: ({ scope }) => {
-    const profile = scope.profile.use(); // { name: string } | undefined
-    return profile ? `Hello, ${profile.name}!` : 'Loading...';
+  {
+    greeting: ({ scope }) => {
+      const profile = scope.profile.use(); // { name: string } | undefined
+      return profile ? `Hello, ${profile.name}!` : 'Loading...';
+    },
   },
-});
+);
 ```
 
-When `profile` resolves, `greeting` recomputes automatically. If you later
-change `profile` from async to sync (or vice versa), `greeting` does not need to
-change.
+`greeting` reads `profile`, so it lives in a later derivation layer. When
+`profile` resolves, `greeting` recomputes automatically. If you later change
+`profile` from async to sync (or vice versa), `greeting` does not need to
+change; both produce the same `T | undefined` to a downstream sync derivation.
 
 ## React integration
 
@@ -300,8 +424,8 @@ Use the full form for loading and error states:
 function Profile({ person }) {
   const [profile, state] = person.profile.useAsync();
 
-  if (state.status === 'setting' && !state.hasValue) return <Spinner />;
-  if (state.status === 'error') return <Error error={state.error} />;
+  if (state.isPending) return <Spinner />;
+  if (state.isError) return <Error error={state.error} />;
   return <Card data={profile} />;
 }
 ```

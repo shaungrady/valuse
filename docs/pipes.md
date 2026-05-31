@@ -12,7 +12,10 @@ are stateful transforms like debounce and throttle.
 - [Chaining pipes](#chaining-pipes)
 - [Factory pipes](#factory-pipes)
 - [Built-in factory pipes](#built-in-factory-pipes)
+- [Actor factory pipes](#actor-factory-pipes)
+- [Switch pipes (createSwitchPipe)](#switch-pipes-createswitchpipe)
 - [Writing custom factory pipes](#writing-custom-factory-pipes)
+- [Flushing pipes](#flushing-pipes)
 - [Mixing sync and factory pipes](#mixing-sync-and-factory-pipes)
 - [Pipeline ordering](#pipeline-ordering)
 - [Pipes in scopes](#pipes-in-scopes)
@@ -106,25 +109,24 @@ const result = value<string>('')
 
 ## Factory pipes
 
-For stateful, deferred transforms, `.pipe()` accepts a factory descriptor
-instead of a plain function. A factory's `create` method is called once per
-value instance and returns a writer function:
+For stateful, deferred transforms (debounce, throttle, batch), `.pipe()` accepts
+a factory descriptor instead of a plain function. A factory's `create()` method
+is called once per value instance with a `host`, and returns an **actor** that
+handles each write. See [Actor factory pipes](#actor-factory-pipes) below for
+the full shape; in short:
 
 ```ts
 interface PipeFactoryDescriptor<In, Out> {
-  create: (context: {
-    set: (value: Out) => void;
-    onCleanup: (fn: () => void) => void;
-  }) => (value: In) => void;
+  create: (host: PipeHost<Out>) => PipeActor<In>;
 }
 ```
 
-The `set` function writes to the next stage of the pipeline (or to the signal if
-this is the last step). The `onCleanup` function registers teardown logic that
-runs when the value is destroyed.
-
-The writer function receives each incoming value from `.set()` and decides when
-(and whether) to call `set()`.
+The actor's `onWrite` receives each incoming value from `.set()`. The host gives
+it `set()` to commit downstream, an abortable+flushable `host.deferBy(ms)`
+helper for timers, `onCleanup` for teardown, and a `signal` that aborts when the
+host value is destroyed. For the common cancel-and-replace case (debounce), the
+[`createSwitchPipe`](#switch-pipes-createswitchpipe) helper hides the actor
+boilerplate entirely.
 
 ## Built-in factory pipes
 
@@ -218,27 +220,126 @@ const uniqueUser = value<User>(defaultUser).pipe(
 );
 ```
 
-## Writing custom factory pipes
+## Actor factory pipes
 
-A factory pipe is an object with a `create` method. Here is a delay pipe that
-waits a fixed time before passing through:
+A factory pipe's `create(host)` returns an **actor** — an object with an
+`onWrite` method that handles each incoming write. The actor holds its own state
+across writes (a throttle window, a batch buffer), so a new write does **not**
+abort prior in-flight work. This is the key difference from async derivations,
+which re-run wholesale on every dep change.
 
 ```ts
-function pipeDelay<T>(ms: number): PipeFactoryDescriptor<T, T> {
+interface PipeHost<Out> {
+  /** Commit a value downstream. */
+  set(value: Out): void;
+  /** Lifetime cleanup — fires when the host value is destroyed. */
+  onCleanup(fn: () => void): void;
+  /** Aborts when the host value is destroyed. */
+  signal: AbortSignal;
+  /**
+   * Abortable + flushable sleep, governed by the host's destroy
+   * signal. Host-tracked: each call registers with the host so the
+   * actor's pending/flush behavior comes for free.
+   */
+  deferBy(ms: number): Promise<void>;
+}
+
+interface PipeActor<In> {
+  /** Called once per upstream `.set()`. */
+  onWrite(value: In): void;
+  /** In-flight work, or null if idle. Optional — defaults to host-tracked deferBy. */
+  pendingPromise?: Promise<void> | null;
+  /** Expedite pending work. Optional — defaults to flushing host-tracked deferBy. */
+  flush?(): void;
+}
+
+interface PipeFactoryDescriptor<In, Out = In> {
+  create: (host: PipeHost<Out>) => PipeActor<In>;
+}
+```
+
+An actor that only defers via `host.deferBy` needs to implement just `onWrite` —
+`pendingPromise` and `flush` are derived by the host automatically.
+`pipeThrottle` in full:
+
+```ts
+function pipeThrottle<T>(ms: number): PipeFactoryDescriptor<T, T> {
   return {
-    create: ({ set, onCleanup }) => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      onCleanup(() => {
-        if (timer !== null) clearTimeout(timer);
-      });
-      return (value: T) => {
-        timer = setTimeout(() => {
-          timer = null;
-          set(value);
-        }, ms);
+    create: (host) => {
+      let inWindow = false;
+      let trailing: { value: T } | null = null;
+      return {
+        onWrite(value) {
+          if (inWindow) {
+            trailing = { value };
+            return;
+          }
+          host.set(value); // leading edge
+          inWindow = true;
+          void host.deferBy(ms).then(() => {
+            if (trailing) {
+              host.set(trailing.value); // trailing edge
+              trailing = null;
+            }
+            inWindow = false;
+          });
+        },
       };
     },
   };
+}
+```
+
+Override `pendingPromise` / `flush` only when the actor holds work the host
+can't see — a raw `fetch`, an external promise.
+
+## Switch pipes (createSwitchPipe)
+
+The common cancel-and-replace pattern — debounce, or an async lookup embedded in
+a pipe — is "switch" semantics: only the latest write's handler runs; a new
+write aborts the prior handler entirely. The `createSwitchPipe` helper captures
+this, so you write only the handler:
+
+```ts
+import { createSwitchPipe } from 'valuse/utils';
+
+function pipeDebounce<T>(ms: number): PipeFactoryDescriptor<T, T> {
+  return createSwitchPipe(async ({ value, set, deferBy }) => {
+    await deferBy(ms);
+    set(value);
+  });
+}
+```
+
+The handler's `signal` aborts when a new write arrives, so any
+`fetch(url, { signal })` after the `deferBy` is cancelled too — not just the
+timer. The handler reads exactly like an async derivation because it shares the
+same internal "switchable run" machinery.
+
+```ts
+interface SwitchContext<In, Out> {
+  value: In;
+  set: (value: Out) => void;
+  deferBy: (ms: number) => Promise<void>;
+  /** Aborts when a NEW write arrives OR the host is destroyed. */
+  signal: AbortSignal;
+  onCleanup: (fn: () => void) => void;
+}
+```
+
+## Writing custom factory pipes
+
+Most custom pipes fall into one of the two shapes above. A simple delay pipe is
+cancel-and-replace, so use `createSwitchPipe`:
+
+```ts
+import { createSwitchPipe } from 'valuse/utils';
+
+function pipeDelay<T>(ms: number): PipeFactoryDescriptor<T, T> {
+  return createSwitchPipe(async ({ value, set, deferBy }) => {
+    await deferBy(ms);
+    set(value);
+  });
 }
 
 const delayed = value('').pipe(pipeDelay(500));
@@ -246,11 +347,65 @@ const delayed = value('').pipe(pipeDelay(500));
 
 Key points:
 
-- `create` runs once per value instance and returns the writer function
-- The writer is called on every `.set()`
-- Call `set()` to pass the value downstream
-- Call `onCleanup()` to register teardown (timers, intervals, etc.)
-- Not calling `set()` drops the value (like `pipeFilter`)
+- **Cancel-and-replace** (debounce, delay, switch-to-latest) →
+  `createSwitchPipe(handler)`. The handler's `signal` aborts on the next write;
+  `deferBy` is inline.
+- **Accumulating** (throttle, batch, scan over writes) → a plain actor via
+  `create(host) => ({ onWrite })`. State lives in `create`'s closure;
+  `host.deferBy` runs timers and is host-tracked.
+- Call `set(value)` (switch) or `host.set(value)` (actor) to pass the value
+  downstream. Not calling it drops the value (like `pipeFilter`).
+- Use `onCleanup(fn)` to release resources (connections, subscriptions) — in a
+  switch handler it fires on the next write or destroy; on the host it fires on
+  destroy.
+
+## Flushing pipes
+
+Every reactive field has a `.flush(): Promise<void>` method that cascades
+through the pipe chain, expediting any in-flight `deferBy()` and awaiting
+whatever other async work each pipe step holds (fetches, streaming uploads,
+microtask batches, etc.):
+
+```ts
+const query = value<string>('').pipe(pipeDebounce(200));
+
+query.set('hel'); // schedules a write in 200ms
+query.set('hello'); // resets — write scheduled 200ms from now
+await query.flush(); // commits 'hello' immediately, awaits the cascade
+query.get(); // 'hello'
+```
+
+The Promise resolves once the signal reflects the latest write (the end of the
+chain has been reached). For fire-and-forget callers — a keyboard handler
+bumping flush on Enter — just call without awaiting; the Promise is harmlessly
+unhandled.
+
+**Cascading through chains.** A value with multiple async pipes is a
+mini-pipeline: each pipe's downstream `set()` is the next pipe's upstream
+`.set()`. `.flush()` follows the in-flight work step by step, expediting and
+awaiting each one, until the signal settles.
+
+```ts
+const v = value<string>('')
+  .pipe(pipeDebounce(200)) // step A
+  .pipe(pipeUploadValidate()) // step B (fetch)
+  .pipe(pipeBatch()); // step C (microtask)
+
+v.set('hello');
+await v.flush();
+// Resolves after: A's deferBy expedites → B's fetch resolves →
+// C's microtask runs → signal commits.
+```
+
+If a new `.set()` arrives mid-flush, it starts a fresh per-write run at step 0,
+and the flush cascade picks it up. Flush effectively chases "until everything
+settles" — a caller that keeps writing during flush keeps flush alive
+indefinitely (by design).
+
+`.flush()` is also available on derived fields and on whole scope instances via
+`$flush()`. See
+[Async Derivations](async-derivations.md#flushing-async-derivations) and
+[Scopes](scopes.md#flushing-pending-work).
 
 ## Mixing sync and factory pipes
 

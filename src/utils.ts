@@ -8,6 +8,7 @@ export { pipeBatch } from './utils/pipe-batch.js';
 export { pipeFilter } from './utils/pipe-filter.js';
 export { pipeScan } from './utils/pipe-scan.js';
 export { pipeUnique } from './utils/pipe-unique.js';
+export { createSwitchPipe, type SwitchContext } from './utils/switch-pipe.js';
 
 // --- Async derivation utilities (see specs/derive-utils.md) ---
 export { asyncDelay } from './utils/async-delay.js';

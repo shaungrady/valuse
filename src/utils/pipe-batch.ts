@@ -1,7 +1,10 @@
 import type { PipeFactoryDescriptor } from '../core/types.js';
 
 /**
- * Batch pipe: collects values and flushes the latest on the next microtask.
+ * Batch pipe: collects values and flushes the latest one on the next tick.
+ * Synchronous writes within a tick coalesce into a single downstream
+ * commit. The host value's `.flush()` commits the pending value
+ * immediately.
  *
  * @typeParam T - the value type.
  * @returns a {@link PipeFactoryDescriptor} for use with `.pipe()`.
@@ -11,25 +14,32 @@ import type { PipeFactoryDescriptor } from '../core/types.js';
  * const batched = value(0).pipe(pipeBatch());
  * batched.set(1);
  * batched.set(2);
- * // On next microtask, batched.get() === 2
+ * // On the next tick, batched.get() === 2
  * ```
  */
 export function pipeBatch<T>(): PipeFactoryDescriptor<T, T> {
 	return {
-		create: ({ set }) => {
-			let pending: T | undefined;
+		create: (host) => {
+			let pending: { value: T } | null = null;
 			let scheduled = false;
-
-			return (value: T) => {
-				pending = value;
-				if (!scheduled) {
+			return {
+				onWrite(value) {
+					pending = { value };
+					if (scheduled) return; // a flush is already queued
 					scheduled = true;
-					// eslint-disable-next-line @typescript-eslint/no-floating-promises
-					Promise.resolve().then(() => {
-						scheduled = false;
-						set(pending as T);
-					});
-				}
+					void host.deferBy(0).then(
+						() => {
+							scheduled = false;
+							if (pending) {
+								host.set(pending.value);
+								pending = null;
+							}
+						},
+						() => {
+							scheduled = false; // aborted (host destroyed)
+						},
+					);
+				},
 			};
 		},
 	};

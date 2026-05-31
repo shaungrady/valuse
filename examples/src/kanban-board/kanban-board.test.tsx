@@ -133,14 +133,11 @@ describe('kanban-board: boardScope async hydration', () => {
 	it('onChange fires when async data resolves (path: "data")', async () => {
 		const seen: string[] = [];
 		mockApi = async () => ({ id: 'b1', name: 'X', columns: [], cards: [] });
-		const probe = boardScope.extend(
-			{},
-			{
-				onChange: ({ changes }: { changes: Set<any> }) => {
-					for (const c of changes) seen.push(c.path);
-				},
+		const probe = boardScope.extendConfig({
+			onChange: ({ changes }: { changes: Set<any> }) => {
+				for (const c of changes) seen.push(c.path);
 			},
-		);
+		});
 		probe.create({ boardId: 'b1' });
 		await waitFor(() => {
 			expect(seen).toContain('data');

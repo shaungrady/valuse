@@ -12,22 +12,20 @@ Grouped by severity. Item numbering is referenced in commits and follow-up work.
 
 ### 1. Type-erasure cascade through derivation contexts
 
-Every example uses `({ scope }: { scope: any })` on derivations and lifecycle
-hooks because the library doesn't infer the derivation-context type from the
-surrounding scope definition. This propagates `any` through
-`scope.<field>.use()` and forces re-casts at every reading site.
+**Status: resolved.** All example models migrated to the variadic
+`valueScope(fields, {derivs}, config?)` form. `scope` inside each callback is
+now inferred from the surrounding layers — no manual
+`({ scope }: { scope: any })` or `SyncDerivationContext<Fields>` annotations
+needed, and the `as`-casts at reading sites are gone.
 
-Concrete locations:
+Previously documented locations (now clean):
 
-- `kanban-board/model.ts:87-98` — three `as`-casts on a single derivation
-  (`scope.data.use() as BoardApiResponse | undefined`, etc.).
-- `stock-ticker/model.ts:60-75` — every derivation re-casts what it reads from
-  `scope`.
-- `kanban-board/components.tsx:38-42` — the `any` leaks from model into UI:
-  `const cardCount = cardCountRaw as number;`.
-
-The right fix is a library improvement (typed `DerivationContext<Def>` via
-`ScopeArg<Def>` mapped-type, or similar). **Status: started.**
+- `kanban-board/model.ts` — `scope.data.use()` is typed as
+  `BoardApiResponse | undefined` directly.
+- `stock-ticker/model.ts` — derivations read `scope.price.use()` and
+  `scope.prevClose.use()` without re-casts.
+- `kanban-board/components.tsx` — `cardCount` and similar values flow through
+  with their declared types.
 
 ### 2. Transitive-lifecycle pattern is unverified
 
@@ -55,19 +53,20 @@ it('onUnused closes the stream when last subscriber detaches', async () => {
 one `localStorage.setItem` — exactly the "subtle correctness detail" the shipped
 middleware exists to handle.
 
-### 4. Form-wizard's `extend()` + `validate` composition isn't tested
+### 4. Form-wizard's `extendValues()` + `validate` composition isn't tested
 
 The schema-validation doc emphasizes that base + extension `validate` rules both
 run and issues concatenate. The form-wizard markdown shows
-`orgStep = personalStep.extend(...)` but the runnable code doesn't include it.
-Either include the orgStep variant or add a focused composition test.
+`orgStep = personalStep.extendValues(...)` but the runnable code doesn't include
+it. Either include the orgStep variant or add a focused composition test.
 
 ### 5. Kanban's `bugCardScope` / `featureCardScope` are decorative
 
 Defined and minimally tested, but neither is referenced by `boardScope` or its
-components. They exist to demo `extend()`. Either integrate them (e.g., a
+components. They exist to demo `extendValues()`. Either integrate them (e.g., a
 discriminator field that selects which template `cards.set` uses) or move them
-to a separate `extending.test.ts` that focuses on the `.extend()` pattern.
+to a separate `extending.test.ts` that focuses on the `.extendValues()` /
+`.extendConfig()` pattern.
 
 ### 6. Kanban `$setSnapshot` round-trip with undeclared properties untested
 
@@ -179,22 +178,22 @@ focuses on what it actually builds.
 
 ## Status tracker
 
-| #   | Item                                    | Status      |
-| --- | --------------------------------------- | ----------- |
-| 1   | Derivation context type erasure         | In progress |
-| 2   | Transitive lifecycle test               | Open        |
-| 3   | Throttled-write test                    | Open        |
-| 4   | extend()+validate composition test      | Open        |
-| 5   | bugCard/featureCard integration         | Open        |
-| 6   | Undeclared-property snapshot round-trip | Open        |
-| 7   | Stock-ticker module-global isolation    | Open        |
-| 8   | setPriceStreamFactory DI shape          | Open        |
-| 9   | moveCard toIndex coverage               | Open        |
-| 10  | Todo-app filter `as any` cast           | Open        |
-| 11  | act() wrapping consistency              | Open        |
-| 12  | Boundary-mocking documentation          | Open        |
-| 13  | StockRow text-format coupling           | Open        |
-| 14  | Kanban Card pointer-event tests         | Open        |
-| 15  | Model-only smoke imports                | Open        |
-| 16  | expect-type tests per example           | Open        |
-| 17  | bugCard/featureCard into focused file   | Open        |
+| #   | Item                                    | Status   |
+| --- | --------------------------------------- | -------- |
+| 1   | Derivation context type erasure         | Resolved |
+| 2   | Transitive lifecycle test               | Open     |
+| 3   | Throttled-write test                    | Open     |
+| 4   | extend()+validate composition test      | Open     |
+| 5   | bugCard/featureCard integration         | Open     |
+| 6   | Undeclared-property snapshot round-trip | Open     |
+| 7   | Stock-ticker module-global isolation    | Open     |
+| 8   | setPriceStreamFactory DI shape          | Open     |
+| 9   | moveCard toIndex coverage               | Open     |
+| 10  | Todo-app filter `as any` cast           | Open     |
+| 11  | act() wrapping consistency              | Open     |
+| 12  | Boundary-mocking documentation          | Open     |
+| 13  | StockRow text-format coupling           | Open     |
+| 14  | Kanban Card pointer-event tests         | Open     |
+| 15  | Model-only smoke imports                | Open     |
+| 16  | expect-type tests per example           | Open     |
+| 17  | bugCard/featureCard into focused file   | Open     |

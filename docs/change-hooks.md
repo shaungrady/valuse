@@ -5,7 +5,7 @@ are two hooks: `beforeChange` runs synchronously before the write and can
 prevent it, and `onChange` runs asynchronously after one or more writes are
 batched together.
 
-Both hooks receive structured change metadata with per-field and per-group
+Both hooks receive structured change metadata with per-field and per-subtree
 breakdowns, so you can write targeted reactions without polling or diffing. For
 creation/destruction hooks, see [Lifecycle](lifecycle.md).
 
@@ -45,15 +45,31 @@ const person = valueScope(
 
 The context object contains:
 
-| Property         | Type                       | Description                              |
-| ---------------- | -------------------------- | ---------------------------------------- |
-| `scope`          | Instance root              | The scope instance (for reading values)  |
-| `changes`        | `Set<Change>`              | All changes in this batch                |
-| `changesByScope` | `Map<ScopeNode, Change[]>` | Changes grouped by field and group nodes |
+| Property         | Type                       | Description                                                  |
+| ---------------- | -------------------------- | ------------------------------------------------------------ |
+| `scope`          | Instance root              | The scope instance (for reading values)                      |
+| `changes`        | `Set<Change>`              | All changes in this batch                                    |
+| `changesByScope` | `Map<ScopeNode, Change[]>` | Changes indexed by field nodes and their containing subtrees |
 
 Because `onChange` fires asynchronously, the values on the instance already
 reflect the new state. You can read them normally or use the `Change` records to
 see what moved from where.
+
+### Writes inside onChange
+
+Synchronous writes made from inside an `onChange` callback do **not** trigger
+another `onChange` invocation. Patterns like a "last touched" timestamp or a
+"change count" can be expressed plainly:
+
+```ts
+onChange: ({ scope, changes }) => {
+  scope.lastUpdated.set(Date.now());
+  scope.changeCount.set((prev) => prev + changes.size);
+},
+```
+
+Subscribers, derivations, and React renders still see those self-writes — only
+the `onChange` machinery treats them as part of the same change event.
 
 ## beforeChange
 
@@ -80,12 +96,12 @@ const person = valueScope(
 
 The context object is the same as `onChange` plus a `prevent()` function:
 
-| Property         | Type                       | Description                            |
-| ---------------- | -------------------------- | -------------------------------------- |
-| `scope`          | Instance root              | The scope instance                     |
-| `changes`        | `Set<Change>`              | The changes about to be applied        |
-| `changesByScope` | `Map<ScopeNode, Change[]>` | Changes grouped by scope node          |
-| `prevent`        | `(target?) => void`        | Block a change, a group, or everything |
+| Property         | Type                       | Description                              |
+| ---------------- | -------------------------- | ---------------------------------------- |
+| `scope`          | Instance root              | The scope instance                       |
+| `changes`        | `Set<Change>`              | The changes about to be applied          |
+| `changesByScope` | `Map<ScopeNode, Change[]>` | Changes indexed by scope node            |
+| `prevent`        | `(target?) => void`        | Block a change, a subtree, or everything |
 
 Since `beforeChange` runs synchronously before the write, the instance still
 holds the old values. Derivations never see prevented values.
@@ -109,8 +125,8 @@ reference is useful for programmatic checks (see
 
 ## changesByScope
 
-`changesByScope` groups changes by scope node. Every change appears under its
-own field node, its parent group, its grandparent group, and so on up to the
+`changesByScope` indexes changes by scope node. Every change appears under its
+own field node, its parent subtree, its grandparent subtree, and so on up to the
 root. This makes it easy to check whether a particular subtree changed:
 
 ```ts
@@ -124,7 +140,7 @@ const employee = valueScope(
   },
   {
     onChange: ({ scope, changesByScope }) => {
-      // Did anything in the job group change?
+      // Did anything nested under job change?
       if (changesByScope.has(scope.job)) {
         console.log('job changed:', changesByScope.get(scope.job));
       }
@@ -138,8 +154,9 @@ const employee = valueScope(
 );
 ```
 
-The root scope node always contains all changes. Group nodes contain all changes
-from their children. Individual field nodes contain only their own change.
+The root scope node aggregates all changes. A nested subtree's node aggregates
+the changes of its descendants. Individual field nodes hold only their own
+change.
 
 ## Preventing changes
 
@@ -152,7 +169,7 @@ beforeChange: ({ scope, changes, prevent }) => {
     if (change.to === '') prevent(change);
   }
 
-  // Prevent all changes under a group node
+  // Prevent all changes under a nested subtree
   prevent(scope.job);
 
   // Prevent everything (no argument)
@@ -195,7 +212,8 @@ before the value changes, not after a batch settles.
 
 ## Per-field subscribe
 
-Outside of scope config hooks, each reactive field has its own `.subscribe()`:
+Outside of [config-layer](scopes.md#config-layer) hooks, each reactive field has
+its own `.subscribe()`:
 
 ```ts
 bob.firstName.subscribe((value, previous) => {

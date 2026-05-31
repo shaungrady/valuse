@@ -19,12 +19,10 @@ export function pipeFilter<T>(
 	predicate: (value: T) => boolean,
 ): PipeFactoryDescriptor<T, T> {
 	return {
-		create: ({ set }) => {
-			return (value: T) => {
-				if (predicate(value)) {
-					set(value);
-				}
-			};
-		},
+		create: (host) => ({
+			onWrite(value) {
+				if (predicate(value)) host.set(value);
+			},
+		}),
 	};
 }

@@ -6,8 +6,8 @@ reusable template. You define the shape once with `valueScope()`, then call
 its own derivations, and its own lifecycle.
 
 For composition across scopes, use [`valueRef`](refs.md) to point at live state
-in another scope, and [`.extend()`](extending.md) to layer additional fields and
-hooks onto an existing template.
+in another scope, and [`.extendValues()` / `.extendConfig()`](extending.md) to
+layer additional values, derivations, and hooks onto an existing template.
 
 ## Table of contents
 
@@ -15,6 +15,7 @@ hooks onto an existing template.
 - [Creating instances](#creating-instances)
 - [Field access](#field-access)
 - [Instance methods](#instance-methods)
+- [Flushing pending work](#flushing-pending-work)
 - [Snapshots](#snapshots)
 - [Nesting](#nesting)
 - [Plain data](#plain-data)
@@ -26,19 +27,59 @@ hooks onto an existing template.
 
 ## Defining a scope
 
-A scope definition is a plain object where each key maps to one of:
+A scope is defined with `valueScope()` and one or more **layers** passed as
+positional arguments:
 
-| Entry type                    | What it becomes on the instance                                  |
-| ----------------------------- | ---------------------------------------------------------------- |
-| `value<T>()`                  | Reactive field with `.get()`, `.set()`, `.use()`                 |
-| `valueSet<T>()`               | Reactive Set field                                               |
-| `valueMap<K,V>()`             | Reactive Map field                                               |
-| `valueArray<T>()`             | Reactive Array field                                             |
-| [`valueRef(source)`](refs.md) | Read-only reference to external state                            |
-| Sync function                 | [Derived](derivations.md) (computed) field                       |
-| Async function                | [Async derived](async-derivations.md) field with status tracking |
-| Plain object                  | Nested group (recurses)                                          |
-| Anything else                 | Static readonly data                                             |
+```
+valueScope(
+  fields,             // required
+  ...derivations,     // optional, zero or more layers
+  config?,            // optional
+);
+```
+
+Each layer builds on the layers before it. Derivations see fields and earlier
+derivations; lifecycle hooks see the full scope. Within a single derivation
+layer, siblings are not visible to one another, which makes circular derivations
+structurally impossible. The three subsections below cover each kind of layer in
+detail.
+
+### Why this shape
+
+The layered form is what makes it possible for TypeScript to fully infer `scope`
+inside derivations without a manual annotation. A single-object form like
+`valueScope({ ...fields, ...derivations })` puts TS in a circular bind: the type
+of the object depends on the derivation functions, whose parameter types depend
+on the type of the object. Splitting the layers gives TS a ground truth (the
+field layer) to pin first, then resolve each derivation layer against the
+accumulated definition.
+
+Type safety is the reason; clarity and correctness are real upsides:
+
+- **Layers separate kinds of abstraction**: data is in one place, derived
+  computation in another, side effects (hooks) in a third. The shape reads
+  top-down by intent.
+- **Circular derivations are structurally impossible**: the DAG flows strictly
+  left to right across layers, and siblings within a layer cannot see one
+  another. There is no syntax for `A` to read `B` while `B` reads `A`.
+- **Dependency order is visible at the call site**: which derivation depends on
+  which is encoded in layer placement, not buried in function bodies.
+
+### Field layer
+
+The first argument is the **field layer**, a plain object where each key is a
+reactive primitive, a nested object, or static data:
+
+| Entry type                    | What it becomes on the instance                  |
+| ----------------------------- | ------------------------------------------------ |
+| `value<T>()`                  | Reactive field with `.get()`, `.set()`, `.use()` |
+| `valueSet<T>()`               | Reactive Set field                               |
+| `valueMap<K,V>()`             | Reactive Map field                               |
+| `valueArray<T>()`             | Reactive Array field                             |
+| [`valueRef(source)`](refs.md) | Read-only reference to external state            |
+| `valuePlain(...)`             | Non-reactive bookkeeping state                   |
+| Plain object                  | Nested object (recurses; same rules apply)       |
+| Anything else                 | Static readonly data                             |
 
 ```ts
 import { value, valueScope, valueSet } from 'valuse';
@@ -48,8 +89,82 @@ const person = valueScope({
   lastName: value<string>(),
   mood: value('happy'),
   hobbies: valueSet<string>(),
-  fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
 });
+```
+
+Derivation functions belong in a derivation layer, not the field layer; the type
+system enforces this.
+
+### Derivation layers
+
+Zero or more arguments between the field layer and the optional config layer are
+**derivation layers**. Each entry is a function whose `scope` parameter is
+contextually typed against everything declared in earlier layers, with no manual
+annotation required:
+
+```ts
+const person = valueScope(
+  {
+    firstName: value<string>(),
+    lastName: value<string>(),
+    mood: value('happy'),
+    hobbies: valueSet<string>(),
+  },
+  {
+    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+  },
+);
+```
+
+For a derivation to read another derivation, declare the dependency in an
+earlier layer:
+
+```ts
+const cart = valueScope(
+  { price: value(0), quantity: value(0) },
+  { subtotal: ({ scope }) => scope.price.use() * scope.quantity.use() },
+  { tax: ({ scope }) => scope.subtotal.use() * 0.1 },
+  { total: ({ scope }) => scope.subtotal.use() + scope.tax.use() },
+);
+```
+
+Up to 11 derivation layers are supported. Past that, compose with
+[`valueRef`](refs.md) or [`.extendValues()`](extending.md).
+
+Async derivations live in derivation layers too. See
+[Async derivations](async-derivations.md) for the full contract.
+
+### Config layer
+
+The optional last argument is the **config layer**: lifecycle hooks (`onCreate`,
+`onChange`, `beforeChange`, `onDestroy`, `onUsed`, `onUnused`) and scope options
+(`allowUndeclaredProperties`). Hook `scope` sees the full instance, including
+every derivation layer:
+
+```ts
+const board = valueScope(
+  { boardId: value<string>() },
+  { name: ({ scope }) => scope.boardId.use() ?? 'untitled' },
+  {
+    onCreate: ({ scope }) => {
+      // scope.boardId, scope.name are typed
+    },
+    allowUndeclaredProperties: true,
+  },
+);
+```
+
+Config layer keys are reserved names (`onCreate`, etc.) only at this slot
+position. The same name in a derivation layer is just a regular derivation key,
+no conflict. If you actually want a derivation named after a hook, add a
+trailing `{}` as an empty config layer to disambiguate:
+
+```ts
+valueScope(
+  { foo: value(0) },
+  { onCreate: ({ scope }) => scope.foo.use() * 2 }, // a derivation
+  {}, // empty config layer
+);
 ```
 
 The definition is processed once when `valueScope()` is called. The resulting
@@ -66,7 +181,7 @@ const bob = person.create({
 ```
 
 The input object is optional and partial. Only `value()` fields, async
-derivation seeds, and nested groups accept input. Derivation keys are excluded
+derivation seeds, and nested objects accept input. Derivation keys are excluded
 at the type level:
 
 ```ts
@@ -111,6 +226,7 @@ Instance-level methods use a `$` prefix to stay out of the way of field names:
 | `$use()`         | React hook, re-renders on any field change                      |
 | `$subscribe(fn)` | Fires on any field change (see [Change hooks](change-hooks.md)) |
 | `$recompute()`   | Re-run all derivations                                          |
+| `$flush()`       | Expedite all pending deferred work, layer-ordered (see below)   |
 | `$destroy()`     | Tear down the instance (see [Lifecycle](lifecycle.md))          |
 
 ```ts
@@ -120,6 +236,44 @@ bob.$subscribe(() => {
 
 bob.$destroy(); // runs onDestroy hook, aborts async work, cleans up
 ```
+
+## Flushing pending work
+
+Many real interactions defer work: debounced inputs hold writes for a window,
+async derivations sleep via `deferBy()`. `$flush()` on a scope instance commits
+all of it in dependency order and resolves when the full cascade has settled:
+
+```ts
+async function submit() {
+  await form.$flush();
+  send(form.$getSnapshot());
+}
+```
+
+The cascade follows the declared layer order: every field-layer entry flushes
+first (committing any pipe-debounced writes), then each derivation layer in
+turn, with the runtime awaiting the layer to settle before flushing the next.
+This guarantees that downstream derivations see resolved upstream values, not
+mid-flight intermediates.
+
+Individual fields and derivations also expose `.flush(): Promise<void>`
+directly:
+
+- `valueField.flush()` — cascades through the pipe chain, expediting any
+  in-flight `deferBy()` and awaiting other async work (fetches, uploads,
+  microtask batches). Resolves when the signal commits.
+- `asyncDeriv.flush()` — expedites the run's deferrals and resolves when it
+  produces its next output (a `set()` emit or final `return`). Works on
+  streaming derivations too. See
+  [Flushing async derivations](async-derivations.md#flushing-async-derivations).
+- Sync derivations expose `.flush()` too; the returned Promise resolves
+  immediately (nothing to expedite).
+
+Use cases that motivate this:
+
+- **Form submit**: guarantee no stale debounced inputs before serializing.
+- **Persistence**: `await scope.$flush()` before saving snapshots.
+- **Tests**: deterministic settle without `vi.advanceTimersByTime()`.
 
 ## Snapshots
 
@@ -160,19 +314,23 @@ Scope definitions support nested plain objects. Reactive fields can appear at
 any depth:
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
-  job: {
-    title: value<string>(),
-    company: value<string>(),
+const person = valueScope(
+  {
+    firstName: value<string>(),
+    job: {
+      title: value<string>(),
+      company: value<string>(),
+    },
   },
-  label: ({ scope }) =>
-    `${scope.firstName.use()}, ${scope.job.title.use()} at ${scope.job.company.use()}`,
-});
+  {
+    label: ({ scope }) =>
+      `${scope.firstName.use()}, ${scope.job.title.use()} at ${scope.job.company.use()}`,
+  },
+);
 ```
 
-Groups are frozen objects on the instance. You access nested fields the same
-way:
+Nested objects appear as frozen objects on the instance. You access nested
+fields the same way:
 
 ```ts
 const bob = person.create({
@@ -190,14 +348,14 @@ lifecycle boundaries. All fields belong to the same instance and the same
 reactive graph. For cross-scope composition (sharing state between independent
 scopes), use [valueRef](refs.md) instead.
 
-Groups also appear in [change hooks](change-hooks.md). You can check
-`changesByScope.has(scope.job)` to see if any field in the `job` group changed.
+Nested objects also appear in [change hooks](change-hooks.md). You can check
+`changesByScope.has(scope.job)` to see if any field nested under `job` changed.
 
 ## Plain data
 
-Any entry that is not a `value()`, not a function, and not a plain object group
-is treated as static readonly data. It travels with the instance but does not
-participate in reactivity:
+Any entry in the field layer that is not a reactive primitive and not a plain
+nested object is treated as static readonly data. It travels with the instance
+but does not participate in reactivity:
 
 ```ts
 const board = valueScope({
@@ -268,11 +426,13 @@ subscriptions or derivations.
 knows the exact type of every field:
 
 ```ts
-const person = valueScope({
-  name: value<string>(),
-  age: value(30),
-  greeting: ({ scope }) => `Hello, ${scope.name.use()}`,
-});
+const person = valueScope(
+  {
+    name: value<string>(),
+    age: value(30),
+  },
+  { greeting: ({ scope }) => `Hello, ${scope.name.use()}` },
+);
 
 const bob = person.create({ name: 'Bob' });
 // bob.name    → FieldValue<string | undefined>

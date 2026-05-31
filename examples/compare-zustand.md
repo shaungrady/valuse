@@ -27,17 +27,21 @@ All examples below build the same user model: `firstName`, `lastName`, `email`,
 
 ## Define a model
 
-**ValUse**: fields and derivations in one place:
+**ValUse**: fields and derivations in one call, organized by layer:
 
 ```ts
-const user = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  email: value<string>(),
-  role: value<string>('viewer'),
-  displayName: ({ scope }) =>
-    `${scope.firstName.use()} ${scope.lastName.use()}`,
-});
+const user = valueScope(
+  {
+    firstName: value<string>(),
+    lastName: value<string>(),
+    email: value<string>(),
+    role: value<string>('viewer'),
+  },
+  {
+    displayName: ({ scope }) =>
+      `${scope.firstName.use()} ${scope.lastName.use()}`,
+  },
+);
 ```
 
 **Zustand**: type, store, and derived state are separate concepts:
@@ -183,17 +187,21 @@ Fetch a user's profile by email. Abort the previous request when email changes.
 **ValUse**: a derivation that happens to be async:
 
 ```ts
-const user = valueScope({
-  email: value<string>(),
-  profile: async ({ scope, signal }) => {
-    const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-    return res.json();
+const user = valueScope(
+  { email: value<string>() },
+  {
+    profile: async ({ scope, signal }) => {
+      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
+      return res.json();
+    },
   },
-});
+);
 ```
 
 Abort is automatic. Re-fetch is reactive: change `email`, previous request
-aborts, new one starts.
+aborts, new one starts. In components, `profile.useAsync()` returns
+`[value, state]` with `state.isPending` / `state.isError` / `state.isUpdating`
+flags — no manual `isLoading`/`error` bookkeeping required.
 
 **Zustand**: manual AbortController, manual state fields, imperative trigger:
 
@@ -337,22 +345,22 @@ written and how disciplined the selectors are.
 
 Add tracking to any scope without modifying the original.
 
-**ValUse**: `.extend()` returns a new scope with additional state and lifecycle:
+**ValUse**: `.extendValues()` and `.extendConfig()` return new scopes that add
+state and lifecycle without mutating the original:
 
 ```ts
 const withTracking = (scope) =>
-  scope.extend(
-    {
+  scope
+    .extendValues({
       lastUpdated: value<number>(0),
       changeCount: value<number>(0),
-    },
-    {
+    })
+    .extendConfig({
       onChange: ({ scope, changes }) => {
         scope.lastUpdated.set(Date.now());
         scope.changeCount.set((prev) => prev + changes.size);
       },
-    },
-  );
+    });
 
 // Apply to any scope — fields, derivations, and lifecycle compose
 const trackedUser = withTracking(user);
@@ -474,23 +482,30 @@ instance gets its own column collection.
 ```ts
 const globalTags = valueSet<string>(['admin', 'root']);
 
-const person = valueScope({
-  name: value<string>(),
-  tags: valueSet<string>(),
-  specialTags: valueRef(globalTags),
-
-  hasSpecialTag: ({ scope }) =>
-    scope.tags.use().some((t) => scope.specialTags.use().has(t)),
-});
+const person = valueScope(
+  {
+    name: value<string>(),
+    tags: valueSet<string>(),
+    specialTags: valueRef(globalTags),
+  },
+  {
+    hasSpecialTag: ({ scope }) =>
+      scope.tags.use().some((t) => scope.specialTags.use().has(t)),
+  },
+);
 
 // Per-instance ref — each board gets its own column map
 const column = valueScope({ id: value<string>(), name: value<string>() });
 
-const board = valueScope({
-  boardId: value<string>(),
-  columns: valueRef(() => column.createMap()),
-  columnCount: ({ scope }) => scope.columns.use().size,
-});
+const board = valueScope(
+  {
+    boardId: value<string>(),
+    columns: valueRef(() => column.createMap()),
+  },
+  {
+    columnCount: ({ scope }) => scope.columns.use().size,
+  },
+);
 
 const a = board.create({ boardId: 'a' });
 const b = board.create({ boardId: 'b' });
@@ -554,15 +569,16 @@ const user = valueScope(
     email: value<string>(),
     role: value<string>('viewer'),
     lastUpdated: value<number>(0),
-
+  },
+  {
     displayName: ({ scope }) =>
       `${scope.firstName.use()} ${scope.lastName.use()}`,
-
     profile: async ({ scope, signal }) => {
       const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
       return res.json();
     },
-
+  },
+  {
     avatarUrl: ({ scope }) =>
       scope.profile.use()?.avatar ?? '/default-avatar.png',
   },

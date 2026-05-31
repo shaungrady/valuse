@@ -9,21 +9,7 @@ import { initialAsyncState, resolvedAsyncState } from './async-state.js';
 import { runValidation, type ValidationState } from './value-schema.js';
 import type { Change, ScopeNode, Unsubscribe } from './types.js';
 import type { ScopeDefinitionMeta, DefinitionPipeStep } from './slot-meta.js';
-
-// --- Factory pipe runtime state ---
-
-interface ActiveFactoryPipe {
-	write: (value: unknown) => void;
-	cleanups: (() => void)[];
-}
-
-/**
- * Maximum number of consecutive microtask ticks in which an `onChange`
- * callback may write back into its own scope before the loop is broken.
- * Crossed almost exclusively by accidental infinite loops; legitimate
- * "auto-fill from change" chains reach a fixed point in just a few ticks.
- */
-const ONCHANGE_RESCHEDULE_LIMIT = 50;
+import { buildPipeChain, type PipeChain } from './utils/pipe-runtime.js';
 
 /**
  * Per-instance data store. Holds signals and manages the write pipeline,
@@ -72,8 +58,8 @@ export class InstanceStore {
 		Signal<ValidationState<unknown, unknown>>
 	>;
 
-	/** Active factory pipe instances, keyed by slot index. */
-	readonly #factoryPipes: Map<number, ActiveFactoryPipe[]>;
+	/** Active factory-pipe chains, keyed by slot index. */
+	readonly #pipeChains: Map<number, PipeChain>;
 
 	/** The shared definition metadata. */
 	readonly definition: ScopeDefinitionMeta;
@@ -100,11 +86,13 @@ export class InstanceStore {
 
 	#pendingChanges: Change[] | null = null;
 	#changeBatchScheduled = false;
-	// Tracks consecutive onChange invocations where the hook scheduled
-	// another tick (i.e. wrote back into the scope synchronously). Used
-	// to detect runaway re-entry loops that would otherwise freeze the
-	// page silently in the microtask queue.
-	#consecutiveOnChangeReschedules = 0;
+	// Set while an onChange callback is executing. Sync writes from inside
+	// the callback skip the change-tracking + scheduling path entirely, so
+	// "auto-fill from change" patterns (e.g. lastUpdated.set(Date.now()))
+	// do not loop back into a fresh onChange invocation. Subscribers and
+	// derivations still propagate normally — only the onChange machinery
+	// ignores the self-write.
+	#inOnChangeCallback = false;
 
 	// --- Hooks (set by scope creation) ---
 
@@ -139,7 +127,7 @@ export class InstanceStore {
 		this.definition = definition;
 		this.asyncStates = new Map();
 		this.validationStates = new Map();
-		this.#factoryPipes = new Map();
+		this.#pipeChains = new Map();
 
 		// Allocate signals
 		this.signals = Array.from<Signal<unknown>>({
@@ -196,19 +184,37 @@ export class InstanceStore {
 		// Activate factory pipes for every slot whose pipeline contains a
 		// factory step. Without this, factory pipes inside scope definitions
 		// (pipeDebounce / pipeThrottle / pipeBatch / ...) are silently dead:
-		// `write()` only routes through `#factoryPipes.get(slot)` when populated,
+		// `write()` only routes through `#pipeChains.get(slot)` when populated,
 		// and `#applySyncPipeline` stops at the first factory — so a
 		// `value('').pipe(pipeDebounce(300))` field would fire immediately
 		// instead of debouncing. Standalone `Value.pipe(factory)` already
 		// self-activates in `value.ts`; this brings scope slots to parity.
+		//
+		// After activation, prime the chain so stateful actors (scan,
+		// unique, throttle, …) observe the seed, matching standalone
+		// `Value.pipe(factory)` priming. Seed is the pre-actor value:
+		// the user's initial run through leading sync steps, or the
+		// template's captured `factorySeed`. The prime overwrites the
+		// signal with the post-actor commit, which for same-type actors
+		// equals the seeded `defaultValue` (no-op) and for accumulating
+		// actors leaves the actor state matching standalone.
 		for (let slot = 0; slot < definition.slotCount; slot++) {
 			const meta = definition.slots[slot]!;
 			if (
-				meta.pipeline &&
-				meta.pipeline.some((step) => step.kind === 'factory')
+				!meta.pipeline ||
+				!meta.pipeline.some((step) => step.kind === 'factory')
 			) {
-				this.activateFactoryPipes(slot);
+				continue;
 			}
+			this.activateFactoryPipes(slot);
+			const chain = this.#pipeChains.get(slot);
+			if (!chain) continue;
+			const hasUserInitial = initialValues.has(slot);
+			const seed =
+				hasUserInitial ?
+					this.#applySyncPipeline(initialValues.get(slot), meta.pipeline)
+				:	meta.factorySeed;
+			chain.prime(seed);
 		}
 	}
 
@@ -270,18 +276,11 @@ export class InstanceStore {
 
 		const meta = this.definition.slots[slot]!;
 
-		// Check for factory pipes
-		const factories = this.#factoryPipes.get(slot);
-		if (factories && factories.length > 0) {
-			// Apply sync steps before the first factory, then hand off
-			let current = value;
-			if (meta.pipeline) {
-				for (const step of meta.pipeline) {
-					if (step.kind === 'factory') break;
-					current = step.transform(current);
-				}
-			}
-			factories[0]!.write(current);
+		// Factory-pipe chain (actors own their scheduling and apply leading
+		// sync steps internally).
+		const chain = this.#pipeChains.get(slot);
+		if (chain && chain.hasActors) {
+			chain.write(value);
 			return;
 		}
 
@@ -392,8 +391,11 @@ export class InstanceStore {
 			}
 		}
 
-		// Queue onChange
-		if (this.onChangeHook) {
+		// Queue onChange — but skip if this write came from inside an
+		// onChange callback. Self-writes during the callback are
+		// considered part of the same change event and don't get a fresh
+		// tick of their own.
+		if (this.onChangeHook && !this.#inOnChangeCallback) {
 			if (!this.#pendingChanges) {
 				this.#pendingChanges = [];
 			}
@@ -476,6 +478,22 @@ export class InstanceStore {
 	/** @internal — registered by scope instance creation */
 	readonly _recomputeFns: Map<number, () => void> = new Map();
 
+	/** @internal — async-derivation flush functions, registered at creation */
+	readonly _flushFns: Map<number, () => Promise<void>> = new Map();
+
+	/**
+	 * Expedite and await any pending deferred work for a slot: a value
+	 * field's pipe chain, or an async derivation's in-flight `deferBy`.
+	 * Resolves immediately when there is nothing to flush.
+	 */
+	flushSlot(slot: number): Promise<void> {
+		const chain = this.#pipeChains.get(slot);
+		if (chain) return chain.flush();
+		const flushFn = this._flushFns.get(slot);
+		if (flushFn) return flushFn();
+		return Promise.resolve();
+	}
+
 	/**
 	 * Read validation state for a schema slot.
 	 */
@@ -523,54 +541,12 @@ export class InstanceStore {
 	activateFactoryPipes(slot: number): void {
 		const meta = this.definition.slots[slot]!;
 		if (!meta.pipeline) return;
+		if (!meta.pipeline.some((step) => step.kind === 'factory')) return;
 
-		const factorySteps = meta.pipeline.filter((s) => s.kind === 'factory');
-		if (factorySteps.length === 0) return;
-
-		const factories: ActiveFactoryPipe[] = [];
-		let factoryIndex = 0;
-
-		for (let i = 0; i < meta.pipeline.length; i++) {
-			const step = meta.pipeline[i]!;
-			if (step.kind !== 'factory') continue;
-
-			// Collect sync steps after this factory until next factory or end
-			const syncStepsAfter: DefinitionPipeStep[] = [];
-			for (let j = i + 1; j < meta.pipeline.length; j++) {
-				const nextStep = meta.pipeline[j]!;
-				if (nextStep.kind === 'factory') break;
-				syncStepsAfter.push(nextStep);
-			}
-
-			const isLastFactory = factoryIndex === factorySteps.length - 1;
-			const currentFactoryIndex = factoryIndex;
-			const cleanups: (() => void)[] = [];
-
-			const write = step.descriptor.create({
-				set: (factoryOutput: unknown) => {
-					let current = factoryOutput;
-					for (const syncStep of syncStepsAfter) {
-						if (syncStep.kind === 'sync') {
-							current = syncStep.transform(current);
-						}
-					}
-
-					if (isLastFactory) {
-						this._writeToSignal(slot, current);
-					} else {
-						factories[currentFactoryIndex + 1]?.write(current);
-					}
-				},
-				onCleanup: (fn: () => void) => {
-					cleanups.push(fn);
-				},
-			});
-
-			factories.push({ write, cleanups });
-			factoryIndex++;
-		}
-
-		this.#factoryPipes.set(slot, factories);
+		const chain = buildPipeChain(meta.pipeline, (value) => {
+			this._writeToSignal(slot, value);
+		});
+		this.#pipeChains.set(slot, chain);
 	}
 
 	/**
@@ -579,13 +555,9 @@ export class InstanceStore {
 	destroy(): void {
 		this.destroyed = true;
 
-		// Clean up factory pipes
-		for (const [, factories] of this.#factoryPipes) {
-			for (const factory of factories) {
-				for (const cleanup of factory.cleanups) cleanup();
-			}
-		}
-		this.#factoryPipes.clear();
+		// Clean up factory-pipe chains (aborts host signals, runs cleanups)
+		for (const [, chain] of this.#pipeChains) chain.destroy();
+		this.#pipeChains.clear();
 	}
 
 	// --- Private helpers ---
@@ -664,35 +636,15 @@ export class InstanceStore {
 			if (!pending || pending.length === 0 || !this.onChangeHook) return;
 
 			const { changes, changesByScope } = this.#buildChangeContext(pending);
-			this.onChangeHook({
-				scope: this.#instanceRoot!,
-				changes,
-				changesByScope,
-			});
-
-			// Detect re-entry loops. If the hook wrote back into the scope,
-			// `#changeBatchScheduled` was flipped back to `true` during the
-			// call. Count consecutive ticks where that happens; after a
-			// threshold, break the loop (drop the pending writes and
-			// cancel the next scheduled tick) and log a diagnostic. The
-			// underlying signal writes have already landed — only the
-			// follow-up `onChange` call is suppressed.
-			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the onChangeHook call above can synchronously re-enter and flip this back to true
-			if (this.#changeBatchScheduled) {
-				this.#consecutiveOnChangeReschedules++;
-				if (this.#consecutiveOnChangeReschedules >= ONCHANGE_RESCHEDULE_LIMIT) {
-					console.error(
-						`valuse: onChange has scheduled itself ${String(ONCHANGE_RESCHEDULE_LIMIT)}+ ` +
-							'times in a row. This usually means an onChange callback ' +
-							'is writing back into the scope and creating an infinite loop. ' +
-							'Suppressing further onChange invocations for this loop.',
-					);
-					this.#pendingChanges = null;
-					this.#changeBatchScheduled = false;
-					this.#consecutiveOnChangeReschedules = 0;
-				}
-			} else {
-				this.#consecutiveOnChangeReschedules = 0;
+			this.#inOnChangeCallback = true;
+			try {
+				this.onChangeHook({
+					scope: this.#instanceRoot!,
+					changes,
+					changesByScope,
+				});
+			} finally {
+				this.#inOnChangeCallback = false;
 			}
 		});
 	}

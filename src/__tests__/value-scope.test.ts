@@ -700,42 +700,112 @@ describe('lifecycle hooks', () => {
 		});
 
 		/**
-		 * Bug: `onChange` runs on a microtask, and `#scheduleOnChange`
-		 * clears its "scheduled" flag at the *start* of the microtask. A
-		 * `.set()` made *inside* an `onChange` callback therefore always
-		 * schedules another microtask, which fires another `onChange`,
-		 * which writes again, ad infinitum. The page hangs silently.
+		 * Contract: sync writes made from *inside* an `onChange` callback
+		 * are considered part of the same change event and do not trigger
+		 * another `onChange` invocation. This makes "auto-fill from
+		 * change" patterns like `scope.lastUpdated.set(Date.now())` or
+		 * `scope.changeCount.set(n => n + 1)` safe to write without a
+		 * `changesByScope.has(...)` guard.
 		 *
-		 * Contract: detect a chain of reentry-driven reschedules and break
-		 * out with a `console.error`, so the page recovers and the user
-		 * sees a clear diagnostic instead of an unexplained freeze.
+		 * The underlying signal write still propagates to subscribers and
+		 * derivations — only the onChange machinery skips it.
 		 */
-		it('breaks out of an onChange re-entry loop with a diagnostic', async () => {
-			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		it('does not re-trigger onChange for sync writes made inside the callback', async () => {
+			const onChangeCalls: string[] = [];
 			const scope = valueScope(
-				{ tick: value<number>(0) },
+				{
+					name: value<string>(),
+					lastUpdated: value<number>(0),
+				},
 				{
 					onChange: ({ scope: s }: { scope: any }) => {
-						s.tick.set((n: number | undefined) => (n ?? 0) + 1);
+						onChangeCalls.push(s.name.get() as string);
+						s.lastUpdated.set(s.lastUpdated.get() + 1);
 					},
 				},
 			);
-			const instance = scope.create({ tick: 0 });
-			instance.tick.set(1);
+			const instance = scope.create({ name: 'a' });
 
-			// Drain microtasks. If the loop is not broken, the test would
-			// time out here. Cap the drain count well above the loop
-			// detection threshold so we exit even if the guard misfires.
-			for (let i = 0; i < 500; i++) {
-				await Promise.resolve();
-			}
+			instance.name.set('b');
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+			expect(onChangeCalls).toEqual(['b']);
+			expect(instance.lastUpdated.get()).toBe(1);
 
-			expect(errSpy).toHaveBeenCalled();
-			const stable = instance.tick.get();
-			// After a further drain, the value should not keep growing.
-			for (let i = 0; i < 50; i++) await Promise.resolve();
-			expect(instance.tick.get()).toBe(stable);
-			errSpy.mockRestore();
+			instance.name.set('c');
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+			expect(onChangeCalls).toEqual(['b', 'c']);
+			// Self-write happened exactly once per external write, not in
+			// a loop that hit a fixed point at some larger number.
+			expect(instance.lastUpdated.get()).toBe(2);
+		});
+
+		/**
+		 * Contract: self-writes inside onChange still propagate through
+		 * the signal layer — per-field subscribers, derivations that
+		 * `.use()` the field, and `$subscribe` all see the change.
+		 */
+		it('still propagates self-writes to subscribers and derivations', async () => {
+			const subscriberCalls: number[] = [];
+			const dollarSubscribeCalls: number[] = [];
+			const scope = valueScope(
+				{
+					name: value<string>('a'),
+					counter: value<number>(0),
+				},
+				{
+					counterPlusOne: ({ scope: s }) => s.counter.use() + 1,
+				},
+				{
+					onChange: ({ scope: s }: { scope: any }) => {
+						s.counter.set((s.counter.get() as number) + 1);
+					},
+				},
+			);
+			const instance = scope.create();
+			instance.counter.subscribe((v) => subscriberCalls.push(v as number));
+			instance.$subscribe(() =>
+				dollarSubscribeCalls.push(instance.counter.get() as number),
+			);
+
+			instance.name.set('b');
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+
+			expect(instance.counter.get()).toBe(1);
+			expect(instance.counterPlusOne.get()).toBe(2);
+			expect(subscriberCalls).toEqual([1]);
+			expect(dollarSubscribeCalls.includes(1)).toBe(true);
+		});
+
+		/**
+		 * Contract: self-writes are invisible to the onChange machinery
+		 * entirely — they do not appear in the `changes` set or
+		 * `changesByScope` map of any onChange invocation, including the
+		 * next external batch.
+		 */
+		it('does not leak self-writes into the next external batch', async () => {
+			const seenChanges: string[][] = [];
+			const scope = valueScope(
+				{
+					name: value<string>(),
+					lastUpdated: value<number>(0),
+				},
+				{
+					onChange: ({ scope: s, changes }: { scope: any; changes: any }) => {
+						seenChanges.push(
+							[...(changes as Set<{ path: string }>)].map((c) => c.path),
+						);
+						s.lastUpdated.set(Date.now());
+					},
+				},
+			);
+			const instance = scope.create({ name: 'a' });
+
+			instance.name.set('b');
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+			instance.name.set('c');
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+
+			expect(seenChanges).toEqual([['name'], ['name']]);
 		});
 	});
 
@@ -1417,7 +1487,7 @@ describe('allowUndeclaredProperties', () => {
 		expect((instance as any).extra).toBeUndefined();
 	});
 
-	it('works with .extend()', () => {
+	it('works with .extendValues()', () => {
 		const base = valueScope(
 			{
 				id: value<string>(),
@@ -1425,7 +1495,7 @@ describe('allowUndeclaredProperties', () => {
 			{ allowUndeclaredProperties: true },
 		);
 
-		const extended = base.extend({
+		const extended = base.extendValues({
 			label: value<string>(''),
 		});
 
@@ -1534,7 +1604,7 @@ describe('$getIsValid / $useIsValid', () => {
 	});
 });
 
-describe('extend merges all config hooks', () => {
+describe('extendConfig merges all config hooks', () => {
 	it('merges onChange hooks', async () => {
 		const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 		const order: string[] = [];
@@ -1542,7 +1612,9 @@ describe('extend merges all config hooks', () => {
 			{ name: value<string>() },
 			{ onChange: () => order.push('base') },
 		);
-		const extended = base.extend({}, { onChange: () => order.push('ext') });
+		const extended = base.extendConfig({
+			onChange: () => order.push('ext'),
+		});
 		const instance = extended.create({ name: 'Alice' });
 		instance.name.set('Bob');
 		await flush();
@@ -1555,7 +1627,9 @@ describe('extend merges all config hooks', () => {
 			{ name: value<string>() },
 			{ beforeChange: () => order.push('base') },
 		);
-		const extended = base.extend({}, { beforeChange: () => order.push('ext') });
+		const extended = base.extendConfig({
+			beforeChange: () => order.push('ext'),
+		});
 		const instance = extended.create({ name: 'Alice' });
 		instance.name.set('Bob');
 		expect(order).toEqual(['base', 'ext']);
@@ -1570,13 +1644,10 @@ describe('extend merges all config hooks', () => {
 				onUnused: () => order.push('baseUnused'),
 			},
 		);
-		const extended = base.extend(
-			{},
-			{
-				onUsed: () => order.push('extUsed'),
-				onUnused: () => order.push('extUnused'),
-			},
-		);
+		const extended = base.extendConfig({
+			onUsed: () => order.push('extUsed'),
+			onUnused: () => order.push('extUnused'),
+		});
 		const instance = extended.create({ name: 'Alice' });
 		const unsub = instance.name.subscribe(() => {});
 		expect(order).toEqual(['baseUsed', 'extUsed']);
@@ -1586,7 +1657,7 @@ describe('extend merges all config hooks', () => {
 
 	it('merges allowUndeclaredProperties from extension', () => {
 		const base = valueScope({ name: value<string>() });
-		const extended = base.extend({}, { allowUndeclaredProperties: true });
+		const extended = base.extendConfig({ allowUndeclaredProperties: true });
 		const instance = extended.create({ name: 'Alice', extra: 'data' } as any);
 		expect((instance as any).extra).toBe('data');
 	});
@@ -1681,7 +1752,7 @@ describe('value-ref in derivation scope', () => {
  * standalone Value semantics.
  */
 describe('factory pipes inside scope slots', () => {
-	it('pipeDebounce inside a scope slot actually debounces writes', () => {
+	it('pipeDebounce inside a scope slot actually debounces writes', async () => {
 		vi.useFakeTimers();
 		const scope = valueScope({
 			text: value<string>('').pipe(pipeDebounce(300)),
@@ -1699,7 +1770,7 @@ describe('factory pipes inside scope slots', () => {
 		expect(subscriber).not.toHaveBeenCalled();
 		expect(instance.text.get()).toBe('');
 
-		vi.advanceTimersByTime(300);
+		await vi.advanceTimersByTimeAsync(300);
 		expect(subscriber).toHaveBeenCalledOnce();
 		expect(instance.text.get()).toBe('abc');
 

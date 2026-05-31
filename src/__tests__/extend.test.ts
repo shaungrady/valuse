@@ -2,13 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { value } from '../core/value.js';
 import { valueScope } from '../core/value-scope.js';
 
-describe('extend', () => {
+describe('extendValues + extendConfig', () => {
 	it('adds new fields to the scope', () => {
 		const person = valueScope({
 			firstName: value<string>(),
 			lastName: value<string>(),
 		});
-		const employee = person.extend({
+		const employee = person.extendValues({
 			department: value<string>(),
 		});
 		const bob = employee.create({
@@ -24,7 +24,7 @@ describe('extend', () => {
 		const base = valueScope({
 			name: value<string>('default'),
 		});
-		const extended = base.extend({
+		const extended = base.extendValues({
 			name: value<string>('overridden'),
 		});
 		const instance = extended.create();
@@ -36,7 +36,7 @@ describe('extend', () => {
 			name: value<string>(),
 			age: value<number>(),
 		});
-		const stripped = base.extend({ age: undefined });
+		const stripped = base.extendValues({ age: undefined });
 		const instance = stripped.create({ name: 'Bob' });
 		expect(instance.name.get()).toBe('Bob');
 		expect((instance as any).age).toBeUndefined();
@@ -50,10 +50,9 @@ describe('extend', () => {
 			{ name: value<string>() },
 			{ onCreate: baseCreate },
 		);
-		const extended = base.extend(
-			{ role: value<string>() },
-			{ onCreate: extCreate },
-		);
+		const extended = base
+			.extendValues({ role: value<string>() })
+			.extendConfig({ onCreate: extCreate });
 
 		extended.create({ name: 'Bob', role: 'admin' });
 		expect(baseCreate).toHaveBeenCalledOnce();
@@ -66,7 +65,9 @@ describe('extend', () => {
 			{ name: value<string>() },
 			{ onDestroy: () => order.push('base') },
 		);
-		const extended = base.extend({}, { onDestroy: () => order.push('ext') });
+		const extended = base.extendConfig({
+			onDestroy: () => order.push('ext'),
+		});
 		const instance = extended.create({ name: 'Bob' });
 		instance.$destroy();
 		expect(order).toEqual(['base', 'ext']);
@@ -77,8 +78,8 @@ describe('extend', () => {
 			firstName: value<string>(),
 			lastName: value<string>(),
 		});
-		const extended = base.extend({
-			fullName: ({ scope }: { scope: any }) =>
+		const extended = base.extendValues({
+			fullName: ({ scope }) =>
 				`${scope.firstName.use()} ${scope.lastName.use()}`,
 		});
 		const bob = extended.create({
@@ -104,22 +105,22 @@ describe('extend', () => {
 	describe('removing a field referenced by an inherited derivation', () => {
 		it('create() does not throw', () => {
 			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-			const base = valueScope({
-				name: value<string>('Bob'),
-				greeting: ({ scope }: { scope: any }) => `Hello ${scope.name.use()}`,
-			});
-			const stripped = base.extend({ name: undefined });
+			const base = valueScope(
+				{ name: value<string>('Bob') },
+				{ greeting: ({ scope }) => `Hello ${scope.name.use()}` },
+			);
+			const stripped = base.extendValues({ name: undefined });
 			expect(() => stripped.create()).not.toThrow();
 			errSpy.mockRestore();
 		});
 
 		it('logs an error from the derivation on each failing run', () => {
 			const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-			const base = valueScope({
-				name: value<string>('Bob'),
-				greeting: ({ scope }: { scope: any }) => `Hello ${scope.name.use()}`,
-			});
-			const stripped = base.extend({ name: undefined });
+			const base = valueScope(
+				{ name: value<string>('Bob') },
+				{ greeting: ({ scope }) => `Hello ${scope.name.use()}` },
+			);
+			const stripped = base.extendValues({ name: undefined });
 			stripped.create();
 			expect(errSpy).toHaveBeenCalled();
 			errSpy.mockRestore();
@@ -142,7 +143,7 @@ describe('extend', () => {
 		const base = valueScope({
 			name: value<string>('Bob'),
 		});
-		const swapped = base.extend({
+		const swapped = base.extendValues({
 			name: () => 'Robert',
 		});
 		const instance = swapped.create();
@@ -169,41 +170,29 @@ describe('extend', () => {
 				},
 			},
 		);
-		const a = base.extend(
-			{},
-			{
-				validate: () => {
-					order.push('a');
-					return [{ message: 'a' }];
-				},
+		const a = base.extendConfig({
+			validate: () => {
+				order.push('a');
+				return [{ message: 'a' }];
 			},
-		);
-		const b = a.extend(
-			{},
-			{
-				validate: () => {
-					order.push('b');
-					return [{ message: 'b' }];
-				},
+		});
+		const b = a.extendConfig({
+			validate: () => {
+				order.push('b');
+				return [{ message: 'b' }];
 			},
-		);
-		const c = b.extend(
-			{},
-			{
-				validate: () => {
-					order.push('c');
-					return [{ message: 'c' }];
-				},
+		});
+		const c = b.extendConfig({
+			validate: () => {
+				order.push('c');
+				return [{ message: 'c' }];
 			},
-		);
+		});
 		const instance = c.create();
 		const validation = instance.$getValidation();
 		expect(order).toEqual(['base', 'a', 'b', 'c']);
-		expect(validation.issues.map((i) => i.message)).toEqual([
-			'base',
-			'a',
-			'b',
-			'c',
-		]);
+		expect(
+			validation.issues.map((i: { message: string }) => i.message),
+		).toEqual(['base', 'a', 'b', 'c']);
 	});
 });

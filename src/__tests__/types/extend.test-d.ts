@@ -1,45 +1,26 @@
+/**
+ * Type-level tests for `.extendValues()` definition merging behavior.
+ *
+ * Pins:
+ *  - `.extendValues({ext})` returns a template whose `Def` merges base + ext
+ *  - Keys in the extension override base keys
+ *  - `undefined` removes a key from the merged definition
+ *  - A derivation in the extension layer is typed against the base prior
+ */
+
 import { expectTypeOf } from 'expect-type';
-import { value, Value } from '../../core/value.js';
+import { value } from '../../core/value.js';
 import { valueScope } from '../../core/value-scope.js';
 import type { FieldValue, FieldDerived } from '../../core/field-value.js';
-import type { ExtendDef } from '../../core/scope-types.js';
 
-// ── ExtendDef merges types ──────────────────────────────────────────
-
-type Base = { name: Value<string>; age: Value<number> };
-type Ext = { role: Value<string> };
-type Merged = ExtendDef<Base, Ext>;
-
-expectTypeOf<Merged>().toMatchTypeOf<{
-	name: Value<string>;
-	age: Value<number>;
-	role: Value<string>;
-}>();
-
-// ── ExtendDef removes keys via undefined ────────────────────────────
-
-type WithRemoval = ExtendDef<Base, { age: undefined }>;
-// age should be removed
-// @ts-expect-error — age is removed from the definition
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-type _CheckAgeRemoved = WithRemoval['age'];
-
-// name should remain
-expectTypeOf<WithRemoval['name']>().toEqualTypeOf<Value<string>>();
-
-// ── ExtendDef overrides keys ────────────────────────────────────────
-
-type WithOverride = ExtendDef<Base, { age: Value<string> }>;
-expectTypeOf<WithOverride['age']>().toEqualTypeOf<Value<string>>();
-
-// ── extend() returns properly typed template ────────────────────────
+// ── extendValues() returns properly typed template ──────────────────
 
 const base = valueScope({
 	name: value<string>(),
 	age: value(0),
 });
 
-const extended = base.extend({
+const extended = base.extendValues({
 	role: value('viewer'),
 });
 
@@ -51,11 +32,31 @@ expectTypeOf(instance.name).toEqualTypeOf<
 expectTypeOf(instance.age).toEqualTypeOf<FieldValue<number, number>>();
 expectTypeOf(instance.role).toEqualTypeOf<FieldValue<string, string>>();
 
-// ── extend() with derivation ────────────────────────────────────────
+// ── extendValues() with derivation against base prior ──────────────
 
-const withDerived = base.extend({
-	greeting: ({ scope }: { scope: any }) => `Hello ${scope.name.use()}`,
+const withDerived = base.extendValues({
+	greeting: ({ scope }) => `Hello ${scope.name.use()}`,
 });
 
 const derivedInstance = withDerived.create({ name: 'Bob' });
 expectTypeOf(derivedInstance.greeting).toEqualTypeOf<FieldDerived<string>>();
+
+// ── extendValues() removes a base field via `undefined` ────────────
+
+const stripped = base.extendValues({ age: undefined });
+const strippedInstance = stripped.create({ name: 'Bob' });
+expectTypeOf(strippedInstance.name).toEqualTypeOf<
+	FieldValue<string | undefined, string | undefined>
+>();
+// @ts-expect-error — age removed from the merged definition
+void strippedInstance.age;
+
+// ── extendValues() override replaces base type ──────────────────────
+
+const overridden = base.extendValues({
+	age: value<string>('teen'),
+});
+const overriddenInstance = overridden.create();
+expectTypeOf(overriddenInstance.age).toEqualTypeOf<
+	FieldValue<string, string>
+>();

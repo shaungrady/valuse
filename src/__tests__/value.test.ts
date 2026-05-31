@@ -173,10 +173,7 @@ describe('value (v2)', () => {
 	describe('.pipe() — factory pipes', () => {
 		it('routes values through the factory writer', () => {
 			const doubled = value<number>(5).pipe<number>({
-				create:
-					({ set }) =>
-					(value) =>
-						set(value * 2),
+				create: (host) => ({ onWrite: (value) => host.set(value * 2) }),
 			});
 			expect(doubled.get()).toBe(10);
 			doubled.set(3);
@@ -185,10 +182,9 @@ describe('value (v2)', () => {
 
 		it('supports type-changing factory pipes', () => {
 			const parsed = value<string>('42').pipe<number>({
-				create:
-					({ set }) =>
-					(value) =>
-						set(Number.parseInt(value)),
+				create: (host) => ({
+					onWrite: (value) => host.set(Number.parseInt(value)),
+				}),
 			});
 			expect(parsed.get()).toBe(42);
 			parsed.set('100');
@@ -198,9 +194,9 @@ describe('value (v2)', () => {
 		it('runs onCleanup on destroy', () => {
 			const cleanup = vi.fn();
 			const count = value<number>(0).pipe<number>({
-				create: ({ set, onCleanup }) => {
-					onCleanup(cleanup);
-					return (value) => set(value);
+				create: (host) => {
+					host.onCleanup(cleanup);
+					return { onWrite: (value) => host.set(value) };
 				},
 			});
 			expect(cleanup).not.toHaveBeenCalled();
@@ -212,14 +208,16 @@ describe('value (v2)', () => {
 			vi.useFakeTimers();
 
 			const debounced = value<string>('').pipe<string>({
-				create: ({ set, onCleanup }) => {
+				create: (host) => {
 					let timer: ReturnType<typeof setTimeout> | undefined;
-					onCleanup(() => {
+					host.onCleanup(() => {
 						if (timer !== undefined) clearTimeout(timer);
 					});
-					return (value) => {
-						if (timer !== undefined) clearTimeout(timer);
-						timer = setTimeout(() => set(value), 100);
+					return {
+						onWrite(value) {
+							if (timer !== undefined) clearTimeout(timer);
+							timer = setTimeout(() => host.set(value), 100);
+						},
 					};
 				},
 			});
@@ -364,10 +362,9 @@ describe('value (v2)', () => {
 			const processed = value<string>('  raw  ')
 				.pipe((s) => s.trim())
 				.pipe<string>({
-					create:
-						({ set }) =>
-						(value) =>
-							set(value.toUpperCase()),
+					create: (host) => ({
+						onWrite: (value) => host.set(value.toUpperCase()),
+					}),
 				});
 			// Initial: "  raw  " -> trim -> "raw" -> factory -> "RAW"
 			expect(processed.get()).toBe('RAW');
@@ -381,10 +378,7 @@ describe('value (v2)', () => {
 		it('comparator skips identical factory output', () => {
 			const count = value<number>(0)
 				.pipe<number>({
-					create:
-						({ set }) =>
-						(value) =>
-							set(value * 2),
+					create: (host) => ({ onWrite: (value) => host.set(value * 2) }),
 				})
 				.compareUsing((a, b) => a === b);
 

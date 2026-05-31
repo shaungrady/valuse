@@ -263,7 +263,7 @@ const signupForm = valueScope(
 );
 ```
 
-`validate` lives in the scope config alongside `onCreate`, `onChange`, and the
+`validate` lives in the config layer alongside `onCreate`, `onChange`, and the
 other lifecycle hooks, but it isn't an event hook; it is a reactive derivation
 that returns an issue list. It re-evaluates whenever a `.use()`'d dependency
 changes. In the example above, changing either `password` or `confirm` triggers
@@ -481,12 +481,12 @@ const baseForm = valueScope(
   },
 );
 
-const extendedForm = baseForm.extend(
-  {
+const extendedForm = baseForm
+  .extendValues({
     password: valueSchema(Password, ''),
     confirm: valueSchema(Password, ''),
-  },
-  {
+  })
+  .extendConfig({
     validate: ({ scope }) => {
       const issues: StandardSchemaV1.Issue[] = [];
       if (scope.password.use() !== scope.confirm.use()) {
@@ -494,8 +494,7 @@ const extendedForm = baseForm.extend(
       }
       return issues;
     },
-  },
-);
+  });
 ```
 
 `$getIsValid()` and `$getValidation()` both pull from all sources: per-field
@@ -706,17 +705,18 @@ code). This requires loading states, debouncing, and cancellation. A future
 machinery. For now, use an async derivation alongside the schema field:
 
 ```ts
-const form = valueScope({
-  username: valueSchema(Username, ''),
-
-  usernameAvailable: async ({ scope, signal }) => {
-    const name = scope.username.use();
-    if (!name) return true;
-    await asyncDelay({ ms: 300, signal });
-    const res = await fetch(`/api/check-username?name=${name}`, { signal });
-    return res.json();
+const form = valueScope(
+  { username: valueSchema(Username, '') },
+  {
+    usernameAvailable: async ({ scope, signal }) => {
+      const name = scope.username.use();
+      if (!name) return true;
+      await asyncDelay({ ms: 300, signal });
+      const res = await fetch(`/api/check-username?name=${name}`, { signal });
+      return res.json();
+    },
   },
-});
+);
 ```
 
 **Dirty/touched tracking.** This is orthogonal to validation. A simple approach

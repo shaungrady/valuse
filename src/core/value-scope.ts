@@ -7,6 +7,7 @@ import {
 	type ReadonlySignal,
 } from './signal.js';
 import { subscribeFireOnly } from './utils/effect-helpers.js';
+import { createDeferral, type Deferral } from './utils/deferral.js';
 import { buildScopeDefinition } from './scope-definition.js';
 import { InstanceStore } from './instance-store.js';
 import {
@@ -33,11 +34,14 @@ import type { ScopeNode, Unsubscribe } from './types.js';
 import type {
 	ScopeInstance,
 	ValueInputOf,
-	ExtendDef,
 	GenericScopeInstance,
 	ScopeValidationResult,
+	DerivationLayer,
+	FieldLayer,
+	DeepMerge,
 } from './scope-types.js';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { Simplify } from 'type-fest';
 
 // --- ScopeTemplate ---
 
@@ -59,13 +63,33 @@ export class ScopeTemplate<
 > {
 	readonly #definition: ScopeDefinitionMeta;
 	readonly #rawDefinition: Record<string, unknown>;
+	readonly #layers: ReadonlyArray<Record<string, unknown>>;
 	readonly #config: ScopeConfig | undefined;
 
 	/** @internal */
-	constructor(rawDefinition: Record<string, unknown>, config?: ScopeConfig) {
+	constructor(
+		rawDefinition: Record<string, unknown>,
+		layers: ReadonlyArray<Record<string, unknown>>,
+		config?: ScopeConfig,
+	) {
 		this.#rawDefinition = rawDefinition;
+		this.#layers = layers;
 		this.#definition = buildScopeDefinition(rawDefinition);
 		this.#config = config;
+	}
+
+	/**
+	 * The declared layer structure as an array of layer literals in
+	 * dependency order: index 0 is the field layer, subsequent entries
+	 * are derivation layers. Extensions append.
+	 *
+	 * Used by the flush pipeline to cascade `$flush()` through layers in
+	 * dependency order. See `docs/proposals/flush-pipeline.md`.
+	 *
+	 * @internal
+	 */
+	get $layers(): ReadonlyArray<Record<string, unknown>> {
+		return this.#layers;
 	}
 
 	/**
@@ -85,49 +109,319 @@ export class ScopeTemplate<
 			this.#rawDefinition,
 			this.#config,
 			input,
+			this.#layers,
 		) as unknown as ScopeInstance<Def>;
 	}
 
+	// ── Variadic .extendValues() overloads ───────────────────────────────
+	//
+	// Mirrors valueScope's field+deriv slot structure, minus the trailing
+	// config slot. Slot 1 may be a field layer or a derivation layer
+	// (typed against the base `Def`). Slot 2+ are derivation layers typed
+	// against the accumulated definition.
+	//
+	// Multi-arg form requires slot 1 to be a field layer; to extend with
+	// only derivations from multi-arg form, pass `{}` in slot 1
+	// (`template.extendValues({}, { deriv1 }, { deriv2 })`).
+
+	/* eslint-disable @typescript-eslint/unified-signatures */
+
+	// 1 arg — derivation layer (against base Def). Listed FIRST so
+	// function-containing literals receive contextual typing for their
+	// `({ scope }) => ...` parameters before the field-layer overload's
+	// FieldEntry<fn> = never check rejects the call.
+	extendValues<L1 extends Record<string, unknown>>(
+		l1: L1 & DerivationLayer<Def, L1>,
+	): ScopeTemplate<ExtAcc1<Def, L1>>;
+	// 1 arg — field layer
+	extendValues<L1 extends Record<string, unknown>>(
+		l1: L1 & FieldLayer<L1>,
+	): ScopeTemplate<ExtAcc1<Def, L1>>;
+
+	// 2 args — fields + derivations
+	extendValues<L1 extends Record<string, unknown>, L2>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+	): ScopeTemplate<ExtAcc2<Def, L1, L2>>;
+
+	// 3 args
+	extendValues<L1 extends Record<string, unknown>, L2, L3>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+	): ScopeTemplate<ExtAcc3<Def, L1, L2, L3>>;
+
+	// 4 args
+	extendValues<L1 extends Record<string, unknown>, L2, L3, L4>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+	): ScopeTemplate<ExtAcc4<Def, L1, L2, L3, L4>>;
+
+	// 5 args
+	extendValues<L1 extends Record<string, unknown>, L2, L3, L4, L5>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+	): ScopeTemplate<ExtAcc5<Def, L1, L2, L3, L4, L5>>;
+
+	// 6 args
+	extendValues<L1 extends Record<string, unknown>, L2, L3, L4, L5, L6>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+	): ScopeTemplate<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>>;
+
+	// 7 args
+	extendValues<L1 extends Record<string, unknown>, L2, L3, L4, L5, L6, L7>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+		l7: L7 & DerivationLayer<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>, L7>,
+	): ScopeTemplate<ExtAcc7<Def, L1, L2, L3, L4, L5, L6, L7>>;
+
+	// 8 args
+	extendValues<L1 extends Record<string, unknown>, L2, L3, L4, L5, L6, L7, L8>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+		l7: L7 & DerivationLayer<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>, L7>,
+		l8: L8 & DerivationLayer<ExtAcc7<Def, L1, L2, L3, L4, L5, L6, L7>, L8>,
+	): ScopeTemplate<ExtAcc8<Def, L1, L2, L3, L4, L5, L6, L7, L8>>;
+
+	// 9 args
+	extendValues<
+		L1 extends Record<string, unknown>,
+		L2,
+		L3,
+		L4,
+		L5,
+		L6,
+		L7,
+		L8,
+		L9,
+	>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+		l7: L7 & DerivationLayer<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>, L7>,
+		l8: L8 & DerivationLayer<ExtAcc7<Def, L1, L2, L3, L4, L5, L6, L7>, L8>,
+		l9: L9 & DerivationLayer<ExtAcc8<Def, L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	): ScopeTemplate<ExtAcc9<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9>>;
+
+	// 10 args
+	extendValues<
+		L1 extends Record<string, unknown>,
+		L2,
+		L3,
+		L4,
+		L5,
+		L6,
+		L7,
+		L8,
+		L9,
+		L10,
+	>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+		l7: L7 & DerivationLayer<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>, L7>,
+		l8: L8 & DerivationLayer<ExtAcc7<Def, L1, L2, L3, L4, L5, L6, L7>, L8>,
+		l9: L9 & DerivationLayer<ExtAcc8<Def, L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+		l10: L10 &
+			DerivationLayer<ExtAcc9<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+	): ScopeTemplate<ExtAcc10<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>>;
+
+	// 11 args
+	extendValues<
+		L1 extends Record<string, unknown>,
+		L2,
+		L3,
+		L4,
+		L5,
+		L6,
+		L7,
+		L8,
+		L9,
+		L10,
+		L11,
+	>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+		l7: L7 & DerivationLayer<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>, L7>,
+		l8: L8 & DerivationLayer<ExtAcc7<Def, L1, L2, L3, L4, L5, L6, L7>, L8>,
+		l9: L9 & DerivationLayer<ExtAcc8<Def, L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+		l10: L10 &
+			DerivationLayer<ExtAcc9<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+		l11: L11 &
+			DerivationLayer<
+				ExtAcc10<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>,
+				L11
+			>,
+	): ScopeTemplate<ExtAcc11<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>>;
+
+	// 12 args
+	extendValues<
+		L1 extends Record<string, unknown>,
+		L2,
+		L3,
+		L4,
+		L5,
+		L6,
+		L7,
+		L8,
+		L9,
+		L10,
+		L11,
+		L12,
+	>(
+		l1: L1 & FieldLayer<L1>,
+		l2: L2 & DerivationLayer<ExtAcc1<Def, L1>, L2>,
+		l3: L3 & DerivationLayer<ExtAcc2<Def, L1, L2>, L3>,
+		l4: L4 & DerivationLayer<ExtAcc3<Def, L1, L2, L3>, L4>,
+		l5: L5 & DerivationLayer<ExtAcc4<Def, L1, L2, L3, L4>, L5>,
+		l6: L6 & DerivationLayer<ExtAcc5<Def, L1, L2, L3, L4, L5>, L6>,
+		l7: L7 & DerivationLayer<ExtAcc6<Def, L1, L2, L3, L4, L5, L6>, L7>,
+		l8: L8 & DerivationLayer<ExtAcc7<Def, L1, L2, L3, L4, L5, L6, L7>, L8>,
+		l9: L9 & DerivationLayer<ExtAcc8<Def, L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+		l10: L10 &
+			DerivationLayer<ExtAcc9<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+		l11: L11 &
+			DerivationLayer<
+				ExtAcc10<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>,
+				L11
+			>,
+		l12: L12 &
+			DerivationLayer<
+				ExtAcc11<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>,
+				L12
+			>,
+	): ScopeTemplate<
+		ExtAcc12<Def, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12>
+	>;
+
+	/* eslint-enable @typescript-eslint/unified-signatures */
+
 	/**
-	 * Create a new template with additional fields. Lifecycle hooks are merged
-	 * so both base and extension hooks fire in order.
+	 * Extend the template with new values and/or derivation layers.
 	 *
 	 * @remarks
-	 * Use `undefined` as a value in the extension to remove a field from the base definition.
+	 * Mirrors `valueScope()`'s variadic field+derivation slot structure,
+	 * minus the trailing config slot. For lifecycle hooks, chain with
+	 * {@link ScopeTemplate.extendConfig}.
 	 *
-	 * @typeParam Ext - the extension definition record.
-	 * @param extension - additional fields to add to the definition.
-	 * @param extensionConfig - optional lifecycle hooks for the extended scope.
-	 * @returns a new {@link ScopeTemplate} combining base and extension.
+	 * Slot 1 may be a field layer or a derivation layer (against the base
+	 * `Def`). For two or more arguments, slot 1 must be a field layer and
+	 * subsequent slots are derivation layers typed against the accumulated
+	 * definition. To extend with only derivations in multi-arg form, pass
+	 * `{}` as slot 1.
+	 *
+	 * @example Add a field
+	 * ```ts
+	 * const person = base.extendValues({ age: value(0) });
+	 * ```
+	 *
+	 * @example Add a derivation (against the base)
+	 * ```ts
+	 * const person = base.extendValues({
+	 *   fullName: ({ scope }) => `${scope.first.use()} ${scope.last.use()}`,
+	 * });
+	 * ```
+	 *
+	 * @example Add fields and a derivation in layered form
+	 * ```ts
+	 * const person = base.extendValues(
+	 *   { first: value<string>(), last: value<string>() },
+	 *   { fullName: ({ scope }) => `${scope.first.use()} ${scope.last.use()}` },
+	 * );
+	 * ```
+	 */
+	// Implementation signature for the variadic overloads above. The
+	// `any` return suppresses the overload-vs-impl variance check that
+	// would otherwise reject narrower `ScopeTemplate<AsDef<...>>`
+	// overload return types as incompatible with a wider impl return.
+	// Public callers see the strict overload return types; this signature
+	// is hidden at the call site.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	extendValues(...layers: unknown[]): any {
+		if (layers.length === 0) {
+			throw new TypeError(
+				'ScopeTemplate.extendValues: at least one layer required.',
+			);
+		}
+		// Merge each new layer over the prior definition. Plain-object
+		// subtrees deep-merge so a derivation layer can extend a nested
+		// object declared in an earlier layer.
+		let merged: Record<string, unknown> = { ...this.#rawDefinition };
+		for (const layerRaw of layers) {
+			const layer = layerRaw as Record<string, unknown>;
+			merged = deepMergeLayers(merged, layer);
+			// Honor `undefined` as a removal directive so callers can drop
+			// a base field by writing `extendValues({ field: undefined })`.
+			for (const [key, value] of Object.entries(layer)) {
+				if (value === undefined) {
+					// eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+					delete merged[key];
+				}
+			}
+		}
+		// Append extension layers to the base's layer array. Extension
+		// layers always live downstream of the base's layers — extension
+		// derivations can read all base derivations, but not vice versa.
+		const nextLayers: ReadonlyArray<Record<string, unknown>> = [
+			...this.#layers,
+			...(layers as Array<Record<string, unknown>>),
+		];
+		return new ScopeTemplate(merged, nextLayers, this.#config);
+	}
+
+	/**
+	 * Attach lifecycle hooks to the template without changing its
+	 * definition. Hooks merge with any hooks already configured, in
+	 * declaration order (existing first, then the new layer).
+	 *
+	 * @param config - lifecycle hooks. `scope` inside each hook is typed
+	 *   against the current `Def`.
 	 *
 	 * @example
 	 * ```ts
-	 * const employeeTemplate = personTemplate.extend({
-	 *   salary: value(50000),
-	 *   isHired: true,
+	 * const person = base.extendConfig({
+	 *   onCreate: ({ scope }) => console.log(scope.name.get()),
 	 * });
 	 * ```
 	 */
-	extend<Ext extends Record<string, unknown>>(
-		extension: Ext,
-		extensionConfig?: ScopeConfig,
-	): ScopeTemplate<ExtendDef<Def, Ext>> {
-		// Merge definitions: extension overrides base, undefined removes
-		const mergedDefinition: Record<string, unknown> = {
-			...this.#rawDefinition,
-		};
-		for (const [key, value] of Object.entries(extension)) {
-			if (value === undefined) {
-				// eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-				delete mergedDefinition[key];
-			} else {
-				mergedDefinition[key] = value;
-			}
-		}
-
-		// Merge configs
-		const mergedConfig = mergeConfigs(this.#config, extensionConfig);
-		return new ScopeTemplate(mergedDefinition, mergedConfig);
+	extendConfig(config: ScopeConfig<Def>): ScopeTemplate<Def> {
+		const mergedConfig = mergeConfigs(
+			this.#config,
+			config as unknown as ScopeConfig,
+		);
+		return new ScopeTemplate<Def>(
+			this.#rawDefinition,
+			this.#layers,
+			mergedConfig,
+		);
 	}
 
 	/**
@@ -220,6 +514,85 @@ export class ScopeTemplate<
 	}
 }
 
+// ── Public widening helpers ──────────────────────────────────────────
+
+/**
+ * The widest scope-template type — `ScopeTemplate<Record<string, unknown>>`.
+ *
+ * Use as a cast target inside middleware that's generic over `Def` but
+ * needs to attach `$`-methods or read snapshots without knowing the
+ * concrete shape. Inside a function whose template is typed as
+ * `UnknownValueScope`, the lifecycle-hook `scope` resolves to
+ * `GenericScopeInstance`, so writes to dynamically-attached properties
+ * type-check cleanly.
+ *
+ * @example
+ * ```ts
+ * function withHistory<Def extends Record<string, unknown>>(
+ *   template: ScopeTemplate<Def>,
+ * ): HistoryTemplate<Def> {
+ *   return asUnknownValueScope(template).extendConfig({
+ *     onCreate: ({ scope }) => {
+ *       scope.$undo = () => {};
+ *     },
+ *   }) as unknown as HistoryTemplate<Def>;
+ * }
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments -- explicit Record<string, unknown> documents the loose-shape intent here
+export type UnknownValueScope = ScopeTemplate<Record<string, unknown>>;
+
+/**
+ * Constraint helper for middleware that operates on templates whose
+ * definition must include specific values. Apply as a `Def extends ...`
+ * bound on the middleware's generic, then take `ScopeTemplate<Def>` as
+ * the parameter.
+ *
+ * Note: this is a **definition-shape** type, not a template type. It
+ * exists because `ScopeTemplate<Def>` is invariant in `Def`, so a
+ * template-subtype formulation cannot accept wider concrete templates
+ * (e.g., `ScopeTemplate<{count, name}>` would not flow into
+ * `ScopeTemplate<{count}>`). Constraining `Def` directly avoids the
+ * variance trap.
+ *
+ * Inside hooks, `scope` retains its generic typing — the constraint
+ * informs the call boundary, not the hook body. To access required
+ * values with their declared types, read through `$getSnapshot()` or
+ * cast `scope` to a known shape. For middleware that attaches new
+ * `$`-methods, combine with {@link asUnknownValueScope}.
+ *
+ * @typeParam RequiredDef - the values the template must declare.
+ *
+ * @example
+ * ```ts
+ * function withCountLogger<
+ *   Def extends ValueScope<{ count: Value<number> }>,
+ * >(template: ScopeTemplate<Def>): ScopeTemplate<Def> {
+ *   return template.extendConfig({
+ *     onChange: ({ scope }) => {
+ *       const snap = scope.$getSnapshot();
+ *       console.log(snap.count);
+ *     },
+ *   });
+ * }
+ * ```
+ */
+export type ValueScope<RequiredDef extends Record<string, unknown>> =
+	RequiredDef & Record<string, unknown>;
+
+/**
+ * Widen a `ScopeTemplate<Def>` to {@link UnknownValueScope}. The runtime
+ * value is untouched — this is a typed `as` cast, named to make the
+ * widening intentional and reviewable at the call site.
+ *
+ * @see {@link UnknownValueScope} for usage rationale.
+ */
+export function asUnknownValueScope<Def extends Record<string, unknown>>(
+	template: ScopeTemplate<Def>,
+): UnknownValueScope {
+	return template as UnknownValueScope;
+}
+
 /**
  * Define a reactive scope.
  *
@@ -245,11 +618,671 @@ export class ScopeTemplate<
  * alice.full.get();  // "Alice Smith"
  * ```
  */
+// ── Variadic overloads ───────────────────────────────────────────────
+//
+// Order at each arity (N args):
+//   1. (fields, ...mid-derivs, LAST-deriv-no-config-keys)        ← deriv-only path
+//   2. (fields, ...mid-derivs, last-deriv, config)               ← config-trailing path
+//
+// At the LAST deriv slot we use `LastDerivationLayer` which rejects
+// config-shaped keys; this lets `valueScope(fields, { onCreate: hook })`
+// fall through to the (fields, config) overload below. The middle
+// derivation slots use the lenient `DerivationLayer` so you can still
+// name a derivation `onCreate` when a trailing `{}` disambiguator follows.
+//
+// Type accumulation uses `DeepMerge<A, B>` so nested-object subtrees
+// compose correctly.
+
+/* eslint-disable @typescript-eslint/unified-signatures */
+
+/**
+ * Force a structural `DeepMerge<...>` result into a constraint-satisfying
+ * shape so it can pass `ScopeTemplate<Def extends Record<string, unknown>>`
+ * checks. Two-step:
+ *
+ *  1. If `T` already statically extends `Record<string, unknown>` (e.g.,
+ *     a generic `Def` constrained at the class level), pass it through
+ *     unchanged so the original type identity is preserved (important
+ *     for `MapDefinition<Def>` simplification inside middleware that's
+ *     generic over `Def`).
+ *  2. Otherwise (e.g., a `DeepMerge<...>` mapped result that's
+ *     structurally Record-shaped but not constraint-visible),
+ *     `Simplify` from type-fest collapses it into a canonical form
+ *     TypeScript recognizes as `Record<string, unknown>`.
+ *
+ * @internal
+ */
+type AsDef<T> = T extends Record<string, unknown> ? T : Simplify<T>;
+
+// Per-extension accumulator aliases threaded by `.extendValues()`. Like
+// `Acc{N}` but rooted on the existing template's `Def` rather than the
+// first layer literal, so the prior context passed to deriv layers
+// includes everything previously declared on the template.
+type ExtAcc1<Prior, L1> = AsDef<DeepMerge<Prior, L1>>;
+type ExtAcc2<Prior, L1, L2> = AsDef<DeepMerge<ExtAcc1<Prior, L1>, L2>>;
+type ExtAcc3<Prior, L1, L2, L3> = AsDef<DeepMerge<ExtAcc2<Prior, L1, L2>, L3>>;
+type ExtAcc4<Prior, L1, L2, L3, L4> = AsDef<
+	DeepMerge<ExtAcc3<Prior, L1, L2, L3>, L4>
+>;
+type ExtAcc5<Prior, L1, L2, L3, L4, L5> = AsDef<
+	DeepMerge<ExtAcc4<Prior, L1, L2, L3, L4>, L5>
+>;
+type ExtAcc6<Prior, L1, L2, L3, L4, L5, L6> = AsDef<
+	DeepMerge<ExtAcc5<Prior, L1, L2, L3, L4, L5>, L6>
+>;
+type ExtAcc7<Prior, L1, L2, L3, L4, L5, L6, L7> = AsDef<
+	DeepMerge<ExtAcc6<Prior, L1, L2, L3, L4, L5, L6>, L7>
+>;
+type ExtAcc8<Prior, L1, L2, L3, L4, L5, L6, L7, L8> = AsDef<
+	DeepMerge<ExtAcc7<Prior, L1, L2, L3, L4, L5, L6, L7>, L8>
+>;
+type ExtAcc9<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9> = AsDef<
+	DeepMerge<ExtAcc8<Prior, L1, L2, L3, L4, L5, L6, L7, L8>, L9>
+>;
+type ExtAcc10<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10> = AsDef<
+	DeepMerge<ExtAcc9<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>
+>;
+type ExtAcc11<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11> = AsDef<
+	DeepMerge<ExtAcc10<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>, L11>
+>;
+type ExtAcc12<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12> = AsDef<
+	DeepMerge<ExtAcc11<Prior, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>, L12>
+>;
+
+// Layer-accumulator aliases used by the overload set below. Each step
+// deep-merges the next layer literal into the accumulated def and
+// re-fits the result into the `Record<string, unknown>` constraint via
+// `AsDef` so the next overload's slot types can use it as `Prior`.
+type Acc2<L1, L2> = AsDef<DeepMerge<L1, L2>>;
+type Acc3<L1, L2, L3> = AsDef<DeepMerge<Acc2<L1, L2>, L3>>;
+type Acc4<L1, L2, L3, L4> = AsDef<DeepMerge<Acc3<L1, L2, L3>, L4>>;
+type Acc5<L1, L2, L3, L4, L5> = AsDef<DeepMerge<Acc4<L1, L2, L3, L4>, L5>>;
+type Acc6<L1, L2, L3, L4, L5, L6> = AsDef<
+	DeepMerge<Acc5<L1, L2, L3, L4, L5>, L6>
+>;
+type Acc7<L1, L2, L3, L4, L5, L6, L7> = AsDef<
+	DeepMerge<Acc6<L1, L2, L3, L4, L5, L6>, L7>
+>;
+type Acc8<L1, L2, L3, L4, L5, L6, L7, L8> = AsDef<
+	DeepMerge<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>
+>;
+type Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9> = AsDef<
+	DeepMerge<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>
+>;
+type Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10> = AsDef<
+	DeepMerge<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>
+>;
+type Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11> = AsDef<
+	DeepMerge<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>, L11>
+>;
+type Acc12<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12> = AsDef<
+	DeepMerge<Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>, L12>
+>;
+
+// 1 arg
+export function valueScope<L1 extends Record<string, unknown>>(
+	l1: L1 & FieldLayer<L1>,
+): ScopeTemplate<L1>;
+
+// 2 args — config-overload listed FIRST so hook-shaped literals
+// resolve to the config form; deriv falls in second
+export function valueScope<L1 extends Record<string, unknown>>(
+	l1: L1 & FieldLayer<L1>,
+	config: ScopeConfig<L1>,
+): ScopeTemplate<L1>;
+export function valueScope<L1 extends Record<string, unknown>, L2>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+): ScopeTemplate<AsDef<Acc2<L1, L2>>>;
+
+// 3 args
+export function valueScope<L1 extends Record<string, unknown>, L2>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	config: ScopeConfig<Acc2<L1, L2>>,
+): ScopeTemplate<AsDef<Acc2<L1, L2>>>;
+export function valueScope<L1 extends Record<string, unknown>, L2, L3>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+): ScopeTemplate<AsDef<Acc3<L1, L2, L3>>>;
+
+// 4 args
+export function valueScope<L1 extends Record<string, unknown>, L2, L3>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	config: ScopeConfig<Acc3<L1, L2, L3>>,
+): ScopeTemplate<AsDef<Acc3<L1, L2, L3>>>;
+export function valueScope<L1 extends Record<string, unknown>, L2, L3, L4>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+): ScopeTemplate<AsDef<Acc4<L1, L2, L3, L4>>>;
+
+// 5 args
+export function valueScope<L1 extends Record<string, unknown>, L2, L3, L4>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	config: ScopeConfig<Acc4<L1, L2, L3, L4>>,
+): ScopeTemplate<AsDef<Acc4<L1, L2, L3, L4>>>;
+export function valueScope<L1 extends Record<string, unknown>, L2, L3, L4, L5>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+): ScopeTemplate<Acc5<L1, L2, L3, L4, L5>>;
+
+// 6 args
+export function valueScope<L1 extends Record<string, unknown>, L2, L3, L4, L5>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	config: ScopeConfig<Acc5<L1, L2, L3, L4, L5>>,
+): ScopeTemplate<AsDef<Acc5<L1, L2, L3, L4, L5>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+): ScopeTemplate<AsDef<Acc6<L1, L2, L3, L4, L5, L6>>>;
+
+// 7 args
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	config: ScopeConfig<Acc6<L1, L2, L3, L4, L5, L6>>,
+): ScopeTemplate<AsDef<Acc6<L1, L2, L3, L4, L5, L6>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+): ScopeTemplate<AsDef<Acc7<L1, L2, L3, L4, L5, L6, L7>>>;
+
+// 8 args
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	config: ScopeConfig<Acc7<L1, L2, L3, L4, L5, L6, L7>>,
+): ScopeTemplate<AsDef<Acc7<L1, L2, L3, L4, L5, L6, L7>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+): ScopeTemplate<AsDef<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>>>;
+
+// 9 args
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	config: ScopeConfig<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>>,
+): ScopeTemplate<AsDef<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+): ScopeTemplate<AsDef<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>>>;
+
+// 10 args
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	config: ScopeConfig<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>>,
+): ScopeTemplate<AsDef<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+	L10,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	l10: L10 & DerivationLayer<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+): ScopeTemplate<AsDef<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>>>;
+
+// 11 args
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+	L10,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	l10: L10 & DerivationLayer<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+	config: ScopeConfig<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>>,
+): ScopeTemplate<AsDef<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+	L10,
+	L11,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	l10: L10 & DerivationLayer<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+	l11: L11 &
+		DerivationLayer<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>, L11>,
+): ScopeTemplate<AsDef<Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>>>;
+
+// 12 args
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+	L10,
+	L11,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	l10: L10 & DerivationLayer<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+	l11: L11 &
+		DerivationLayer<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>, L11>,
+	config: ScopeConfig<Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>>,
+): ScopeTemplate<AsDef<Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>>>;
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+	L10,
+	L11,
+	L12,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	l10: L10 & DerivationLayer<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+	l11: L11 &
+		DerivationLayer<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>, L11>,
+	l12: L12 &
+		DerivationLayer<Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>, L12>,
+): ScopeTemplate<
+	AsDef<Acc12<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12>>
+>;
+
+// 13 args (final: field + 11 derivation layers + config)
+export function valueScope<
+	L1 extends Record<string, unknown>,
+	L2,
+	L3,
+	L4,
+	L5,
+	L6,
+	L7,
+	L8,
+	L9,
+	L10,
+	L11,
+	L12,
+>(
+	l1: L1 & FieldLayer<L1>,
+	l2: L2 & DerivationLayer<L1, L2>,
+	l3: L3 & DerivationLayer<Acc2<L1, L2>, L3>,
+	l4: L4 & DerivationLayer<Acc3<L1, L2, L3>, L4>,
+	l5: L5 & DerivationLayer<Acc4<L1, L2, L3, L4>, L5>,
+	l6: L6 & DerivationLayer<Acc5<L1, L2, L3, L4, L5>, L6>,
+	l7: L7 & DerivationLayer<Acc6<L1, L2, L3, L4, L5, L6>, L7>,
+	l8: L8 & DerivationLayer<Acc7<L1, L2, L3, L4, L5, L6, L7>, L8>,
+	l9: L9 & DerivationLayer<Acc8<L1, L2, L3, L4, L5, L6, L7, L8>, L9>,
+	l10: L10 & DerivationLayer<Acc9<L1, L2, L3, L4, L5, L6, L7, L8, L9>, L10>,
+	l11: L11 &
+		DerivationLayer<Acc10<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10>, L11>,
+	l12: L12 &
+		DerivationLayer<Acc11<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11>, L12>,
+	config: ScopeConfig<Acc12<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12>>,
+): ScopeTemplate<
+	AsDef<Acc12<L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12>>
+>;
+
+/**
+ * Single-object form. Accepts a mixed literal containing values,
+ * derivations, async derivations, refs, and nested objects in one
+ * record. Derivation `({ scope })` parameters need explicit annotations
+ * (`SyncDerivationContext<Fields>` / `AsyncDerivationContext<Fields>`)
+ * because TS cannot contextually type them from a circular `Def`
+ * inference within a single literal.
+ *
+ * For new code prefer the variadic form, which gives the same surface
+ * with automatic contextual typing. The single-literal form is kept for
+ * cases where a single literal reads more naturally — typically small
+ * scopes that mix one or two derivations into a values literal.
+ */
 export function valueScope<Def extends Record<string, unknown>>(
 	definition: Def,
 	config?: ScopeConfig<Def>,
-): ScopeTemplate<Def> {
-	return new ScopeTemplate(definition, config as ScopeConfig);
+): ScopeTemplate<Def>;
+
+/* eslint-enable @typescript-eslint/unified-signatures */
+
+/**
+ * Define a reactive scope template.
+ *
+ * @see {@link ScopeTemplate} for the produced template's API.
+ * @see `docs/proposals/variadic-scope-api.md` for the variadic API.
+ *
+ * @example Field layer only
+ * ```ts
+ * const person = valueScope({
+ *   first: value('Alice'),
+ *   last: value('Smith'),
+ * });
+ * ```
+ *
+ * @example Fields + derivation layer
+ * ```ts
+ * const person = valueScope(
+ *   { first: value<string>(), last: value<string>() },
+ *   { full: ({ scope }) => `${scope.first.use()} ${scope.last.use()}` },
+ * );
+ * ```
+ *
+ * @example Fields + derivations + config
+ * ```ts
+ * const cart = valueScope(
+ *   { price: value(0), qty: value(0) },
+ *   { subtotal: ({ scope }) => scope.price.use() * scope.qty.use() },
+ *   { onCreate: ({ scope }) => {} },
+ * );
+ * ```
+ */
+export function valueScope(...args: unknown[]): ScopeTemplate {
+	const { definition, layers, config } = collapseLayers(args);
+	return new ScopeTemplate(definition, layers, config);
+}
+
+// ── Layer collapse ───────────────────────────────────────────────────
+
+/**
+ * Known config-layer keys. The runtime treats the last variadic arg as
+ * a config layer if every own key on it appears in this set (an empty
+ * object qualifies, which is how the trailing `{}` disambiguator works).
+ * Anything else is a derivation layer.
+ * @internal
+ */
+const CONFIG_KEYS: ReadonlySet<string> = new Set([
+	'onCreate',
+	'onDestroy',
+	'onChange',
+	'beforeChange',
+	'onUsed',
+	'onUnused',
+	'validate',
+	'allowUndeclaredProperties',
+]);
+
+function isConfigLayer(value: unknown): value is ScopeConfig {
+	if (!value || typeof value !== 'object') return false;
+	for (const key of Object.keys(value)) {
+		if (!CONFIG_KEYS.has(key)) return false;
+	}
+	return true;
+}
+
+/**
+ * Collapse a variadic args list `(fields, ...derivations, config?)` into
+ * a single merged definition plus optional config. The first arg is the
+ * field layer; the last arg is the config layer if (and only if) every
+ * own key on it is a known config key; everything between is a
+ * derivation layer.
+ *
+ * Plain-object subtrees are deep-merged so a derivation layer can extend
+ * a field layer's nested object. Reactive primitives and functions are
+ * leaves; B replaces A on collision.
+ *
+ * @internal
+ */
+function collapseLayers(args: unknown[]): {
+	definition: Record<string, unknown>;
+	layers: ReadonlyArray<Record<string, unknown>>;
+	config: ScopeConfig | undefined;
+} {
+	if (args.length === 0) {
+		throw new TypeError('valueScope: at least one layer required.');
+	}
+
+	let lastLayerIndex = args.length - 1;
+	let config: ScopeConfig | undefined;
+	// Only consider the LAST arg as a config layer; middle args are
+	// always derivation layers, even if they happen to be empty or to
+	// contain only hook-named entries.
+	if (args.length > 1 && isConfigLayer(args[lastLayerIndex])) {
+		config = args[lastLayerIndex] as ScopeConfig;
+		lastLayerIndex -= 1;
+	}
+
+	// Layer-by-layer record of every non-config arg, preserved for the
+	// flush pipeline. Index 0 is the field layer; subsequent entries
+	// are derivation layers, in declaration order.
+	const layers: Array<Record<string, unknown>> = [];
+	for (let i = 0; i <= lastLayerIndex; i += 1) {
+		layers.push(args[i] as Record<string, unknown>);
+	}
+
+	let merged = layers[0]!;
+	for (let i = 1; i < layers.length; i += 1) {
+		merged = deepMergeLayers(merged, layers[i]!);
+	}
+
+	return { definition: merged, layers, config };
+}
+
+/**
+ * Runtime counterpart to the `DeepMerge<A, B>` type. Plain-object
+ * subtrees recurse; leaves (reactive primitives, functions, anything
+ * non-plain-object) follow shallow-override semantics (B replaces A).
+ * @internal
+ */
+function deepMergeLayers(
+	a: Record<string, unknown>,
+	b: Record<string, unknown>,
+): Record<string, unknown> {
+	const result: Record<string, unknown> = { ...a };
+	for (const [key, bValue] of Object.entries(b)) {
+		const aValue = a[key];
+		if (isPlainGroup(aValue) && isPlainGroup(bValue)) {
+			result[key] = deepMergeLayers(
+				aValue as Record<string, unknown>,
+				bValue as Record<string, unknown>,
+			);
+		} else {
+			result[key] = bValue;
+		}
+	}
+	return result;
+}
+
+/**
+ * Predicate matching the type-level `IsGroup<T>` check. A plain-object
+ * subtree is anything that isn't a reactive primitive, ref, collection,
+ * or function. We rely on `[Symbol.toStringTag]` being absent (none of
+ * the reactive classes set it) and the object having a plain-Object
+ * prototype chain.
+ * @internal
+ */
+function isPlainGroup(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	if (typeof (value as { __brand?: unknown }).__brand === 'string')
+		return false;
+	const proto = Object.getPrototypeOf(value) as unknown;
+	return proto === Object.prototype || proto === null;
 }
 
 // --- Instance creation ---
@@ -287,6 +1320,7 @@ function createScopeInstance(
 	_rawDefinition: Record<string, unknown>,
 	config: ScopeConfig | undefined,
 	input: Record<string, unknown> | undefined,
+	layers: ReadonlyArray<Record<string, unknown>> = [],
 ): Record<string, unknown> {
 	// Resolve initial values from input (flattened path -> value)
 	const initialValues = new Map<number, unknown>();
@@ -420,6 +1454,7 @@ function createScopeInstance(
 		undeclaredProperties,
 		factoryRefInstances,
 		factoryRefDestroyables,
+		layers,
 	);
 
 	// Set up validate config and $getIsValid/$useIsValid
@@ -860,6 +1895,16 @@ interface AsyncRun {
 	 */
 	subscriptions: Map<number | string, () => void>;
 	cleanups: (() => void)[];
+	/** Flushable deferral powering `ctx.deferBy`, governed by this run's signal. */
+	deferral: Deferral;
+	/** Resolves when this run settles (after its result/error is written). */
+	completion: Promise<void>;
+	/** Observable-output counter; bumped on each `ctx.set` emit. */
+	emitCount: number;
+	/** `true` once the run has settled (result/error written). */
+	settled: boolean;
+	/** Resolves on the next emit, deferral arm, or completion. */
+	nextWake: () => Promise<void>;
 }
 
 /** Mutable ref to the current async run. Shared by the scope tree so it doesn't need rebuilding on every re-run. @internal */
@@ -867,6 +1912,16 @@ interface AsyncRunRef {
 	current: AsyncRun;
 	scheduleRerun: () => void;
 }
+
+/**
+ * Safety bound for the async-derivation flush chase. `flush()` expedites a
+ * run to its next output; this caps the chase so a derivation that defers
+ * in a loop without ever emitting can't hang flush() (and `$flush()`).
+ * Deferrals are expedited (not timed), so legitimate runs settle in a
+ * handful of passes — this only bites a genuinely non-terminating,
+ * non-emitting loop.
+ */
+const FLUSH_CHASE_CAP = 1_000;
 
 /** Set up async derivations using eager subscriptions. Each use() call subscribes to the signal; when any tracked dep changes, the derivation aborts and re-runs. @internal */
 function setupAsyncDerivations(
@@ -902,10 +1957,32 @@ function setupAsyncDerivations(
 				}
 
 				const controller = new AbortController();
+				const deferral = createDeferral(controller.signal);
+				let resolveCompletion!: () => void;
+				const completion = new Promise<void>((resolve) => {
+					resolveCompletion = resolve;
+				});
+				// Flush instrumentation. `wake()` fires on each emit, deferral
+				// arm, and completion; the flush chase (in `_flushFns`) waits on
+				// it to advance the run to its next output.
+				let wakeWaiters: (() => void)[] = [];
+				const wake = (): void => {
+					const waiters = wakeWaiters;
+					wakeWaiters = [];
+					for (const resolve of waiters) resolve();
+				};
 				runRef.current = {
 					controller,
 					subscriptions: new Map(),
 					cleanups: [],
+					deferral,
+					completion,
+					emitCount: 0,
+					settled: false,
+					nextWake: () =>
+						new Promise<void>((resolve) => {
+							wakeWaiters.push(resolve);
+						}),
 				};
 
 				// Mark as running for cycle detection
@@ -943,9 +2020,20 @@ function setupAsyncDerivations(
 								asyncSignal.value = resolvedAsyncState(value);
 							}
 						});
+						// An emit is an observable output: count it and wake any
+						// in-flight flush so it can stop chasing.
+						run.emitCount += 1;
+						wake();
 					},
 					onCleanup: (fn: () => void) => {
 						run.cleanups.push(fn);
+					},
+					deferBy: (ms: number) => {
+						const promise = deferral.deferBy(ms);
+						// Wake any in-flight flush so it can expedite this fresh
+						// deferral instead of waiting out its real timer.
+						wake();
+						return promise;
 					},
 					previousValue: lastValue,
 				};
@@ -953,6 +2041,13 @@ function setupAsyncDerivations(
 				// Run the async function
 				try {
 					const promise = derivationFn(context) as Promise<unknown>;
+					// The synchronous phase (up to the first `await`) is done —
+					// drop the cycle-detection marker now. Genuine cycles
+					// (synchronous self-`use()`) are caught during that phase;
+					// keeping the marker through the async phase would falsely
+					// flag a *downstream* async derivation that legitimately
+					// reads this still-pending one (e.g. preview → results).
+					store.runningAsync.delete(slot);
 					promise
 						.then((result: unknown) => {
 							store.runningAsync.delete(slot);
@@ -992,12 +2087,20 @@ function setupAsyncDerivations(
 							if (asyncSignal) {
 								asyncSignal.value = errorAsyncState(asyncSignal.peek(), error);
 							}
+						})
+						.finally(() => {
+							run.settled = true;
+							wake();
+							resolveCompletion();
 						});
 				} catch (error) {
 					store.runningAsync.delete(slot);
 					if (asyncSignal) {
 						asyncSignal.value = errorAsyncState(asyncSignal.peek(), error);
 					}
+					run.settled = true;
+					wake();
+					resolveCompletion();
 				}
 			};
 
@@ -1013,6 +2116,33 @@ function setupAsyncDerivations(
 
 			// Register recompute function
 			store._recomputeFns.set(slot, runDerivation);
+
+			// Register flush: expedite the active deferral and chase the run —
+			// re-expediting each freshly-armed deferral — until it emits (set),
+			// completes, or hits FLUSH_CHASE_CAP. The cap guards a derivation
+			// that defers in a loop without ever emitting; without it, flush()
+			// (and $flush()) would hang. Registering `nextWake()` before
+			// `deferral.flush()` is load-bearing: flush schedules the run's
+			// continuation as a microtask, so the waiter must already be in
+			// place to catch the emit / arm / completion it produces.
+			store._flushFns.set(slot, async () => {
+				const run = runRef.current;
+				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+				if (!run) return;
+				const emitMark = run.emitCount;
+				for (let pass = 0; pass < FLUSH_CHASE_CAP; pass += 1) {
+					if (run.settled || run.emitCount > emitMark) return;
+					const woke = run.nextWake();
+					run.deferral.flush();
+					await Promise.race([woke, run.completion]);
+				}
+				console.warn(
+					`valuse: .flush() on derivation "${meta.path}" gave up after ` +
+						`${String(FLUSH_CHASE_CAP)} iterations — it appears to defer in a ` +
+						'loop without ever emitting a value (via set/return) or completing, ' +
+						'so flush() cannot settle it.',
+				);
+			});
 
 			// Register a cleanup that aborts the in-flight run and tears down
 			// eager subscriptions. Runs on $destroy per the docs contract.
@@ -1606,6 +2736,7 @@ function attachDollarMethods(
 	undeclaredProperties?: Map<string, unknown>,
 	factoryRefInstances?: Record<string, unknown>[],
 	factoryRefDestroyables?: { destroy: () => void }[],
+	layers: ReadonlyArray<Record<string, unknown>> = [],
 ): void {
 	// Register a Preact dependency on every slot signal. Used by the snapshot
 	// invalidator, `$subscribe`, and `instance._trackAll` (the derivation-scope
@@ -1615,6 +2746,24 @@ function attachDollarMethods(
 			void store.signals[slot]!.value;
 		}
 	};
+
+	// Group slots by declared layer for the `$flush()` cascade. Each
+	// top-level key maps to the last layer it appears in; slots inherit
+	// their top-level path segment's layer (defaulting to the field
+	// layer). With no layer info, everything flushes as one group.
+	const segmentLayer = new Map<string, number>();
+	for (const [index, layer] of layers.entries()) {
+		for (const [key, entry] of Object.entries(layer)) {
+			if (entry !== undefined) segmentLayer.set(key, index);
+		}
+	}
+	const layerSlots: number[][] =
+		layers.length > 0 ? layers.map(() => []) : [[]];
+	for (let slot = 0; slot < definition.slotCount; slot++) {
+		const segment = definition.slots[slot]!.path.split('.')[0]!;
+		const layerIndex = segmentLayer.get(segment) ?? 0;
+		layerSlots[layerIndex]!.push(slot);
+	}
 
 	instance.$destroy = () => {
 		// Idempotency: a second call must be a no-op so onDestroy fires once
@@ -1747,6 +2896,30 @@ function attachDollarMethods(
 	instance.$recompute = () => {
 		for (let slot = 0; slot < definition.slotCount; slot++) {
 			store.recompute(slot);
+		}
+	};
+
+	// Expedite all pending deferred work (pipe debounces, async-derivation
+	// deferBy) layer by layer in dependency order. Awaiting each layer
+	// before the next lets a downstream layer's re-run (triggered when an
+	// upstream value commits) see the resolved upstream value.
+	//
+	// A single ordered pass isn't always enough: an upstream commit
+	// schedules the downstream re-run on a microtask, which can land just
+	// after we've flushed that downstream layer. So we repeat the ordered
+	// cascade until a pass leaves no async derivation running. Bounded by
+	// layer depth (+slack) to avoid spinning on pathological graphs.
+	instance.$flush = async (): Promise<void> => {
+		const maxPasses = layerSlots.length + 2;
+		for (let pass = 0; pass < maxPasses; pass++) {
+			for (const slots of layerSlots) {
+				await Promise.all(slots.map((slot) => store.flushSlot(slot)));
+				// A layer's commits schedule downstream re-runs on a
+				// microtask. Drain it so the next layer flushes the re-run
+				// (reading this layer's resolved value), not a stale run.
+				await Promise.resolve();
+			}
+			if (store.runningAsync.size === 0) return;
 		}
 	};
 

@@ -38,6 +38,16 @@ export interface SlotMeta {
 	readonly defaultValue: unknown;
 
 	/**
+	 * Pre-actor seed for factory-piped value slots. The value the first
+	 * factory in `pipeline` was primed with at definition time. Used by
+	 * `InstanceStore.activateFactoryPipes` to prime the instance's fresh
+	 * actors with the same seed standalone Value sees, so stateful actors
+	 * (scan, unique, throttle, …) behave consistently. Omitted for slots
+	 * without factory pipes.
+	 */
+	readonly factorySeed?: unknown;
+
+	/**
 	 * Indices of ancestor grouping nodes in the instance tree, from immediate
 	 * parent to root. Used for changesByScope bubbling. Empty for top-level fields.
 	 */

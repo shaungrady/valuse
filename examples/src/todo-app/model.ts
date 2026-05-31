@@ -4,23 +4,24 @@ import { pipeEnum } from 'valuse/utils';
 export const filterValues = ['all', 'active', 'completed'] as const;
 export type FilterValue = (typeof filterValues)[number];
 
-// The `{ scope: any }` annotations on derivations / hooks match the pattern in
-// the internal test suite; valueScope doesn't currently infer the derivation
-// context for `({ scope })` callbacks, so strict mode flags it otherwise.
+// Variadic form: fields layer, derivation layer, config layer. `scope`
+// inside each callback is inferred from the surrounding layers — no
+// manual context annotation needed.
 export const todoScope = valueScope(
 	{
 		id: value<string>(),
 		text: value<string>('').pipe((v) => v.trim()),
 		completed: value<boolean>(false),
 		createdAt: value<number>(0),
-
-		label: ({ scope }: { scope: any }) =>
+	},
+	{
+		label: ({ scope }) =>
 			scope.completed.use() ?
 				`[x] ${scope.text.use()}`
 			:	`[ ] ${scope.text.use()}`,
 	},
 	{
-		onCreate: ({ scope }: { scope: any }) => {
+		onCreate: ({ scope }) => {
 			// Preserve a hydrated createdAt (e.g. from storage); otherwise stamp now.
 			if (!scope.createdAt.get()) scope.createdAt.set(Date.now());
 		},

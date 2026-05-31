@@ -1,4 +1,7 @@
-import type { ScopeTemplate } from '../core/value-scope.js';
+import {
+	asUnknownValueScope,
+	type ScopeTemplate,
+} from '../core/value-scope.js';
 import type { ScopeMap } from '../core/scope-map.js';
 import type { Value } from '../core/value.js';
 import type { Change, Unsubscribe } from '../core/types.js';
@@ -169,6 +172,10 @@ const stateByInstance = new WeakMap<object, DevtoolsState>();
  * @param options - devtools options (name is required).
  * @returns a new ScopeTemplate with devtools wired in.
  */
+// `T extends ScopeTemplate<any>` preserves wrapper types (e.g.,
+// `HistoryTemplate<Def>`) through composition. `any` is required because
+// `ScopeTemplate` is invariant in `Def` — a stricter constraint would
+// reject narrower wrapper templates.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function withDevtools<T extends ScopeTemplate<any>>(
 	template: T,
@@ -180,65 +187,62 @@ export function withDevtools<T extends ScopeTemplate<any>>(
 	const serialize = options.serialize ?? identitySnapshot;
 	const deserialize = options.deserialize ?? identitySnapshot;
 
-	return template.extend(
-		{},
-		{
-			onCreate({ scope }) {
-				const connection = openConnection(extension, options);
+	return asUnknownValueScope(template).extendConfig({
+		onCreate({ scope }) {
+			const connection = openConnection(extension, options);
 
-				const initialState = serialize(
-					pickFields(scope.$getSnapshot(), options.fields),
-				);
-				connection.init(initialState);
+			const initialState = serialize(
+				pickFields(scope.$getSnapshot(), options.fields),
+			);
+			connection.init(initialState);
 
-				const state: DevtoolsState = { connection, isRestoring: false };
-				stateByInstance.set(scope, state);
+			const state: DevtoolsState = { connection, isRestoring: false };
+			stateByInstance.set(scope, state);
 
-				// Time travel support
-				connection.subscribe((message) => {
-					if (message.type === 'DISPATCH' && message.state) {
-						const historicalState = JSON.parse(message.state) as Record<
-							string,
-							unknown
-						>;
-						state.isRestoring = true;
-						try {
-							scope.$setSnapshot(deserialize(historicalState));
-						} finally {
-							// onChange is microtask-batched, so the resulting fire
-							// queues *during* this synchronous restore. Reset the
-							// flag after that microtask drains so it survives long
-							// enough to suppress the echo.
-							queueMicrotask(() => {
-								state.isRestoring = false;
-							});
-						}
+			// Time travel support
+			connection.subscribe((message) => {
+				if (message.type === 'DISPATCH' && message.state) {
+					const historicalState = JSON.parse(message.state) as Record<
+						string,
+						unknown
+					>;
+					state.isRestoring = true;
+					try {
+						scope.$setSnapshot(deserialize(historicalState));
+					} finally {
+						// onChange is microtask-batched, so the resulting fire
+						// queues *during* this synchronous restore. Reset the
+						// flag after that microtask drains so it survives long
+						// enough to suppress the echo.
+						queueMicrotask(() => {
+							state.isRestoring = false;
+						});
 					}
-				});
-			},
-
-			onChange({ scope, changes }) {
-				const state = stateByInstance.get(scope);
-				if (!state || state.isRestoring) return;
-
-				const actionName = buildActionName(changes);
-				const payload = buildSetPayload(changes);
-				const stateSnapshot = serialize(
-					pickFields(scope.$getSnapshot(), options.fields),
-				);
-
-				state.connection.send({ type: actionName, payload }, stateSnapshot);
-			},
-
-			onDestroy({ scope }) {
-				const state = stateByInstance.get(scope);
-				if (state) {
-					state.connection.unsubscribe();
-					stateByInstance.delete(scope);
 				}
-			},
+			});
 		},
-	) as unknown as T;
+
+		onChange({ scope, changes }) {
+			const state = stateByInstance.get(scope);
+			if (!state || state.isRestoring) return;
+
+			const actionName = buildActionName(changes);
+			const payload = buildSetPayload(changes);
+			const stateSnapshot = serialize(
+				pickFields(scope.$getSnapshot(), options.fields),
+			);
+
+			state.connection.send({ type: actionName, payload }, stateSnapshot);
+		},
+
+		onDestroy({ scope }) {
+			const state = stateByInstance.get(scope);
+			if (state) {
+				state.connection.unsubscribe();
+				stateByInstance.delete(scope);
+			}
+		},
+	}) as unknown as T;
 }
 
 // --- connectMapDevtools ---

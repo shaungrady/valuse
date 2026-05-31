@@ -20,16 +20,17 @@ export function pipeUnique<T>(
 	comparator?: (a: T, b: T) => boolean,
 ): PipeFactoryDescriptor<T, T> {
 	return {
-		create: ({ set }) => {
+		create: (host) => {
 			let lastValue: T | undefined;
 			let hasValue = false;
 			const isEqual = comparator ?? ((a: T, b: T) => a === b);
-
-			return (value: T) => {
-				if (hasValue && isEqual(lastValue as T, value)) return;
-				hasValue = true;
-				lastValue = value;
-				set(value);
+			return {
+				onWrite(value) {
+					if (hasValue && isEqual(lastValue as T, value)) return;
+					hasValue = true;
+					lastValue = value;
+					host.set(value);
+				},
 			};
 		},
 	};

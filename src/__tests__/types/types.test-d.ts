@@ -39,22 +39,26 @@ expectTypeOf<Setter<number>>().toBeCallableWith(5);
 // Accepts callback
 expectTypeOf<Setter<number>>().toBeCallableWith((prev: number) => prev + 1);
 
-// --- PipeFactoryDescriptor ---
+// --- PipeFactoryDescriptor (actor model) ---
 
-// Same-type factory
+// Same-type factory: create(host) returns an actor with onWrite.
 expectTypeOf<PipeFactoryDescriptor<string>>().toMatchTypeOf<{
-	create: (context: {
+	create: (host: {
 		set: (value: string) => void;
 		onCleanup: (fn: () => void) => void;
-	}) => (value: string) => void;
+		signal: AbortSignal;
+		deferBy: (ms: number) => Promise<void>;
+	}) => { onWrite: (value: string) => void };
 }>();
 
-// Type-changing factory
+// Type-changing factory: host.set takes the output type.
 expectTypeOf<PipeFactoryDescriptor<string, number>>().toMatchTypeOf<{
-	create: (context: {
+	create: (host: {
 		set: (value: number) => void;
 		onCleanup: (fn: () => void) => void;
-	}) => (value: string) => void;
+		signal: AbortSignal;
+		deferBy: (ms: number) => Promise<void>;
+	}) => { onWrite: (value: string) => void };
 }>();
 
 // --- PipeStep ---

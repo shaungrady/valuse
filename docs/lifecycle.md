@@ -2,8 +2,10 @@
 
 Lifecycle hooks let you run code at key moments in a [scope](scopes.md)
 instance's life: creation, destruction, and subscriber attachment/detachment.
-They are defined in the scope config and run automatically as the instance moves
-through its lifecycle. For hooks that respond to value changes, see
+They are defined in the [config layer](scopes.md#config-layer) (the optional
+last argument to `valueScope()`) and run automatically as the instance moves
+through its lifecycle. Hook `scope` sees the full instance, including every
+derivation. For hooks that respond to value changes, see
 [Change hooks](change-hooks.md).
 
 ## Table of contents
@@ -225,10 +227,10 @@ Within a subscriber lifecycle cycle:
 4. `onUsed` cleanups run (base, then extension)
 5. `onUnused` fires (base, then extension)
 
-## Hooks and extend()
+## Hooks and extendConfig()
 
-Lifecycle hooks merge when using `.extend()`. Both the base and extension hooks
-fire, base first. See
+Lifecycle hooks merge when using `.extendConfig()` (and accumulate further
+through chained calls). Both the base and extension hooks fire, base first. See
 [Extending scopes: Lifecycle hook merging](extending.md#lifecycle-hook-merging)
 for details.
 
@@ -238,10 +240,9 @@ const base = valueScope(
   { onCreate: () => console.log('base') },
 );
 
-const ext = base.extend(
-  { role: value('viewer') },
-  { onCreate: () => console.log('extension') },
-);
+const ext = base
+  .extendValues({ role: value('viewer') })
+  .extendConfig({ onCreate: () => console.log('extension') });
 
 ext.create({ name: 'Alice' });
 // logs: base

@@ -1055,16 +1055,15 @@ describe('validate scope config', () => {
 			},
 		);
 
-		const extended = base.extend(
-			{
+		const extended = base
+			.extendValues({
 				password: valueSchema(Password, 'longpassword'),
-			},
-			{
+			})
+			.extendConfig({
 				validate: () => {
 					return [{ message: 'extension issue' }];
 				},
-			},
-		);
+			});
 
 		const instance = extended.create();
 		// Both validate hooks produce issues, so not valid

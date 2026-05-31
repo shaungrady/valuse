@@ -88,6 +88,14 @@ export class FieldValue<In, Out = In> {
 			fn as (value: unknown, previous: unknown) => void,
 		);
 	}
+
+	/**
+	 * Expedite any pending deferred work in this field's pipe chain and
+	 * resolve once it settles. Resolves immediately when there is none.
+	 */
+	flush(): Promise<void> {
+		return this.#store.flushSlot(this.#slot);
+	}
 }
 
 /**
@@ -263,6 +271,15 @@ export class FieldDerived<T> {
 	/** Re-run this derivation. */
 	recompute(): void {
 		this.#store.recompute(this.#slot);
+	}
+
+	/**
+	 * Expedite the current run's `deferBy` and resolve once the run
+	 * settles. On sync derivations (no deferred work) this resolves
+	 * immediately.
+	 */
+	flush(): Promise<void> {
+		return this.#store.flushSlot(this.#slot);
 	}
 }
 

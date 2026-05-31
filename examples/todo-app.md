@@ -14,7 +14,8 @@ const todo = valueScope(
     text: value<string>().pipe((v) => v.trim()),
     completed: value<boolean>(false),
     createdAt: value<number>(0),
-
+  },
+  {
     label: ({ scope }) =>
       scope.completed.use() ?
         `[x] ${scope.text.use()}`

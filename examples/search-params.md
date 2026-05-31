@@ -21,7 +21,8 @@ const pageState = valueScope(
     period: value('weekly').pipe(pipeEnum(['daily', 'weekly', 'monthly'])),
 
     router: valuePlain<RouterSlot>(null),
-
+  },
+  {
     showCompactCards: ({ scope }) => scope.view.use() === 'grid',
     periodLabel: ({ scope }) => {
       const labels = {

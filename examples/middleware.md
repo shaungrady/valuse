@@ -7,15 +7,17 @@ middleware (`withHistory`, `withPersistence`, `withDevtools`) stack on top.
 
 All examples build on the [todo app](./todo-app.md).
 
-## Writing custom middleware with extend()
+## Writing custom middleware with extendValues()
 
 Don't remove todos immediately, mark them as deleted so users can undo:
 
 ```ts
 import { value, valueScope, type ScopeTemplate } from 'valuse';
 
-const withSoftDelete = <T extends ScopeTemplate<any>>(scope: T) =>
-  scope.extend({
+const withSoftDelete = <Def extends Record<string, unknown>>(
+  scope: ScopeTemplate<Def>,
+) =>
+  scope.extendValues({
     isDeleted: value<boolean>(false),
     deletedAt: value<number | null>(null),
   });
@@ -77,7 +79,8 @@ function TodoList() {
 ```
 
 That's the whole pattern: a middleware is any function
-`(scope) => scope.extend(...)`.
+`(scope) => scope.extendValues(…)` or `(scope) => scope.extendConfig(…)`,
+optionally chained.
 
 ## Undo/redo with shipped `withHistory`
 

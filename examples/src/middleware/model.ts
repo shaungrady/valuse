@@ -7,11 +7,15 @@ import {
 } from 'valuse/middleware';
 
 // ── A reusable custom middleware: soft-delete ──────────────────────────
-// Middleware in valuse is just `(scope) => scope.extend(...)`. Anything
-// composable into the lifecycle (fields, derivations, hooks) goes here.
+// Middleware in valuse is just `(scope) => scope.extendValues(...)`.
+// Anything composable into the lifecycle (fields, derivations, hooks)
+// goes here. The added fields surface on the returned template's type so
+// consumers can read `instance.isDeleted` directly.
 
-export const withSoftDelete = <T extends ScopeTemplate<any>>(scope: T) =>
-	scope.extend({
+export const withSoftDelete = <Def extends Record<string, unknown>>(
+	scope: ScopeTemplate<Def>,
+) =>
+	scope.extendValues({
 		isDeleted: value<boolean>(false),
 		deletedAt: value<number | null>(null),
 	});

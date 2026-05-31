@@ -110,6 +110,12 @@ export default tseslint.config(
 			'unicorn/no-negated-condition': 'off',
 			'unicorn/prefer-ternary': 'off',
 			'unicorn/consistent-function-scoping': 'off',
+			// Project preference: group digits in 4+ digit numbers (the preset
+			// default only kicks in at 5). e.g. `1_000`, not `1000`.
+			'unicorn/numeric-separators-style': [
+				'error',
+				{ number: { minimumDigits: 4, groupLength: 3 } },
+			],
 		},
 	},
 	{
@@ -147,6 +153,17 @@ export default tseslint.config(
 			'jsdoc/require-returns': 'off',
 			'jsdoc/require-param': 'off',
 			'jsdoc/require-yields': 'off',
+		},
+	},
+	{
+		// Type-test files (`.test-d.ts`) routinely assign runtime values
+		// purely to derive types via `typeof`. The lint rule can't see the
+		// type-only usage, so we relax it here. Also relax the empty-object
+		// type check — `{}` is a meaningful sentinel in many type tests.
+		files: ['src/__tests__/**/*.test-d.ts'],
+		rules: {
+			'@typescript-eslint/no-unused-vars': 'off',
+			'@typescript-eslint/no-empty-object-type': 'off',
 		},
 	},
 	{

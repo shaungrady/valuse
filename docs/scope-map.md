@@ -7,7 +7,7 @@ components can re-render when instances are added or removed.
 
 Use `ScopeMap` when you have many instances of the same shape: rows in a table,
 items in a list, entries in a cache, players in a game. Templates can be
-specialized with [`.extend()`](extending.md) before creating a map.
+specialized with [`.extendValues()`](extending.md) before creating a map.
 
 ## Table of contents
 
@@ -28,11 +28,15 @@ specialized with [`.extend()`](extending.md) before creating a map.
 Call `.createMap()` on any scope template:
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
-});
+const person = valueScope(
+  {
+    firstName: value<string>(),
+    lastName: value<string>(),
+  },
+  {
+    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+  },
+);
 
 // Empty collection
 const people = person.createMap();

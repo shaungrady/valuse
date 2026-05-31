@@ -413,12 +413,10 @@ describe('InstanceStore', () => {
 						{
 							kind: 'factory',
 							descriptor: {
-								create: ({ set }) => {
-									return (value: unknown) => {
-										// Immediately pass through (no delay)
-										set(value);
-									};
-								},
+								create: (host) => ({
+									// Immediately pass through (no delay)
+									onWrite: (value: unknown) => host.set(value),
+								}),
 							},
 						},
 					],
@@ -440,9 +438,9 @@ describe('InstanceStore', () => {
 						{
 							kind: 'factory',
 							descriptor: {
-								create: ({ set, onCleanup }) => {
-									onCleanup(cleanup);
-									return (value: unknown) => set(value);
+								create: (host) => {
+									host.onCleanup(cleanup);
+									return { onWrite: (value: unknown) => host.set(value) };
 								},
 							},
 						},
@@ -466,9 +464,9 @@ describe('InstanceStore', () => {
 						{
 							kind: 'factory',
 							descriptor: {
-								create: ({ set }) => {
-									return (value: unknown) => set(value);
-								},
+								create: (host) => ({
+									onWrite: (value: unknown) => host.set(value),
+								}),
 							},
 						},
 						{
@@ -543,6 +541,9 @@ describe('InstanceStore', () => {
 					value: 'result',
 					hasValue: true,
 					error: undefined,
+					isPending: false,
+					isUpdating: false,
+					isError: false,
 				};
 			}
 

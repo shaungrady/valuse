@@ -1,7 +1,10 @@
 import type { PipeFactoryDescriptor } from '../core/types.js';
+import { createSwitchPipe } from './switch-pipe.js';
 
 /**
- * Debounce pipe: delays the value by `ms` milliseconds. Resets on each new value.
+ * Debounce pipe: delays the value by `ms` milliseconds, resetting on each
+ * new value. A new write aborts the pending one (switch semantics), and
+ * the host value's `.flush()` commits the pending value immediately.
  *
  * @typeParam T - the value type.
  * @param ms - delay in milliseconds.
@@ -17,19 +20,8 @@ import type { PipeFactoryDescriptor } from '../core/types.js';
  * ```
  */
 export function pipeDebounce<T>(ms: number): PipeFactoryDescriptor<T, T> {
-	return {
-		create: ({ set, onCleanup }) => {
-			let timer: ReturnType<typeof setTimeout> | null = null;
-			onCleanup(() => {
-				if (timer !== null) clearTimeout(timer);
-			});
-			return (value: T) => {
-				if (timer !== null) clearTimeout(timer);
-				timer = setTimeout(() => {
-					timer = null;
-					set(value);
-				}, ms);
-			};
-		},
-	};
+	return createSwitchPipe<T, T>(async ({ value, set, deferBy }) => {
+		await deferBy(ms);
+		set(value);
+	});
 }

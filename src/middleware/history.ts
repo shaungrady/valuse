@@ -1,5 +1,8 @@
 import { signal, type Signal } from '@preact/signals-core';
-import type { ScopeTemplate } from '../core/value-scope.js';
+import {
+	asUnknownValueScope,
+	type ScopeTemplate,
+} from '../core/value-scope.js';
 import type { ScopeInstance, ValueInputOf } from '../core/scope-types.js';
 import type { Unsubscribe } from '../core/types.js';
 import { pickFields } from '../core/utils/pick-fields.js';
@@ -109,179 +112,176 @@ export function withHistory<Def extends Record<string, unknown>>(
 ): HistoryTemplate<Def> {
 	const { maxDepth = 50, fields, batchMs = 0 } = options;
 
-	const extended = template.extend(
-		{},
-		{
-			onCreate({ scope }) {
-				const initialSnapshot = pickFields(scope.$getSnapshot(), fields);
+	const extended = asUnknownValueScope(template).extendConfig({
+		onCreate({ scope }) {
+			const initialSnapshot = pickFields(scope.$getSnapshot(), fields);
 
-				const stack = signal([initialSnapshot]);
-				const position = signal(0);
-				const canUndoSignal = signal(false);
-				const canRedoSignal = signal(false);
+			const stack = signal([initialSnapshot]);
+			const position = signal(0);
+			const canUndoSignal = signal(false);
+			const canRedoSignal = signal(false);
 
-				function refreshCanFlags(): void {
-					canUndoSignal.value = position.value > 0;
-					canRedoSignal.value = position.value < stack.value.length - 1;
+			function refreshCanFlags(): void {
+				canUndoSignal.value = position.value > 0;
+				canRedoSignal.value = position.value < stack.value.length - 1;
+			}
+
+			const state: HistoryState = {
+				stack,
+				position,
+				canUndoSignal,
+				canRedoSignal,
+				isRestoring: false,
+				batchTimer: null,
+				unsubscribe: null,
+			};
+			historyByInstance.set(scope, state);
+
+			function pushEntry(snapshot: Record<string, unknown>): void {
+				const currentStack = stack.value;
+				const currentPosition = position.value;
+				// Truncate any forward history on a new write.
+				let nextStack = currentStack.slice(0, currentPosition + 1);
+				nextStack.push(snapshot);
+				let nextPosition = nextStack.length - 1;
+				// Enforce maxDepth by dropping oldest entries.
+				if (nextStack.length > maxDepth) {
+					const excess = nextStack.length - maxDepth;
+					nextStack = nextStack.slice(excess);
+					nextPosition = nextStack.length - 1;
 				}
+				stack.value = nextStack;
+				position.value = nextPosition;
+				refreshCanFlags();
+			}
 
-				const state: HistoryState = {
-					stack,
-					position,
-					canUndoSignal,
-					canRedoSignal,
-					isRestoring: false,
-					batchTimer: null,
-					unsubscribe: null,
-				};
-				historyByInstance.set(scope, state);
+			function replaceTop(snapshot: Record<string, unknown>): void {
+				const currentStack = stack.value;
+				const currentPosition = position.value;
+				// Also truncate any forward history, in case user hit a key
+				// inside the batch window after undoing.
+				const nextStack = currentStack.slice(0, currentPosition + 1);
+				nextStack[nextStack.length - 1] = snapshot;
+				stack.value = nextStack;
+				position.value = nextStack.length - 1;
+				refreshCanFlags();
+			}
 
-				function pushEntry(snapshot: Record<string, unknown>): void {
-					const currentStack = stack.value;
-					const currentPosition = position.value;
-					// Truncate any forward history on a new write.
-					let nextStack = currentStack.slice(0, currentPosition + 1);
-					nextStack.push(snapshot);
-					let nextPosition = nextStack.length - 1;
-					// Enforce maxDepth by dropping oldest entries.
-					if (nextStack.length > maxDepth) {
-						const excess = nextStack.length - maxDepth;
-						nextStack = nextStack.slice(excess);
-						nextPosition = nextStack.length - 1;
-					}
-					stack.value = nextStack;
-					position.value = nextPosition;
-					refreshCanFlags();
-				}
+			function recordChange(): void {
+				if (state.isRestoring) return;
+				const snapshot = pickFields(scope.$getSnapshot(), fields);
 
-				function replaceTop(snapshot: Record<string, unknown>): void {
-					const currentStack = stack.value;
-					const currentPosition = position.value;
-					// Also truncate any forward history, in case user hit a key
-					// inside the batch window after undoing.
-					const nextStack = currentStack.slice(0, currentPosition + 1);
-					nextStack[nextStack.length - 1] = snapshot;
-					stack.value = nextStack;
-					position.value = nextStack.length - 1;
-					refreshCanFlags();
-				}
+				// Skip if snapshot matches the current top (no-op change).
+				const topIndex = position.value;
+				const top = stack.value[topIndex];
+				if (top && snapshotsEqual(top, snapshot)) return;
 
-				function recordChange(): void {
-					if (state.isRestoring) return;
-					const snapshot = pickFields(scope.$getSnapshot(), fields);
-
-					// Skip if snapshot matches the current top (no-op change).
-					const topIndex = position.value;
-					const top = stack.value[topIndex];
-					if (top && snapshotsEqual(top, snapshot)) return;
-
-					if (batchMs > 0) {
-						if (state.batchTimer !== null) {
-							replaceTop(snapshot);
-						} else {
-							pushEntry(snapshot);
-							state.batchTimer = setTimeout(() => {
-								state.batchTimer = null;
-							}, batchMs);
-						}
+				if (batchMs > 0) {
+					if (state.batchTimer !== null) {
+						replaceTop(snapshot);
 					} else {
 						pushEntry(snapshot);
-					}
-				}
-
-				state.unsubscribe = scope.$subscribe(recordChange);
-
-				// Attach HistoryInstance methods to the scope instance.
-				Object.defineProperty(scope, '$canUndo', {
-					configurable: true,
-					enumerable: true,
-					get: () => canUndoSignal.value,
-				});
-				Object.defineProperty(scope, '$canRedo', {
-					configurable: true,
-					enumerable: true,
-					get: () => canRedoSignal.value,
-				});
-
-				/**
-				 * Close any open batch window so the next user write starts a
-				 * fresh history entry instead of overwriting the undone-to
-				 * state. Without this, the sequence "type → undo → type"
-				 * inside one batch window truncates and overwrites the head
-				 * of the stack, destroying prior history.
-				 */
-				function closeBatch(): void {
-					if (state.batchTimer !== null) {
-						clearTimeout(state.batchTimer);
-						state.batchTimer = null;
-					}
-				}
-
-				scope.$undo = () => {
-					const p = position.value;
-					if (p <= 0) return;
-					closeBatch();
-					state.isRestoring = true;
-					try {
-						const target = stack.value[p - 1];
-						if (target) scope.$setSnapshot(target);
-						position.value = p - 1;
-						refreshCanFlags();
-					} finally {
-						state.isRestoring = false;
-					}
-				};
-
-				scope.$redo = () => {
-					const p = position.value;
-					if (p >= stack.value.length - 1) return;
-					closeBatch();
-					state.isRestoring = true;
-					try {
-						const target = stack.value[p + 1];
-						if (target) scope.$setSnapshot(target);
-						position.value = p + 1;
-						refreshCanFlags();
-					} finally {
-						state.isRestoring = false;
-					}
-				};
-
-				scope.$clearHistory = () => {
-					state.isRestoring = true;
-					try {
-						const current = pickFields(scope.$getSnapshot(), fields);
-						stack.value = [current];
-						position.value = 0;
-						if (state.batchTimer !== null) {
-							clearTimeout(state.batchTimer);
+						state.batchTimer = setTimeout(() => {
 							state.batchTimer = null;
-						}
-						refreshCanFlags();
-					} finally {
-						state.isRestoring = false;
+						}, batchMs);
 					}
-				};
-			},
+				} else {
+					pushEntry(snapshot);
+				}
+			}
 
-			onDestroy({ scope }) {
-				const state = historyByInstance.get(scope);
-				if (!state) return;
+			state.unsubscribe = scope.$subscribe(recordChange);
+
+			// Attach HistoryInstance methods to the scope instance.
+			Object.defineProperty(scope, '$canUndo', {
+				configurable: true,
+				enumerable: true,
+				get: () => canUndoSignal.value,
+			});
+			Object.defineProperty(scope, '$canRedo', {
+				configurable: true,
+				enumerable: true,
+				get: () => canRedoSignal.value,
+			});
+
+			/**
+			 * Close any open batch window so the next user write starts a
+			 * fresh history entry instead of overwriting the undone-to
+			 * state. Without this, the sequence "type → undo → type"
+			 * inside one batch window truncates and overwrites the head
+			 * of the stack, destroying prior history.
+			 */
+			function closeBatch(): void {
 				if (state.batchTimer !== null) {
 					clearTimeout(state.batchTimer);
 					state.batchTimer = null;
 				}
-				if (state.unsubscribe) {
-					state.unsubscribe();
-					state.unsubscribe = null;
+			}
+
+			scope.$undo = () => {
+				const p = position.value;
+				if (p <= 0) return;
+				closeBatch();
+				state.isRestoring = true;
+				try {
+					const target = stack.value[p - 1];
+					if (target) scope.$setSnapshot(target);
+					position.value = p - 1;
+					refreshCanFlags();
+				} finally {
+					state.isRestoring = false;
 				}
-				historyByInstance.delete(scope);
-				delete scope.$undo;
-				delete scope.$redo;
-				delete scope.$clearHistory;
-			},
+			};
+
+			scope.$redo = () => {
+				const p = position.value;
+				if (p >= stack.value.length - 1) return;
+				closeBatch();
+				state.isRestoring = true;
+				try {
+					const target = stack.value[p + 1];
+					if (target) scope.$setSnapshot(target);
+					position.value = p + 1;
+					refreshCanFlags();
+				} finally {
+					state.isRestoring = false;
+				}
+			};
+
+			scope.$clearHistory = () => {
+				state.isRestoring = true;
+				try {
+					const current = pickFields(scope.$getSnapshot(), fields);
+					stack.value = [current];
+					position.value = 0;
+					if (state.batchTimer !== null) {
+						clearTimeout(state.batchTimer);
+						state.batchTimer = null;
+					}
+					refreshCanFlags();
+				} finally {
+					state.isRestoring = false;
+				}
+			};
 		},
-	);
+
+		onDestroy({ scope }) {
+			const state = historyByInstance.get(scope);
+			if (!state) return;
+			if (state.batchTimer !== null) {
+				clearTimeout(state.batchTimer);
+				state.batchTimer = null;
+			}
+			if (state.unsubscribe) {
+				state.unsubscribe();
+				state.unsubscribe = null;
+			}
+			historyByInstance.delete(scope);
+			delete scope.$undo;
+			delete scope.$redo;
+			delete scope.$clearHistory;
+		},
+	});
 
 	return extended as unknown as HistoryTemplate<Def>;
 }

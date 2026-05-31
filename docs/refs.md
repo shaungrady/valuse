@@ -83,12 +83,15 @@ Derivations can read through refs using `.use()`. Reactivity flows through the
 ref boundary:
 
 ```ts
-const board = valueScope({
-  boardId: value<string>(),
-  columns: valueRef(() => column.createMap()),
-
-  columnCount: ({ scope }) => scope.columns.use().size,
-});
+const board = valueScope(
+  {
+    boardId: value<string>(),
+    columns: valueRef(() => column.createMap()),
+  },
+  {
+    columnCount: ({ scope }) => scope.columns.use().size,
+  },
+);
 
 const inst = board.create({ boardId: 'main' });
 inst.columnCount.get(); // 0
@@ -146,11 +149,13 @@ const settings = valueScope({
 
 const globalSettings = settings.create({ theme: 'light' });
 
-const app = valueScope({
-  settings: valueRef(globalSettings),
-  greeting: ({ scope }) =>
-    scope.settings.use().locale.get() === 'en' ? 'Hello' : 'Hola',
-});
+const app = valueScope(
+  { settings: valueRef(globalSettings) },
+  {
+    greeting: ({ scope }) =>
+      scope.settings.use().locale.get() === 'en' ? 'Hello' : 'Hola',
+  },
+);
 ```
 
 This is useful for sharing configuration or global state across multiple scope
@@ -181,10 +186,10 @@ const dataSource = valueScope(
 
 const sharedSource = dataSource.create();
 
-const dashboard = valueScope({
-  source: valueRef(sharedSource),
-  count: ({ scope }) => scope.source.use().data.get().length,
-});
+const dashboard = valueScope(
+  { source: valueRef(sharedSource) },
+  { count: ({ scope }) => scope.source.use().data.get().length },
+);
 
 const inst = dashboard.create();
 // When dashboard gets its first subscriber, sharedSource's onUsed fires
@@ -203,25 +208,29 @@ management is automatic. For full details on `onUsed`/`onUnused`, see
 ```ts
 const authState = value<{ userId: string; role: string } | null>(null);
 
-const protectedScope = valueScope({
-  auth: valueRef(authState),
-  isAdmin: ({ scope }) => scope.auth.use()?.role === 'admin',
-});
+const protectedScope = valueScope(
+  { auth: valueRef(authState) },
+  { isAdmin: ({ scope }) => scope.auth.use()?.role === 'admin' },
+);
 ```
 
 ### Per-instance child collections
 
 ```ts
-const todoList = valueScope({
-  name: value<string>(),
-  items: valueRef(() => todoItem.createMap()),
-  count: ({ scope }) => scope.items.use().size,
-  completed: ({ scope }) =>
-    scope.items
-      .use()
-      .values()
-      .filter((i) => i.done.get()).length,
-});
+const todoList = valueScope(
+  {
+    name: value<string>(),
+    items: valueRef(() => todoItem.createMap()),
+  },
+  {
+    count: ({ scope }) => scope.items.use().size,
+    completed: ({ scope }) =>
+      scope.items
+        .use()
+        .values()
+        .filter((i) => i.done.get()).length,
+  },
+);
 ```
 
 ### Shared configuration
@@ -229,12 +238,16 @@ const todoList = valueScope({
 ```ts
 const theme = value<'light' | 'dark'>('light');
 
-const widget = valueScope({
-  theme: valueRef(theme),
-  content: value<string>(),
-  className: ({ scope }) =>
-    scope.theme.use() === 'dark' ? 'widget-dark' : 'widget-light',
-});
+const widget = valueScope(
+  {
+    theme: valueRef(theme),
+    content: value<string>(),
+  },
+  {
+    className: ({ scope }) =>
+      scope.theme.use() === 'dark' ? 'widget-dark' : 'widget-light',
+  },
+);
 ```
 
 ### Cross-scope communication
@@ -242,17 +255,19 @@ const widget = valueScope({
 ```ts
 const eventBus = valueMap<string, unknown>();
 
-const producer = valueScope({
-  events: valueRef(eventBus),
-  publish:
-    ({ scope }) =>
-    (type: string, data: unknown) => {
-      scope.events.get().set(type, data);
-    },
-});
+const producer = valueScope(
+  { events: valueRef(eventBus) },
+  {
+    publish:
+      ({ scope }) =>
+      (type: string, data: unknown) => {
+        scope.events.get().set(type, data);
+      },
+  },
+);
 
-const consumer = valueScope({
-  events: valueRef(eventBus),
-  lastEvent: ({ scope }) => scope.events.use().get('notification'),
-});
+const consumer = valueScope(
+  { events: valueRef(eventBus) },
+  { lastEvent: ({ scope }) => scope.events.use().get('notification') },
+);
 ```

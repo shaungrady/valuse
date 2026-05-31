@@ -108,10 +108,10 @@ Or in a derivation:
 
 ```ts
 const editor = withHistory(
-  valueScope({
-    body: value<string>(''),
-    status: ({ scope }) => (scope.$canUndo ? 'dirty' : 'clean'),
-  }),
+  valueScope(
+    { body: value<string>('') },
+    { status: ({ scope }) => (scope.$canUndo ? 'dirty' : 'clean') },
+  ),
 );
 ```
 

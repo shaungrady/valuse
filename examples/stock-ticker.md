@@ -25,45 +25,54 @@ import { value, valueRef, valueScope } from 'valuse';
 // Market status — shared across all tickers
 const isMarketOpen = value<boolean>(false);
 
-const stock = valueScope({
-  symbol: value<string>(),
-  prevClose: value<number>(0),
+const stock = valueScope(
+  {
+    symbol: value<string>(),
+    prevClose: value<number>(0),
 
-  // Ref to shared market status
-  isMarketOpen: valueRef(isMarketOpen),
-
-  // Async derivation — opens a WebSocket, pushes price updates via set().
-  // When symbol changes, the previous WebSocket is cleaned up and a new one opens.
-  // When the instance is destroyed, onCleanup fires automatically.
-  price: async ({ scope, set, onCleanup }) => {
-    const symbol = scope.symbol.use();
-    const ws = new WebSocket(`wss://feed.example.com/stocks/${symbol}`);
-    onCleanup(() => ws.close());
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      set(data.price);
-    };
-
-    // No return — value comes from set() via WebSocket messages
+    // Ref to shared market status
+    isMarketOpen: valueRef(isMarketOpen),
   },
+  {
+    // Async derivation — opens a WebSocket, pushes price updates via set().
+    // When symbol changes, the previous WebSocket is cleaned up and a new
+    // one opens. When the instance is destroyed, onCleanup fires
+    // automatically.
+    price: async ({ scope, set, onCleanup }) => {
+      const symbol = scope.symbol.use();
+      const ws = new WebSocket(`wss://feed.example.com/stocks/${symbol}`);
+      onCleanup(() => ws.close());
 
-  // Sync derivations don't know or care that price is async.
-  // They see number | undefined and recompute when price resolves.
-  change: ({ scope }) => {
-    const price = scope.price.use();
-    return price != null ? price - scope.prevClose.use() : 0;
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        set(data.price);
+      };
+
+      // No return — value comes from set() via WebSocket messages
+    },
   },
-  changePercent: ({ scope }) => {
-    const prevClose = scope.prevClose.use();
-    const price = scope.price.use();
-    if (!prevClose || price == null) return 0;
-    return ((price - prevClose) / prevClose) * 100;
+  {
+    // Sync derivations don't know or care that price is async.
+    // They see number | undefined and recompute when price resolves.
+    change: ({ scope }) => {
+      const price = scope.price.use();
+      return price != null ? price - scope.prevClose.use() : 0;
+    },
+    changePercent: ({ scope }) => {
+      const prevClose = scope.prevClose.use();
+      const price = scope.price.use();
+      if (!prevClose || price == null) return 0;
+      return ((price - prevClose) / prevClose) * 100;
+    },
+    isTrading: ({ scope }) =>
+      scope.isMarketOpen.use() && scope.price.use() != null,
   },
-  isUp: ({ scope }) => scope.change.use() >= 0,
-  isTrading: ({ scope }) =>
-    scope.isMarketOpen.use() && scope.price.use() != null,
-});
+  {
+    // `isUp` reads `change`, so it sits in a later layer — siblings within
+    // one derivation layer aren't visible to each other.
+    isUp: ({ scope }) => scope.change.use() >= 0,
+  },
+);
 
 // The watchlist
 const watchlist = stock.createMap();
