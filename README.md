@@ -20,6 +20,10 @@ What can you build with it?
 - A [real-time stock ticker](examples/stock-ticker.md) with WebSocket feeds (GME
   to the moon)
 - A [kanban board](examples/kanban-board.md) with drag-and-drop between columns
+- A [command-palette search](examples/search-palette.md) with cascading async
+  derivations, in-derivation debounce via `deferBy()`, and Enter-to-`flush()`
+- A [Next.js search-params sync](examples/search-params.md) that hydrates from
+  the URL and writes back via `onChange`
 - [Middleware](examples/middleware.md) for logging, persistence, undo/redo
 
 ## Table of contents
