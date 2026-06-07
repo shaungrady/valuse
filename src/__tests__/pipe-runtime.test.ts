@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
 	buildPipeChain,
-	type PipeFactoryDescriptor,
 	type RuntimePipeStep,
 } from '../core/utils/pipe-runtime.js';
+import type { PipeFactoryDescriptor } from '../core/types.js';
 
 const sync = (transform: (value: unknown) => unknown): RuntimePipeStep => ({
 	kind: 'sync',

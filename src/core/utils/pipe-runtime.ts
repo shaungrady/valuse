@@ -6,15 +6,10 @@ import type { PipeFactoryDescriptor, PipeHost } from '../types.js';
  * Actor-model pipe runtime. Both standalone `Value` and scope-instance
  * fields build their factory-pipe chains through `buildPipeChain`, so the
  * actor lifecycle (host, deferrals, cascade flush, teardown) lives in one
- * place. See `docs/proposals/flush-pipeline.md`.
+ * place. See `docs/pipes.md`.
  *
  * @internal
  */
-
-// Type definitions for PipeHost, PipeActor, and PipeFactoryDescriptor
-// live in `../types.js` (the public surface). Re-exported here for
-// callers that import the runtime alongside them.
-export type { PipeHost, PipeActor, PipeFactoryDescriptor } from '../types.js';
 
 /** Minimal step shape shared by `Value` and scope-instance pipelines. */
 export type RuntimePipeStep =
