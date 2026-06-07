@@ -20,13 +20,8 @@ export function setupValidation(
 	cleanups: (() => void)[],
 	resolvedRefs: Map<string, unknown>,
 ): void {
-	// Collect schema slot indices
-	const schemaSlots: number[] = [];
-	for (let slot = 0; slot < definition.slotCount; slot++) {
-		if (definition.slots[slot]!.kind === 'schema') {
-			schemaSlots.push(slot);
-		}
-	}
+	// Schema slot indices (precomputed once per definition).
+	const schemaSlots = definition.schemaSlots;
 
 	const validateFn = config?.validate;
 	const hasValidateHook = !!validateFn;

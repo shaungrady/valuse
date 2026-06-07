@@ -8,6 +8,13 @@ export function setNestedValue(
 	path: string,
 	value: unknown,
 ): void {
+	// Fast path for top-level fields (the common case): no traversal, and no
+	// `split` array allocation. `buildSnapshot` calls this once per slot on
+	// every (cache-missed) snapshot rebuild, so the flat case is hot.
+	if (!path.includes('.')) {
+		target[path] = value;
+		return;
+	}
 	const parts = path.split('.');
 	let current = target;
 	for (let i = 0; i < parts.length - 1; i++) {

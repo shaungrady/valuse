@@ -1738,44 +1738,43 @@ function setupSyncDerivations(
 	derivationScope: Record<string, unknown>,
 	cleanups: (() => void)[],
 ): void {
-	for (let slot = 0; slot < definition.slotCount; slot++) {
+	for (const slot of definition.derivedSlots) {
 		const meta = definition.slots[slot]!;
+		const derivationFn = meta.derivationFn;
+		if (!derivationFn) continue;
 
-		if (meta.kind === 'derived' && meta.derivationFn) {
-			const derivationFn = meta.derivationFn;
-			// Version signal: bump to force recomputation even when deps haven't changed
-			const version = createSignal(0);
-			const slotIndex = slot;
-			const derivedSignal: ReadonlySignal<unknown> = computed(() => {
-				void version.value; // track version for forced recompute
-				try {
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-return
-					return derivationFn({ scope: derivationScope });
-				} catch (error) {
-					// A throwing derivation would otherwise propagate out of
-					// the source `.set()` that triggered the recompute, since
-					// the computed re-runs inside Preact's endBatch. Contain
-					// the throw, log it, and keep the slot's last good value
-					// so the source write succeeds and the next non-throwing
-					// run recovers.
-					console.error('valuse: sync derivation threw', error);
-					return store.signals[slotIndex]!.peek();
-				}
-			});
+		// Version signal: bump to force recomputation even when deps haven't changed
+		const version = createSignal(0);
+		const slotIndex = slot;
+		const derivedSignal: ReadonlySignal<unknown> = computed(() => {
+			void version.value; // track version for forced recompute
+			try {
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-return
+				return derivationFn({ scope: derivationScope });
+			} catch (error) {
+				// A throwing derivation would otherwise propagate out of
+				// the source `.set()` that triggered the recompute, since
+				// the computed re-runs inside Preact's endBatch. Contain
+				// the throw, log it, and keep the slot's last good value
+				// so the source write succeeds and the next non-throwing
+				// run recovers.
+				console.error('valuse: sync derivation threw', error);
+				return store.signals[slotIndex]!.peek();
+			}
+		});
 
-			// Register a recompute function that bumps the version
-			store._recomputeFns.set(slot, () => {
-				version.value++;
-			});
+		// Register a recompute function that bumps the version
+		store._recomputeFns.set(slot, () => {
+			version.value++;
+		});
 
-			// Set up an effect to sync the computed signal to the store's signal.
-			// Dispose on $destroy so the computed graph is released.
-			const dispose = effect(() => {
-				const value = derivedSignal.value;
-				store.signals[slot]!.value = value;
-			});
-			cleanups.push(dispose);
-		}
+		// Set up an effect to sync the computed signal to the store's signal.
+		// Dispose on $destroy so the computed graph is released.
+		const dispose = effect(() => {
+			const value = derivedSignal.value;
+			store.signals[slot]!.value = value;
+		});
+		cleanups.push(dispose);
 	}
 }
 

@@ -84,6 +84,17 @@ export function buildScopeDefinition(
 		if (group.path) pathToGroup.set(group.path, i);
 	}
 
+	// Group slot indices by kind so per-instance setup can iterate only the
+	// relevant slots. Built in ascending index order, matching the previous
+	// full-scan-and-filter behavior of the setup functions.
+	const derivedSlots = slots.flatMap((s, i) =>
+		s.kind === 'derived' ? [i] : [],
+	);
+	const asyncDerivedSlots = slots.flatMap((s, i) =>
+		s.kind === 'asyncDerived' ? [i] : [],
+	);
+	const schemaSlots = slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : []));
+
 	return {
 		slotCount: slots.length,
 		slots,
@@ -91,6 +102,9 @@ export function buildScopeDefinition(
 		staticEntries,
 		pathToSlot,
 		pathToGroup,
+		derivedSlots,
+		asyncDerivedSlots,
+		schemaSlots,
 		refEntries,
 	};
 }
