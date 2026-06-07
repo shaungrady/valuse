@@ -45,7 +45,7 @@ export type Setter<T> = (value: T | ((prev: T) => T)) => void;
 /**
  * Host handed to a factory pipe's `create`. Provides the downstream
  * `set`, lifetime `onCleanup`, a destroy `signal`, and a host-tracked
- * `deferBy` for flushable timers. See `docs/proposals/flush-pipeline.md`.
+ * `deferBy` for flushable timers. See `docs/pipes.md`.
  *
  * @typeParam Out - the output value type committed downstream.
  */

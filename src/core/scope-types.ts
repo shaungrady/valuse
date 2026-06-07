@@ -175,14 +175,6 @@ export type DerivLeaf<T> =
 	: T;
 
 /**
- * Alias retained while the variadic refactor lands so callers that still
- * import `DerivationLeaf` continue to compile. Prefer `DerivLeaf`.
- * @deprecated Use `DerivLeaf` instead.
- * @internal
- */
-export type DerivationLeaf<T> = DerivLeaf<T>;
-
-/**
  * Map a definition to its derivation-context scope shape.
  *
  * Each field becomes a {@link DerivLeaf} (a `{ get, use }` wrapper).
@@ -214,7 +206,7 @@ export type DerivScope<Def extends Record<string, unknown>> = {
  *
  * The fields show up on every derivation's ctx because TypeScript can't
  * discriminate per-entry between sync and async slots without
- * destabilizing inference (see `docs/proposals/variadic-scope-api.md`).
+ * destabilizing inference (see `docs/extending.md`).
  *
  * @typeParam Prior - the accumulated definition seen by this layer.
  */
@@ -267,62 +259,6 @@ export interface DerivCtx<Prior extends Record<string, unknown>> {
 export type DerivationLayer<Prior extends Record<string, unknown>, L> = {
 	[K in keyof L]: (ctx: DerivCtx<Prior>) => unknown;
 };
-
-/**
- * Strict variant of {@link DerivationLayer} for the LAST derivation-layer
- * slot at each arity (i.e., when no config layer follows). Entries with
- * config-shaped key names collapse to `never`, so the call falls through
- * to the matching config-layer overload.
- *
- * This is what makes `valueScope(fields, { onCreate: hook })` resolve to
- * the config-layer overload while `valueScope(fields, { onCreate: deriv },
- * {})` (with a trailing `{}` disambiguator) resolves to the
- * derivation-layer-then-config overload.
- *
- * @typeParam Prior - the accumulated definition seen by this layer.
- * @typeParam L - the user-provided layer literal.
- */
-export type LastDerivationLayer<Prior extends Record<string, unknown>, L> = {
-	[K in keyof L]: K extends ConfigKey ? never
-	:	(ctx: DerivCtx<Prior>) => unknown;
-};
-
-/**
- * Reserved key names that appear at the config-layer position. Used by
- * {@link LastDerivationLayer} to discriminate config from derivation in
- * 2-arg `(fields, X)` and (N+1)-arg `(fields, ...derivs, X)` calls.
- *
- * @internal
- */
-type ConfigKey =
-	| 'onCreate'
-	| 'onDestroy'
-	| 'onChange'
-	| 'beforeChange'
-	| 'onUsed'
-	| 'onUnused'
-	| 'validate'
-	| 'allowUndeclaredProperties';
-
-/**
- * Same as {@link DerivationLayer}, but for `.extend()` derivation layers.
- * Sees the full prior definition, including any keys being overridden in
- * this layer.
- *
- * Type-level sibling/self-exclusion via `Omit<Prior, keyof L>` was
- * attempted but doesn't reliably fire: TypeScript resolves `keyof L` to
- * `string` (wide) during contextual typing of the literal, which makes
- * `Omit` strip *all* keys rather than just the ones being defined. The
- * runtime catches actual cycles (sibling-cycle or self-reference) on
- * first evaluation via Preact-signals' computed cycle detection.
- *
- * @typeParam Prior - the accumulated definition seen by this layer.
- * @typeParam L - the user-provided layer literal.
- */
-export type ExtendDerivationLayer<
-	Prior extends Record<string, unknown>,
-	L,
-> = DerivationLayer<Prior, L>;
 
 /**
  * Field Layer entry constraint: rejects functions so a function in the

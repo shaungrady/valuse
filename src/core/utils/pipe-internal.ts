@@ -5,7 +5,7 @@ import type { PipeFactoryDescriptor, Transform } from '../types.js';
 // async/stateful pipe support), but keeping a single union here keeps the
 // type system honest and avoids two parallel hierarchies.
 
-export interface SyncPipeStep<In = unknown, Out = unknown> {
+interface SyncPipeStep<In = unknown, Out = unknown> {
 	kind: 'sync';
 	transform: Transform<In, Out>;
 }
