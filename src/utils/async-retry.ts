@@ -14,6 +14,14 @@ export const asyncRetry = async <T>(
 	{ max = 3, backoff = 1_000, signal }: AsyncRetryOptions,
 	fn: () => T | Promise<T>,
 ): Promise<T> => {
+	// `max` must allow at least one attempt. Without this guard, max < 1
+	// (including 0, negatives, and NaN) skips the loop entirely and throws
+	// a bare `undefined`, which is impossible for a caller to handle.
+	if (!Number.isFinite(max) || max < 1) {
+		throw new RangeError(
+			`valuse: asyncRetry "max" must be a finite number >= 1, received ${String(max)}`,
+		);
+	}
 	// A pre-aborted signal must not invoke `fn` at all — otherwise we'd
 	// either run user side effects after cancellation or, worse, return a
 	// success that the caller asked us to abandon.

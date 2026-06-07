@@ -84,7 +84,7 @@ export class ScopeTemplate<
 	 * are derivation layers. Extensions append.
 	 *
 	 * Used by the flush pipeline to cascade `$flush()` through layers in
-	 * dependency order. See `docs/proposals/flush-pipeline.md`.
+	 * dependency order. See `docs/derivations.md`.
 	 *
 	 * @internal
 	 */
@@ -621,14 +621,16 @@ export function asUnknownValueScope<Def extends Record<string, unknown>>(
 // ── Variadic overloads ───────────────────────────────────────────────
 //
 // Order at each arity (N args):
-//   1. (fields, ...mid-derivs, LAST-deriv-no-config-keys)        ← deriv-only path
-//   2. (fields, ...mid-derivs, last-deriv, config)               ← config-trailing path
+//   1. (fields, ...mid-derivs, config)   ← config-trailing path, listed FIRST
+//   2. (fields, ...derivs)               ← deriv-only path
 //
-// At the LAST deriv slot we use `LastDerivationLayer` which rejects
-// config-shaped keys; this lets `valueScope(fields, { onCreate: hook })`
-// fall through to the (fields, config) overload below. The middle
-// derivation slots use the lenient `DerivationLayer` so you can still
-// name a derivation `onCreate` when a trailing `{}` disambiguator follows.
+// The config-trailing overload (whose last param is typed
+// `ScopeConfig<...>`) is declared ahead of the deriv-only overload at each
+// arity, so a config-shaped trailing literal like
+// `valueScope(fields, { onCreate: hook })` resolves to the config form.
+// Every derivation slot uses the lenient `DerivationLayer`, so you can
+// still name a derivation `onCreate` when a trailing `{}` disambiguator
+// follows.
 //
 // Type accumulation uses `DeepMerge<A, B>` so nested-object subtrees
 // compose correctly.
@@ -1136,7 +1138,7 @@ export function valueScope<Def extends Record<string, unknown>>(
  * Define a reactive scope template.
  *
  * @see {@link ScopeTemplate} for the produced template's API.
- * @see `docs/proposals/variadic-scope-api.md` for the variadic API.
+ * @see `docs/extending.md` for the variadic API.
  *
  * @example Field layer only
  * ```ts
@@ -1556,6 +1558,18 @@ function createScopeInstance(
 			childUntrackFns.length = 0;
 			originalOnUnused?.();
 		};
+
+		// Release the transitive child subscriptions on parent $destroy too.
+		// `store.destroy()` only flips a flag — it does not invoke
+		// `onUnusedHook` — so a parent destroyed *while still subscribed*
+		// would otherwise leave every referenced child believing it still
+		// has a live subscriber. The children's own onUnused (and any
+		// onUsed cleanup they registered) would never fire, leaking their
+		// reactive subscriptions for the lifetime of the process.
+		instanceCleanups.push(() => {
+			for (const unsub of childUntrackFns) unsub();
+			childUntrackFns.length = 0;
+		});
 	}
 
 	fireOnCreate(config, instance, input ?? undefined, lifecycleCleanups);
@@ -2845,6 +2859,19 @@ function attachDollarMethods(
 		data: Record<string, unknown>,
 		options?: { recreate?: boolean },
 	) => {
+		// Non-object input (null, undefined, primitives) has no fields to apply.
+		// Warn and skip so a stray value can't crash hydration with a cryptic
+		// native "Cannot convert undefined or null to object" — and so the
+		// behavior is consistent across all non-conforming inputs. The declared
+		// type is always an object, but runtime callers (casts, parsed JSON,
+		// hydration) can pass anything, so we narrow through `unknown`.
+		const raw = data as unknown;
+		if (typeof raw !== 'object' || raw === null) {
+			console.warn(
+				`valuse: $setSnapshot expected a plain object, received ${raw === null ? 'null' : typeof raw}. Skipping.`,
+			);
+			return;
+		}
 		setSnapshotValues(definition, store, data, '');
 
 		if (options?.recreate) {
