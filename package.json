@@ -49,6 +49,10 @@
 			"import": "./dist/middleware.mjs"
 		}
 	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
 	"files": [
 		"README.md",
 		"dist"
@@ -72,7 +76,7 @@
 		"analyze:publish": "publint",
 		"changeset": "changeset",
 		"version-packages": "changeset version",
-		"release": "pnpm build && changeset publish --provenance",
+		"release": "pnpm build && changeset publish",
 		"prepack": "pnpm build"
 	},
 	"dependencies": {
