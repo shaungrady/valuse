@@ -1,34 +1,9 @@
 # Release Process
 
 This project uses [Changesets](https://github.com/changesets/changesets) for
-versioning and automated npm publishing via GitHub Actions.
+versioning and automated npm publishing via GitHub Actions (OIDC).
 
-## Initial Setup (one-time)
-
-### 1. npm OIDC Authentication
-
-Configure an OIDC connection in your npm account settings so GitHub Actions can
-publish without a stored long-lived token:
-
-1. Go to [npmjs.com](https://www.npmjs.com) → Account Settings → Granular Access
-   Tokens → Generate New Token
-2. Select **Automation** token type, or set up OIDC linking under your account's
-   security settings
-3. Add the token as a repository secret named `NPM_TOKEN` in GitHub → Settings →
-   Secrets and variables → Actions
-
-### 2. GitHub Actions Permissions
-
-In the repository settings (Settings → Actions → General):
-
-- Set **Workflow permissions** to "Read and write permissions"
-- Enable "Allow GitHub Actions to create and approve pull requests"
-
----
-
-## Development Workflow
-
-### Documenting Changes
+## Documenting Changes
 
 When making API changes, new features, or bug fixes, create a changeset:
 
@@ -45,11 +20,7 @@ alongside your code changes.
 | `minor`   | New features, non-breaking additions                    |
 | `major`   | Breaking changes                                        |
 
----
-
 ## Releasing
-
-### Automated (recommended)
 
 When changesets are merged to `main`, the release workflow automatically creates
 a "Version Packages" pull request that:
@@ -57,7 +28,7 @@ a "Version Packages" pull request that:
 - Bumps the version in `package.json`
 - Updates `CHANGELOG.md`
 
-Merging that PR triggers publishing to npm.
+Merging that PR publishes to npm.
 
 ### Manual
 
