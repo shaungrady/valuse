@@ -37,5 +37,12 @@ Four entry points: `valuse` (core), `valuse/react` (React hooks), `valuse/utils`
 
 ## Releases
 
-See [RELEASE.md](./RELEASE.md). Use `pnpm changeset` to document changes during
-development.
+See [RELEASE.md](./RELEASE.md) for full details.
+
+To include a change in the next release, run `pnpm changeset` alongside the code
+change and commit the generated `.changeset/*.md` file. Select the bump type
+(`patch` / `minor` / `major`) and write a user-facing summary.
+
+Once changesets land on `main`, the release workflow automatically opens a
+"Version Packages" PR that bumps the version and updates `CHANGELOG.md`. Merging
+that PR publishes to npm.
