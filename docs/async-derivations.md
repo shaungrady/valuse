@@ -16,6 +16,7 @@ patterns like data fetching, WebSocket streams, and polling.
 - [Dependency tracking](#dependency-tracking)
 - [Seeding with cached data](#seeding-with-cached-data)
 - [Long-running derivations](#long-running-derivations)
+- [Async utilities](#async-utilities)
 - [Sync derivations depending on async](#sync-derivations-depending-on-async)
 - [React integration](#react-integration)
 - [Error handling](#error-handling)
@@ -290,6 +291,54 @@ const ticker = valueScope(
 When `symbol` changes, the loop's `signal` is aborted, the `while` exits, and a
 new loop starts with the new symbol. When the instance is destroyed, the loop
 stops automatically.
+
+## Async utilities
+
+`valuse/utils` ships four signal-aware async helpers for use inside async
+derivations (or anywhere you have an `AbortSignal`). All of them reject — or
+stop — when their `signal` fires, so they compose cleanly with a derivation's
+abort-on-rerun lifecycle.
+
+| Helper                                       | Purpose                                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------- |
+| `asyncDelay({ ms, signal })`                 | Abortable sleep. Rejects with the abort reason if the signal fires.             |
+| `asyncPoll({ ms, signal }, fn)`              | Calls `fn` immediately, then every `ms`, until the signal aborts.               |
+| `asyncRetry({ max?, backoff?, signal }, fn)` | Retries `fn` on failure with linear backoff; returns the first success.         |
+| `asyncTimeout({ ms, signal }, fn)`           | Runs `fn` with a deadline; rejects with `Timeout` if it doesn't settle in time. |
+
+```ts
+import { asyncPoll, asyncRetry, asyncTimeout } from 'valuse/utils';
+
+const dashboard = valueScope(
+  { id: value<string>() },
+  {
+    // Poll every 5s; the loop stops automatically when `id` changes or the
+    // instance is destroyed.
+    metrics: async ({ scope, set, signal }) => {
+      const id = scope.id.use();
+      await asyncPoll({ ms: 5000, signal }, async () => {
+        // Retry the fetch up to 3 times, and give each attempt a 2s ceiling.
+        const data = await asyncRetry({ signal, max: 3 }, () =>
+          asyncTimeout({ ms: 2000, signal }, async () => {
+            const res = await fetch(`/api/metrics/${id}`, { signal });
+            return res.json();
+          }),
+        );
+        set(data);
+      });
+    },
+  },
+);
+```
+
+Notes:
+
+- `asyncRetry`'s `max` is the total number of attempts (including the first) and
+  must be `>= 1`; `backoff` (default `1000`ms) is multiplied by the attempt
+  number. An aborted signal stops retrying and surfaces the abort reason.
+- `asyncTimeout` enforces the deadline even while `fn` is still pending — it
+  does not wait for `fn` to finish. Pass the same `signal` into `fn` (e.g. to
+  `fetch`) if you also want to cancel the underlying work.
 
 ## Deferring with deferBy
 

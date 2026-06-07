@@ -1,14 +1,12 @@
 /**
  * Type-level tests for DeepMerge<A, B>.
  *
- * @see docs/proposals/variadic-scope-api.md
+ * @see docs/extending.md
  *
  * DeepMerge is the type-level layer accumulator: each successive
  * derivation layer deep-merges into the accumulated Def. Plain-object
  * subtrees recurse; reactive leaves and functions are leaves that
  * follow shallow-override semantics (B replaces A).
- *
- * RED until the variadic refactor lands.
  */
 
 import { expectTypeOf } from 'expect-type';

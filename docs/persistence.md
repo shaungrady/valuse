@@ -185,6 +185,13 @@ while the derivation re-runs, but the default is to skip them.
 
 ## Custom serialization
 
+> [!WARNING] The default serializer is `JSON.stringify` / `JSON.parse`. It
+> **silently** corrupts values that JSON can't represent: a `Date` rehydrates as
+> a `string`, a `Map` or `Set` becomes `{}` / `[]`, and `undefined` fields are
+> dropped — all with no error. On reload, your fields come back with the wrong
+> runtime type. If a persisted scope holds anything beyond JSON primitives,
+> arrays, and plain objects, provide your own `serialize` / `deserialize`.
+
 `JSON.stringify` / `JSON.parse` can't round-trip `Date`, `Map`, `Set`, or typed
 arrays. Override `serialize` / `deserialize` when that matters:
 
@@ -192,10 +199,17 @@ arrays. Override `serialize` / `deserialize` when that matters:
 withPersistence(scope, {
   key: 'settings',
   adapter: localStorageAdapter,
+  // `JSON.stringify` calls `Date.prototype.toJSON()` *before* the replacer
+  // runs, so by the time an arrow replacer sees the value it's already a
+  // string. Read the original off the holder via `this[key]` instead — which
+  // requires a regular function, not an arrow.
   serialize: (snapshot) =>
-    JSON.stringify(snapshot, (_k, v) =>
-      v instanceof Date ? { __date: v.toISOString() } : v,
-    ),
+    JSON.stringify(snapshot, function (key, value) {
+      const original = (this as Record<string, unknown>)[key];
+      return original instanceof Date ?
+          { __date: original.toISOString() }
+        : value;
+    }),
   deserialize: (raw) =>
     JSON.parse(raw, (_k, v) =>
       v && typeof v === 'object' && '__date' in v ? new Date(v.__date) : v,
