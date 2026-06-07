@@ -44,6 +44,37 @@ export function getReactHooks(): ReactHooks | undefined {
 /** @internal */
 type SubscribeFn = (onStoreChange: () => void) => () => void;
 
+/**
+ * Whole-instance React snapshot via `useSyncExternalStore`, with a non-React
+ * fallback. Every `.use()` that tracks a single snapshotable value shares this
+ * skeleton: read the bridge, subscribe stably to the instance (re-rendering on
+ * each change), and return the latest `getSnapshot()`. When the bridge isn't
+ * installed (outside React) it returns a one-shot, non-reactive snapshot.
+ *
+ * @param instance - the reactive object, used as the stable-subscribe cache key
+ * @param subscribe - sets up the instance subscription, firing `onChange` per change
+ * @param getSnapshot - reads the current value to render
+ * @returns the current snapshot
+ *
+ * @internal
+ */
+export function reactiveSnapshot<T>(
+	instance: object,
+	subscribe: (onChange: () => void) => () => void,
+	getSnapshot: () => T,
+): T {
+	const hooks = getReactHooks();
+	if (hooks) {
+		const stableSubscribeFn = stableSubscribe(instance, (onChange) =>
+			subscribe(() => {
+				onChange();
+			}),
+		);
+		return hooks.useSyncExternalStore(stableSubscribeFn, getSnapshot);
+	}
+	return getSnapshot();
+}
+
 const subscribeCache = new WeakMap<object, SubscribeFn>();
 
 /**

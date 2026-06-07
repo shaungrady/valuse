@@ -2,7 +2,7 @@ import { signal, type Signal } from './signal.js';
 import { subscribeWithPrevious } from './utils/effect-helpers.js';
 import { DisposerBag } from './utils/disposer-bag.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
-import { getReactHooks, stableSubscribe } from './react-bridge.js';
+import { reactiveSnapshot } from './react-bridge.js';
 
 /**
  * A reactive array. One signal holds the frozen array; per-index reactivity
@@ -279,42 +279,28 @@ export class ValueArray<In, Out = In> {
 	):
 		| [readonly Out[], (array: In[]) => void]
 		| [Out | undefined, (value: In) => void] {
-		const hooks = getReactHooks();
-		if (hooks) {
-			const subscribe = stableSubscribe(this, (onChange) =>
-				this.subscribe(() => {
-					onChange();
-				}),
+		// Both whole-array and per-index re-render on any array change, so they
+		// share the same instance subscription; only the snapshot read differs.
+		if (index !== undefined) {
+			const snapshot = reactiveSnapshot(
+				this,
+				(onChange) => this.subscribe(onChange),
+				() => this.get(index),
 			);
-			if (index !== undefined) {
-				const snapshot = hooks.useSyncExternalStore(subscribe, () =>
-					this.get(index),
-				);
-				return [
-					snapshot,
-					(value: In) => {
-						this.set(index, value);
-					},
-				];
-			}
-			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
 			return [
 				snapshot,
-				(array: In[]) => {
-					this.set(array);
-				},
-			];
-		}
-		if (index !== undefined) {
-			return [
-				this.get(index),
 				(value: In) => {
 					this.set(index, value);
 				},
 			];
 		}
+		const snapshot = reactiveSnapshot(
+			this,
+			(onChange) => this.subscribe(onChange),
+			() => this.get(),
+		);
 		return [
-			this.get(),
+			snapshot,
 			(array: In[]) => {
 				this.set(array);
 			},

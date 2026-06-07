@@ -6,7 +6,7 @@ import { draftMap } from './draft.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
 import {
 	getReactHooks,
-	stableSubscribe,
+	reactiveSnapshot,
 	versionedAdapter,
 	perKeySubscribe,
 } from './react-bridge.js';
@@ -208,53 +208,35 @@ export class ValueMap<K, V> {
 	):
 		| [Map<K, V>, (value: Map<K, V> | ((draft: Map<K, V>) => void)) => void]
 		| [V | undefined, (value: V) => void] {
+		if (arguments.length === 0) {
+			const snapshot = reactiveSnapshot(
+				this,
+				(onChange) => this.subscribe(onChange),
+				() => this.get(),
+			);
+			return [
+				snapshot,
+				(valueOrFn: Map<K, V> | ((draft: Map<K, V>) => void)) => {
+					this.set(valueOrFn);
+				},
+			];
+		}
+		// Per-key: only re-render when this specific key's value changes
+		const k = key as K;
+		const setKey = (newValue: V): void => {
+			this.set((draft) => draft.set(k, newValue));
+		};
 		const hooks = getReactHooks();
 		if (hooks) {
-			if (arguments.length === 0) {
-				const subscribe = stableSubscribe(this, (onChange) =>
-					this.subscribe(() => {
-						onChange();
-					}),
-				);
-				const snapshot = hooks.useSyncExternalStore(subscribe, () =>
-					this.get(),
-				);
-				return [
-					snapshot,
-					(valueOrFn: Map<K, V> | ((draft: Map<K, V>) => void)) => {
-						this.set(valueOrFn);
-					},
-				];
-			}
-			// Per-key: only re-render when this specific key's value changes
-			const k = key as K;
 			const subscribe = perKeySubscribe(this, k, (onChange) =>
 				this.subscribe((current, previous) => {
 					if (current.get(k) !== previous.get(k)) onChange();
 				}),
 			);
 			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get(k));
-			return [
-				snapshot,
-				(newValue: V) => {
-					this.set((draft) => draft.set(k, newValue));
-				},
-			];
+			return [snapshot, setKey];
 		}
-		if (arguments.length === 0) {
-			return [
-				this.get(),
-				(valueOrFn: Map<K, V> | ((draft: Map<K, V>) => void)) => {
-					this.set(valueOrFn);
-				},
-			];
-		}
-		return [
-			this.get(key as K),
-			(newValue: V) => {
-				this.set((draft) => draft.set(key as K, newValue));
-			},
-		];
+		return [this.get(k), setKey];
 	}
 
 	/**
