@@ -53,6 +53,8 @@ export type {
 	Unsubscribe,
 	Setter,
 	PipeFactoryDescriptor,
+	PipeHost,
+	PipeActor,
 	PipeStep,
 	Change,
 	ScopeNode,
