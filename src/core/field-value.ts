@@ -4,7 +4,7 @@ import type { InstanceStore } from './instance-store.js';
 import type { Setter, Unsubscribe } from './types.js';
 import {
 	getReactHooks,
-	stableSubscribe,
+	reactiveSnapshot,
 	versionedAdapter,
 } from './react-bridge.js';
 import { applyBrand, hasBrand } from './utils/brand.js';
@@ -64,17 +64,12 @@ export class FieldValue<In, Out = In> {
 	 * @returns a `[value, setter]` tuple.
 	 */
 	use(): [Out, Setter<In>] {
-		const hooks = getReactHooks();
-		if (hooks) {
-			const subscribe = stableSubscribe(this, (onChange) =>
-				this.subscribe(() => {
-					onChange();
-				}),
-			);
-			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
-			return [snapshot, this._setter];
-		}
-		return [this.get(), this._setter];
+		const snapshot = reactiveSnapshot(
+			this,
+			(onChange) => this.subscribe(onChange),
+			() => this.get(),
+		);
+		return [snapshot, this._setter];
 	}
 
 	/**
@@ -151,7 +146,6 @@ export class FieldValueSchema<In, Out = In> extends FieldValue<In, In> {
 				};
 			});
 			hooks.useSyncExternalStore(adapter.subscribe, adapter.getSnapshot);
-			return [this.get(), this._setter, this.getValidation()];
 		}
 		return [this.get(), this._setter, this.getValidation()];
 	}
@@ -238,17 +232,12 @@ export class FieldDerived<T> {
 	 * @returns a single-element `[value]` tuple.
 	 */
 	use(): [T] {
-		const hooks = getReactHooks();
-		if (hooks) {
-			const subscribe = stableSubscribe(this, (onChange) =>
-				this.subscribe(() => {
-					onChange();
-				}),
-			);
-			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
-			return [snapshot];
-		}
-		return [this.get()];
+		const snapshot = reactiveSnapshot(
+			this,
+			(onChange) => this.subscribe(onChange),
+			() => this.get(),
+		);
+		return [snapshot];
 	}
 
 	/**

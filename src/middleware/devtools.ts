@@ -82,8 +82,7 @@ function getExtension(): ReduxDevtoolsExtension | undefined {
 }
 
 function isEnabled(options: DevtoolsOptions): boolean {
-	if (options.enabled === false) return false;
-	if (options.enabled === true) return true;
+	if (options.enabled !== undefined) return options.enabled;
 	// Default: disabled in production
 	try {
 		return (

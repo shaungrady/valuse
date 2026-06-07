@@ -242,10 +242,8 @@ export function withPersistence<T extends ScopeTemplate<any>>(
 
 			flush(state, state.writeNow);
 
-			if (state.externalUnsubscribe) {
-				state.externalUnsubscribe();
-				state.externalUnsubscribe = null;
-			}
+			state.externalUnsubscribe?.();
+			state.externalUnsubscribe = null;
 
 			persistenceByInstance.delete(scope);
 		},

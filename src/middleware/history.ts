@@ -90,12 +90,8 @@ function snapshotsEqual(
 	b: Record<string, unknown>,
 ): boolean {
 	const aKeys = Object.keys(a);
-	const bKeys = Object.keys(b);
-	if (aKeys.length !== bKeys.length) return false;
-	for (const k of aKeys) {
-		if (!Object.is(a[k], b[k])) return false;
-	}
-	return true;
+	if (aKeys.length !== Object.keys(b).length) return false;
+	return aKeys.every((k) => Object.is(a[k], b[k]));
 }
 
 /**
@@ -254,10 +250,7 @@ export function withHistory<Def extends Record<string, unknown>>(
 					const current = pickFields(scope.$getSnapshot(), fields);
 					stack.value = [current];
 					position.value = 0;
-					if (state.batchTimer !== null) {
-						clearTimeout(state.batchTimer);
-						state.batchTimer = null;
-					}
+					closeBatch();
 					refreshCanFlags();
 				} finally {
 					state.isRestoring = false;

@@ -87,7 +87,7 @@ const subscribeCache = new WeakMap<object, SubscribeFn>();
  *
  * @internal
  */
-export function stableSubscribe(
+function stableSubscribe(
 	instance: object,
 	createSubscription: (onChange: () => void) => () => void,
 ): SubscribeFn {
