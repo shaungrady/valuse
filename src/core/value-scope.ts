@@ -28,6 +28,8 @@ import {
 } from './scope-snapshot.js';
 import { setupAsyncDerivations } from './scope-async-derivations.js';
 import { setupValidation } from './scope-validation.js';
+import { resolveRefs } from './scope-refs.js';
+import { fireOnCreate, wireLifecycleHooks } from './scope-lifecycle.js';
 import type { ScopeDefinitionMeta, GroupMeta } from './slot-meta.js';
 import type { ScopeNode, Unsubscribe } from './types.js';
 import type {
@@ -1169,34 +1171,6 @@ export function valueScope(...args: unknown[]): ScopeTemplate {
 
 // --- Instance creation ---
 
-/**
- * Fire the `onCreate` lifecycle hook with a fresh `AbortController` whose
- * signal aborts when the scope is destroyed (or, in the `$setSnapshot
- * recreate` path, when the next recreate cycle starts). The controller is
- * created unconditionally so the lifecycle-cleanups list always grows by
- * exactly one entry — keeps the create / recreate paths symmetric.
- * @internal
- */
-function fireOnCreate(
-	config: ScopeConfig | undefined,
-	instance: Record<string, unknown>,
-	input: Record<string, unknown> | undefined,
-	lifecycleCleanups: (() => void)[],
-): void {
-	const controller = new AbortController();
-	lifecycleCleanups.push(() => {
-		controller.abort();
-	});
-	if (config?.onCreate) {
-		config.onCreate({
-			scope: instance as GenericScopeInstance,
-			input,
-			signal: controller.signal,
-			onCleanup: (fn) => lifecycleCleanups.push(fn),
-		});
-	}
-}
-
 function createScopeInstance(
 	definition: ScopeDefinitionMeta,
 	_rawDefinition: Record<string, unknown>,
@@ -1217,56 +1191,14 @@ function createScopeInstance(
 	const derivationScope = buildDerivationScopeTree(definition, store);
 
 	// Resolve ValueRef entries: factory refs create per-instance sources,
-	// shared refs just attach the existing source.
-	// Must happen before derivation setup so derivations can reference refs.
-	const factoryRefInstances: Record<string, unknown>[] = [];
-	// Factory-created reactive primitives (Value / ValueSet / ValueMap /
-	// ValueArray) expose `.destroy()` rather than `$destroy`. They were
-	// previously leaked on parent destroy because the propagation block only
-	// looked for `$destroy`. Track them here so they can be torn down too.
-	const factoryRefDestroyables: { destroy: () => void }[] = [];
-	// Refs that participate in transitive onUsed/onUnused — i.e. anything
-	// with a `$subscribe` (scope instances), shared or factory-created.
-	// Plain Value/Set/Map refs aren't lifecycle owners and are skipped.
-	const transitiveLifecycleRefs: Record<string, unknown>[] = [];
-	const resolvedRefs = new Map<string, unknown>();
-	for (const [path, ref] of definition.refEntries) {
-		let resolved: unknown;
-		if (ref.factory) {
-			resolved = ref.factory();
-			// Track factory-created scope instances for destroy propagation
-			if (
-				typeof resolved === 'object' &&
-				resolved !== null &&
-				'$destroy' in resolved
-			) {
-				factoryRefInstances.push(resolved);
-			} else if (
-				typeof resolved === 'object' &&
-				resolved !== null &&
-				'destroy' in resolved &&
-				typeof resolved.destroy === 'function'
-			) {
-				factoryRefDestroyables.push(resolved as { destroy: () => void });
-			}
-		} else {
-			resolved = ref.source;
-		}
-		if (
-			typeof resolved === 'object' &&
-			resolved !== null &&
-			'$subscribe' in resolved &&
-			typeof resolved.$subscribe === 'function'
-		) {
-			transitiveLifecycleRefs.push(resolved);
-		}
-		resolvedRefs.set(path, resolved);
-		// Attach to derivation scope for use in derivations. Wrap with a
-		// DerivationWrap-compatible interface so `.use()` inside a derivation
-		// performs the right kind of tracked read for each source shape.
-		const wrapped = wrapRefForDerivation(resolved);
-		setNestedValue(derivationScope, path, wrapped ?? resolved);
-	}
+	// shared refs just attach the existing source. Must happen before
+	// derivation setup so derivations can reference refs.
+	const {
+		resolvedRefs,
+		factoryRefInstances,
+		factoryRefDestroyables,
+		transitiveLifecycleRefs,
+	} = resolveRefs(definition, derivationScope);
 
 	// Build the instance object tree
 	const nodesBySlot = new Map<number, ScopeNode>();
@@ -1353,104 +1285,14 @@ function createScopeInstance(
 	// Brand as scope
 	brandAsScope(instance);
 
-	// Wire hooks. The runtime `context.scope` is the live ScopeInstance
-	// (branded as ScopeNode at the InstanceStore boundary), so the cast
-	// to the user-facing hook context type is sound at runtime.
-	if (config?.onChange) {
-		const onChange = config.onChange;
-		store.onChangeHook = (context) => {
-			onChange(context as Parameters<typeof onChange>[0]);
-		};
-	}
-
-	if (config?.beforeChange) {
-		const beforeChange = config.beforeChange;
-		store.beforeChangeHook = (context) => {
-			beforeChange(context as Parameters<typeof beforeChange>[0]);
-		};
-	}
-
-	// Wire onUsed/onUnused subscriber tracking
-	if (config?.onUsed || config?.onUnused) {
-		let usedController: AbortController | null = null;
-		let usedCleanups: (() => void)[] = [];
-
-		if (config.onUsed) {
-			const onUsedConfig = config.onUsed;
-			store.onUsedHook = () => {
-				usedController = new AbortController();
-				usedCleanups = [];
-				onUsedConfig({
-					scope: instance as GenericScopeInstance,
-					signal: usedController.signal,
-					onCleanup: (fn) => usedCleanups.push(fn),
-				});
-			};
-		}
-
-		store.onUnusedHook = () => {
-			// Run onUsed cleanups and abort signal
-			for (const cleanup of usedCleanups) cleanup();
-			usedCleanups = [];
-			if (usedController) {
-				usedController.abort();
-				usedController = null;
-			}
-			// Fire onUnused callback
-			if (config.onUnused) {
-				config.onUnused({ scope: instance as GenericScopeInstance });
-			}
-		};
-
-		// Clean up on destroy
-		instanceCleanups.push(() => {
-			for (const cleanup of usedCleanups) cleanup();
-			usedCleanups = [];
-			if (usedController) {
-				usedController.abort();
-				usedController = null;
-			}
-		});
-	}
-
-	// Propagate onUsed/onUnused transitively to every scope-instance ref —
-	// shared or factory-created. Lifting an in-scope subscription on the
-	// parent should "use" each referenced child, matching the README's
-	// transitive-lifecycle contract.
-	if (transitiveLifecycleRefs.length > 0) {
-		const originalOnUsed = store.onUsedHook;
-		const originalOnUnused = store.onUnusedHook;
-		const childUntrackFns: (() => void)[] = [];
-
-		store.onUsedHook = () => {
-			originalOnUsed?.();
-			for (const refInstance of transitiveLifecycleRefs) {
-				const unsub = (
-					refInstance.$subscribe as (fn: () => void) => () => void
-				)(() => {});
-				childUntrackFns.push(unsub);
-			}
-		};
-
-		store.onUnusedHook = () => {
-			// Unsubscribe from children first (triggers their onUnused)
-			for (const unsub of childUntrackFns) unsub();
-			childUntrackFns.length = 0;
-			originalOnUnused?.();
-		};
-
-		// Release the transitive child subscriptions on parent $destroy too.
-		// `store.destroy()` only flips a flag — it does not invoke
-		// `onUnusedHook` — so a parent destroyed *while still subscribed*
-		// would otherwise leave every referenced child believing it still
-		// has a live subscriber. The children's own onUnused (and any
-		// onUsed cleanup they registered) would never fire, leaking their
-		// reactive subscriptions for the lifetime of the process.
-		instanceCleanups.push(() => {
-			for (const unsub of childUntrackFns) unsub();
-			childUntrackFns.length = 0;
-		});
-	}
+	// Wire change/usage lifecycle hooks (+ transitive onUsed/onUnused).
+	wireLifecycleHooks(
+		store,
+		instance,
+		config,
+		transitiveLifecycleRefs,
+		instanceCleanups,
+	);
 
 	fireOnCreate(config, instance, input ?? undefined, lifecycleCleanups);
 
@@ -1671,64 +1513,6 @@ function freezeChildGroups(
 		const node = nodesByGroup.get(groupIndex);
 		if (node) Object.freeze(node);
 	}
-}
-
-/**
- * Wrap a resolved ref source so `.use()` inside a derivation performs the
- * right kind of tracked read for that source shape. Returns `undefined` for
- * non-reactive values (plain data, functions, etc.), in which case the raw
- * source is attached to the derivation scope as-is.
- * @internal
- */
-function wrapRefForDerivation(
-	resolved: unknown,
-): { use: () => unknown; get: () => unknown } | undefined {
-	if (typeof resolved !== 'object' || resolved === null) return undefined;
-
-	// Scope instance: `.use()` hands back the instance itself so derivations
-	// can reach into its fields and `$` methods — `scope.child.use().field.get()`,
-	// `scope.form.use().$getIsValid()`. `_trackAll()` registers a dep on every
-	// slot up front, so the derivation re-runs on any field change inside the
-	// referenced instance. Granularity is coarse by design; it's the price of
-	// letting consumers read the full instance shape.
-	if ('$get' in resolved && typeof resolved.$get === 'function') {
-		const instance = resolved as Record<string, unknown> & {
-			_trackAll?: () => void;
-		};
-		return {
-			use: () => {
-				instance._trackAll?.();
-				return instance;
-			},
-			get: () => instance,
-		};
-	}
-
-	// ScopeMap: `.use()` tracks the key-list version signal and hands back
-	// the map. Consumers then call `.size`, `.keys()`, `.get(key)`, etc.
-	if (resolved instanceof ScopeMap) {
-		const map = resolved;
-		return {
-			use: () => {
-				map._trackKeys();
-				return map;
-			},
-			get: () => map,
-		};
-	}
-
-	// Any reactive source with a parameterless `.get()` — Value, ValueSet,
-	// ValueMap (whole-map read), ValuePlain, etc. Preact signals inside
-	// `.get()` handle tracking; `.use()` is an alias here.
-	if ('get' in resolved && typeof resolved.get === 'function') {
-		const source = resolved as { get(): unknown };
-		return {
-			use: () => source.get(),
-			get: () => source.get(),
-		};
-	}
-
-	return undefined;
 }
 
 /** Set up sync derivations using Preact computed(). @internal */
