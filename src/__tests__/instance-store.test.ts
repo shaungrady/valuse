@@ -46,6 +46,11 @@ function makeDefinition(
 		staticEntries: new Map(),
 		pathToSlot: new Map(slots.map((s, i) => [s.path, i])),
 		pathToGroup: new Map(),
+		derivedSlots: slots.flatMap((s, i) => (s.kind === 'derived' ? [i] : [])),
+		asyncDerivedSlots: slots.flatMap((s, i) =>
+			s.kind === 'asyncDerived' ? [i] : [],
+		),
+		schemaSlots: slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : [])),
 		refEntries: new Map(),
 	};
 }

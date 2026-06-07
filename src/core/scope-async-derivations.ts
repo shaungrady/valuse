@@ -65,10 +65,10 @@ export function setupAsyncDerivations(
 	resolvedRefs: Map<string, unknown>,
 	cleanups: (() => void)[],
 ): void {
-	for (let slot = 0; slot < definition.slotCount; slot++) {
+	for (const slot of definition.asyncDerivedSlots) {
 		const meta = definition.slots[slot]!;
 
-		if (meta.kind === 'asyncDerived' && meta.derivationFn) {
+		if (meta.derivationFn) {
 			const derivationFn = meta.derivationFn;
 			const hasSeed = initialValues.has(slot);
 

@@ -122,6 +122,16 @@ export interface ScopeDefinitionMeta {
 	readonly pathToGroup: ReadonlyMap<string, number>;
 
 	/**
+	 * Slot indices grouped by kind, in ascending order. Precomputed once per
+	 * definition so per-instance setup (sync/async derivations, validation)
+	 * iterates only the relevant slots instead of rescanning all of them on
+	 * every `.create()`.
+	 */
+	readonly derivedSlots: readonly number[];
+	readonly asyncDerivedSlots: readonly number[];
+	readonly schemaSlots: readonly number[];
+
+	/**
 	 * ValueRef entries found in the definition tree.
 	 * Map of path → ValueRef instance. Resolved per-instance in createScopeInstance.
 	 */
