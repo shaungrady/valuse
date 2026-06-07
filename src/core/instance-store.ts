@@ -200,10 +200,7 @@ export class InstanceStore {
 		// actors leaves the actor state matching standalone.
 		for (let slot = 0; slot < definition.slotCount; slot++) {
 			const meta = definition.slots[slot]!;
-			if (
-				!meta.pipeline ||
-				!meta.pipeline.some((step) => step.kind === 'factory')
-			) {
+			if (!meta.pipeline?.some((step) => step.kind === 'factory')) {
 				continue;
 			}
 			this.activateFactoryPipes(slot);
@@ -498,10 +495,13 @@ export class InstanceStore {
 	 * Read validation state for a schema slot.
 	 */
 	readValidation(slot: number): ValidationState<unknown, unknown> {
-		const validationSignal = this.validationStates.get(slot);
-		return validationSignal ?
-				validationSignal.peek()
-			:	{ isValid: true, value: this.read(slot), issues: [] };
+		return (
+			this.validationStates.get(slot)?.peek() ?? {
+				isValid: true,
+				value: this.read(slot),
+				issues: [],
+			}
+		);
 	}
 
 	/**
@@ -519,8 +519,7 @@ export class InstanceStore {
 	 * Read async state for a slot.
 	 */
 	readAsync(slot: number): AsyncState<unknown> {
-		const asyncSignal = this.asyncStates.get(slot);
-		return asyncSignal ? asyncSignal.peek() : initialAsyncState();
+		return this.asyncStates.get(slot)?.peek() ?? initialAsyncState();
 	}
 
 	/**
