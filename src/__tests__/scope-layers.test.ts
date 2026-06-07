@@ -4,7 +4,7 @@ import { valueScope } from '../core/value-scope.js';
 
 /**
  * Layer-boundary tracking on ScopeTemplate. Foundation for the flush
- * pipeline ($flush() cascade). See docs/proposals/flush-pipeline.md.
+ * pipeline ($flush() cascade). See docs/derivations.md.
  */
 describe('ScopeTemplate.$layers', () => {
 	const layersOf = (t: unknown) =>

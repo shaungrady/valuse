@@ -1,10 +1,9 @@
 /**
  * Type-level tests for the variadic-scope core types.
  *
- * @see docs/proposals/variadic-scope-api.md
+ * @see docs/extending.md
  *
- * These tests are RED until the variadic refactor lands. They pin the
- * contract for the foundational types that the overloads will use.
+ * Pins the contract for the foundational types the overloads use.
  *
  * - DerivLeaf<T>      — wraps a field type as { get, use } for derivation reads
  * - DerivScope<Def>   — maps a definition to its derivation-scope shape

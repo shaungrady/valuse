@@ -9,6 +9,12 @@ Both hooks receive structured change metadata with per-field and per-subtree
 breakdowns, so you can write targeted reactions without polling or diffing. For
 creation/destruction hooks, see [Lifecycle](lifecycle.md).
 
+> Change hooks fire for **every** write to a reactive field, regardless of its
+> source: a direct `.set()`, a `$setSnapshot()` restore (including persistence
+> hydration), or a middleware operation such as history's `$undo()` / `$redo()`.
+> `beforeChange` can `prevent()` any of them, and `onChange` reports them like
+> any other change.
+
 ## Table of contents
 
 - [onChange](#onchange)

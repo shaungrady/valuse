@@ -1,16 +1,12 @@
 /**
  * Type-level tests for IsGroup<T>.
  *
- * @see docs/proposals/variadic-scope-api.md (validation #60)
+ * @see docs/extending.md
  *
  * IsGroup distinguishes plain-object subtrees from reactive primitives.
  * Reactive collections (ValueArray, ValueMap, ValueSet) MUST be
  * excluded so DeepMerge doesn't misclassify them as subtrees and
  * recursively walk their methods.
- *
- * The audit noted in the proposal: `IsGroup` is missing three branches
- * today (ValueArray, ValueMap, ValueSet). These tests will be RED
- * until those branches land in scope-types.ts.
  */
 
 import { expectTypeOf } from 'expect-type';

@@ -1,7 +1,7 @@
 /**
  * Type-level tests for valueScope's variadic overload behavior.
  *
- * @see docs/proposals/variadic-scope-api.md
+ * @see docs/extending.md
  *
  * Pins the user-observable contract:
  *  - 1-arg field-only form works

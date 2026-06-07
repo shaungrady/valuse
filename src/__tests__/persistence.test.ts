@@ -374,6 +374,61 @@ describe('withPersistence', () => {
 	});
 });
 
+describe('withPersistence serialization', () => {
+	// Documents the lossy default (see docs/persistence.md). The default
+	// JSON serializer cannot round-trip a Date — it rehydrates as a string.
+	it('default serializer rehydrates a Date as a string (lossy)', () => {
+		const iso = '2026-06-06T00:00:00.000Z';
+		const adapter = memoryAdapter({
+			when: JSON.stringify({ at: new Date(iso) }),
+		});
+		const persisted = withPersistence(
+			valueScope({ at: value<Date | string>('') }),
+			{ key: 'when', adapter },
+		);
+		const instance = persisted.create({ at: '' });
+		expect(instance.at.get()).toBe(iso); // a string, not a Date
+		expect(instance.at.get()).not.toBeInstanceOf(Date);
+	});
+
+	it('custom serialize/deserialize round-trips a Date correctly', async () => {
+		const iso = '2026-06-06T00:00:00.000Z';
+		type DateBox = { __date: string };
+		const isDateBox = (v: unknown): v is DateBox =>
+			typeof v === 'object' && v !== null && '__date' in v;
+		const adapter = memoryAdapter();
+		const opts = {
+			key: 'when',
+			adapter,
+			serialize: (snapshot: Record<string, unknown>) =>
+				JSON.stringify(
+					snapshot,
+					function (this: Record<string, unknown>, key, value) {
+						// JSON.stringify runs Date.prototype.toJSON() before the
+						// replacer, so check the original value via `this[key]`.
+						const original = this[key];
+						return original instanceof Date ?
+								{ __date: original.toISOString() }
+							:	(value as unknown);
+					},
+				),
+			deserialize: (raw: string) =>
+				JSON.parse(raw, (_k, v: unknown) =>
+					isDateBox(v) ? new Date(v.__date) : v,
+				) as Record<string, unknown>,
+		};
+		const persisted = withPersistence(valueScope({ at: value<Date>() }), opts);
+		const a = persisted.create({ at: new Date(iso) });
+		a.at.set(new Date(iso)); // trigger a write through the custom serializer
+		// Persistence writes are microtask-batched; let the write flush.
+		await Promise.resolve();
+
+		const b = persisted.create({ at: new Date(0) });
+		expect(b.at.get()).toBeInstanceOf(Date);
+		expect((b.at.get() as Date).toISOString()).toBe(iso);
+	});
+});
+
 describe('localStorageAdapter', () => {
 	beforeEach(() => {
 		// jsdom provides localStorage — clear it.
