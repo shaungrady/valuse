@@ -55,6 +55,12 @@ export interface PersistenceOptions {
 interface PersistenceState {
 	/** True while hydrating from storage, to suppress write-back. */
 	isHydrating: boolean;
+	/**
+	 * True once a genuine local write has occurred. Guards the initial async
+	 * read: if the user wrote during the read window, their newer state must
+	 * not be clobbered by the stale stored snapshot resolving late.
+	 */
+	hasLocalWrite: boolean;
 	/** Pending throttled-write timer. */
 	writeTimer: ReturnType<typeof setTimeout> | null;
 	/** Most recent snapshot queued for a throttled write. */
@@ -151,6 +157,7 @@ export function withPersistence<T extends ScopeTemplate<any>>(
 
 			const state: PersistenceState = {
 				isHydrating: false,
+				hasLocalWrite: false,
 				writeTimer: null,
 				pendingSnapshot: null,
 				externalUnsubscribe: null,
@@ -180,6 +187,9 @@ export function withPersistence<T extends ScopeTemplate<any>>(
 				if (readResult instanceof Promise) {
 					readResult
 						.then((raw) => {
+							// If the user wrote while this read was in flight, their
+							// newer state wins — don't overwrite it with stored data.
+							if (state.hasLocalWrite) return;
 							hydrateFrom(raw);
 						})
 						.catch(() => {
@@ -204,6 +214,10 @@ export function withPersistence<T extends ScopeTemplate<any>>(
 			const state = persistenceByInstance.get(scope);
 			if (!state) return;
 			if (state.isHydrating) return;
+
+			// A genuine local write — mark it so a late-resolving initial read
+			// won't clobber it.
+			state.hasLocalWrite = true;
 
 			const snapshot = state.getSnapshot();
 

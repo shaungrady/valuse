@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { localStorageAdapter } from '../middleware/persistence/local-storage-adapter.js';
 import { sessionStorageAdapter } from '../middleware/persistence/session-storage-adapter.js';
+import { createWebStorageAdapter } from '../middleware/persistence/web-storage.js';
 
 describe('localStorageAdapter', () => {
 	let mockStorage: Map<string, string>;
@@ -154,5 +155,114 @@ describe('sessionStorageAdapter', () => {
 		mockStorage.set('key1', 'value1');
 		sessionStorageAdapter.remove('key1');
 		expect(mockStorage.get('key1')).toBeUndefined();
+	});
+});
+
+// Best-effort contract: storage being unavailable or throwing on access must
+// never surface as an error. read() -> null, write()/remove() -> no-op.
+describe.each([
+	['localStorage', localStorageAdapter] as const,
+	['sessionStorage', sessionStorageAdapter] as const,
+])('%s adapter — unavailable / hostile environments', (globalName, adapter) => {
+	let original: PropertyDescriptor | undefined;
+
+	beforeEach(() => {
+		original = Object.getOwnPropertyDescriptor(globalThis, globalName);
+	});
+
+	afterEach(() => {
+		if (original) Object.defineProperty(globalThis, globalName, original);
+		else Reflect.deleteProperty(globalThis, globalName);
+	});
+
+	it('read() returns null and write()/remove() no-op when storage is absent (SSR)', () => {
+		Reflect.deleteProperty(globalThis, globalName);
+		expect(adapter.read('k')).toBeNull();
+		expect(() => {
+			adapter.write('k', 'v');
+		}).not.toThrow();
+		expect(() => {
+			adapter.remove('k');
+		}).not.toThrow();
+	});
+
+	it('does not throw when accessing storage throws (e.g. Safari private mode)', () => {
+		Object.defineProperty(globalThis, globalName, {
+			configurable: true,
+			get() {
+				throw new Error('SecurityError: access denied');
+			},
+		});
+		expect(adapter.read('k')).toBeNull();
+		expect(() => {
+			adapter.write('k', 'v');
+		}).not.toThrow();
+		expect(() => {
+			adapter.remove('k');
+		}).not.toThrow();
+	});
+});
+
+describe('createWebStorageAdapter — operation errors are swallowed', () => {
+	const hostileStorage = {
+		getItem: () => {
+			throw new Error('read blocked');
+		},
+		setItem: () => {
+			throw new Error('quota exceeded');
+		},
+		removeItem: () => {
+			throw new Error('remove blocked');
+		},
+	} as unknown as Storage;
+
+	it('read() returns null when getItem throws', () => {
+		const adapter = createWebStorageAdapter({
+			getStorage: () => hostileStorage,
+		});
+		expect(adapter.read('k')).toBeNull();
+	});
+
+	it('write() / remove() swallow thrown errors (quota, opaque origin)', () => {
+		const adapter = createWebStorageAdapter({
+			getStorage: () => hostileStorage,
+		});
+		expect(() => {
+			adapter.write('k', 'v');
+		}).not.toThrow();
+		expect(() => {
+			adapter.remove('k');
+		}).not.toThrow();
+	});
+
+	it('is not subscribable unless opted in', () => {
+		const adapter = createWebStorageAdapter({ getStorage: () => null });
+		expect(adapter.subscribe).toBeUndefined();
+	});
+
+	it('subscribe() returns a no-op unsubscribe when addEventListener is unavailable', () => {
+		const original = Object.getOwnPropertyDescriptor(
+			globalThis,
+			'addEventListener',
+		);
+		// Simulate a non-DOM global (SSR) where addEventListener isn't a function.
+		Object.defineProperty(globalThis, 'addEventListener', {
+			configurable: true,
+			value: undefined,
+		});
+		try {
+			const adapter = createWebStorageAdapter({
+				getStorage: () => null,
+				subscribable: true,
+			});
+			const unsub = adapter.subscribe!('k', vi.fn());
+			expect(typeof unsub).toBe('function');
+			expect(() => {
+				unsub();
+			}).not.toThrow();
+		} finally {
+			if (original)
+				Object.defineProperty(globalThis, 'addEventListener', original);
+		}
 	});
 });

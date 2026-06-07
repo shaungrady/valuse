@@ -90,6 +90,11 @@ export function createSwitchPipe<In, Out>(
 						handler({
 							value,
 							set: (output) => {
+								// Drop commits from a superseded handler. A newer write
+								// aborts this controller; without this guard an async step
+								// that ignores the signal (e.g. a fetch that resolves after
+								// abort) would still commit its stale value downstream.
+								if (controller.signal.aborted) return;
 								host.set(output);
 							},
 							deferBy: (ms) => deferral.deferBy(ms),

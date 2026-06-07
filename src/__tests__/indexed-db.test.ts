@@ -163,4 +163,31 @@ describe('withPersistence + indexedDBAdapter', () => {
 		expect(raw).not.toBeNull();
 		expect(JSON.parse(raw!)).toEqual({ theme: 'dark' });
 	});
+
+	it('does not clobber a user write that lands during the async hydration window', async () => {
+		const dbName = freshDbName();
+		const key = 'race';
+
+		// Pre-seed storage with an older value.
+		const seeder = indexedDBAdapter({ dbName });
+		await seeder.write(key, JSON.stringify({ name: 'STORED' }));
+
+		const Scope = withPersistence(valueScope({ name: value<string>() }), {
+			key,
+			adapter: indexedDBAdapter({ dbName }),
+		});
+
+		const instance = Scope.create({ name: 'init' });
+		// The user types immediately — before the async IndexedDB read resolves.
+		instance.name.set('USER_TYPED');
+
+		// Let the pending async read settle.
+		await new Promise((r) => setTimeout(r, 50));
+
+		// The user's write happened after create, so it must win — the stale
+		// stored value must not silently overwrite it.
+		expect(instance.name.get()).toBe('USER_TYPED');
+
+		instance.$destroy();
+	});
 });

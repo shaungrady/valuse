@@ -462,3 +462,29 @@ describe('nested factory refs', () => {
 		unsub();
 	});
 });
+
+describe('transitive lifecycle teardown on $destroy', () => {
+	it('releases transitive child subscriptions when the parent is destroyed while still subscribed', () => {
+		const childOnUnused = vi.fn();
+		const child = valueScope(
+			{ name: value<string>('child') },
+			{ onUnused: childOnUnused },
+		);
+		const parent = valueScope({
+			title: value<string>(),
+			child: valueRef(() => child.create()),
+		});
+
+		const instance = parent.create({ title: 'Parent' });
+		// Hold a live subscriber so the child is "used"...
+		const unsub = instance.title.subscribe(() => {});
+		// ...then destroy the parent WITHOUT unsubscribing first.
+		instance.$destroy();
+
+		// The child must be released, otherwise its subscription leaks for the
+		// lifetime of the process. onUnused proves teardown ran.
+		expect(childOnUnused).toHaveBeenCalledOnce();
+
+		unsub();
+	});
+});

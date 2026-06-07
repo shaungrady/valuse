@@ -119,5 +119,21 @@ describe('asyncRetry', () => {
 			).rejects.toThrow('still failing');
 			expect(fn).toHaveBeenCalledTimes(2);
 		});
+
+		/**
+		 * `max < 1` (including 0, negatives, and NaN) is a contract violation:
+		 * the loop never runs, so the old code threw a bare `undefined`. Surface
+		 * a clear RangeError instead and never invoke fn.
+		 */
+		it('rejects with a RangeError when max < 1 instead of throwing undefined', async () => {
+			const controller = new AbortController();
+			const fn = vi.fn(async () => 1);
+			for (const bad of [0, -1, Number.NaN]) {
+				await expect(
+					asyncRetry({ signal: controller.signal, max: bad }, fn),
+				).rejects.toThrow(RangeError);
+			}
+			expect(fn).not.toHaveBeenCalled();
+		});
 	});
 });
