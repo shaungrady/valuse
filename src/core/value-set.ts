@@ -4,7 +4,7 @@ import { DisposerBag } from './utils/disposer-bag.js';
 import { applyTransforms } from './utils/pipe-internal.js';
 import { draftSet } from './draft.js';
 import type { Comparator, Transform, Unsubscribe } from './types.js';
-import { getReactHooks, stableSubscribe } from './react-bridge.js';
+import { reactiveSnapshot } from './react-bridge.js';
 
 /**
  * Reactive wrapper around a `Set<T>`.
@@ -177,23 +177,13 @@ export class ValueSet<T> {
 	 * @returns a `[Set, setter]` tuple.
 	 */
 	use(): [Set<T>, (value: Set<T> | ((draft: Set<T>) => void)) => void] {
-		const hooks = getReactHooks();
-		if (hooks) {
-			const subscribe = stableSubscribe(this, (onChange) =>
-				this.subscribe(() => {
-					onChange();
-				}),
-			);
-			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
-			return [
-				snapshot,
-				(valueOrFn) => {
-					this.set(valueOrFn);
-				},
-			];
-		}
+		const snapshot = reactiveSnapshot(
+			this,
+			(onChange) => this.subscribe(onChange),
+			() => this.get(),
+		);
 		return [
-			this.get(),
+			snapshot,
 			(valueOrFn) => {
 				this.set(valueOrFn);
 			},

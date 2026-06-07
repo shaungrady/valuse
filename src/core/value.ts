@@ -7,7 +7,7 @@ import {
 } from './utils/pipe-internal.js';
 import { buildPipeChain, type PipeChain } from './utils/pipe-runtime.js';
 import { applyBrand, hasBrand } from './utils/brand.js';
-import { getReactHooks, stableSubscribe } from './react-bridge.js';
+import { reactiveSnapshot } from './react-bridge.js';
 import type {
 	Comparator,
 	Transform,
@@ -302,18 +302,12 @@ export class Value<In, Out = In> {
 	 * ```
 	 */
 	use(): [Out, Setter<In>] {
-		const hooks = getReactHooks();
-		if (hooks) {
-			const subscribe = stableSubscribe(this, (onChange) =>
-				this.subscribe(() => {
-					onChange();
-				}),
-			);
-			const snapshot = hooks.useSyncExternalStore(subscribe, () => this.get());
-			return [snapshot, this.#setter];
-		}
-		// Non-React (or `valuse/react` not imported): non-reactive snapshot.
-		return [this.get(), this.#setter];
+		const snapshot = reactiveSnapshot(
+			this,
+			(onChange) => this.subscribe(onChange),
+			() => this.get(),
+		);
+		return [snapshot, this.#setter];
 	}
 
 	/**

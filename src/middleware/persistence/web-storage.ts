@@ -10,6 +10,33 @@ import type { PersistenceAdapter } from './persistence.js';
 type StorageGetter = () => Storage | null;
 
 /**
+ * Build a {@link StorageGetter} for a Web Storage global (`localStorage` /
+ * `sessionStorage`). The whole guard runs inside try/catch: merely *accessing*
+ * the global can throw (Safari private mode, sandboxed iframes), so the presence
+ * check must be protected too — not just the read.
+ *
+ * @internal
+ */
+export function createWebStorageGetter(
+	storageKey: 'localStorage' | 'sessionStorage',
+): StorageGetter {
+	return () => {
+		try {
+			if (typeof globalThis === 'undefined') return null;
+			const storage = (
+				globalThis as {
+					localStorage?: Storage;
+					sessionStorage?: Storage;
+				}
+			)[storageKey];
+			return storage ?? null;
+		} catch {
+			return null;
+		}
+	};
+}
+
+/**
  * Subscribe to cross-tab `storage` events. Only meaningful for `localStorage`
  * (sessionStorage is per-tab and never fires storage events from elsewhere),
  * so opt-in via the factory's `subscribable` flag.
