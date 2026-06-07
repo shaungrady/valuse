@@ -1,3 +1,8 @@
 allowBuilds:
   esbuild: true
   lefthook: true
+
+# Force a patched vite for transitive vitest deps (GHSA-v2wj-q39q-566r,
+# GHSA-p9ff-h696-f583, GHSA-4w7w-66w2-5vf9 — dev-only, not shipped).
+overrides:
+  vite: '8.0.16'

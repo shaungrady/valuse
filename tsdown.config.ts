@@ -9,7 +9,10 @@ export default defineConfig({
 	},
 	format: ['esm'],
 	dts: true,
-	sourcemap: true,
+	// No source maps: for a published library they're dead weight. JS maps
+	// would roughly double the tarball, and declaration maps only enable
+	// editor "go to definition" if `src/` is published (it isn't).
+	sourcemap: false,
 	clean: true,
 	deps: {
 		neverBundle: ['react'],
