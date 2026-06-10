@@ -35,11 +35,11 @@ creation/destruction hooks, see [Lifecycle](lifecycle.md).
 synchronous writes are batched into a single call:
 
 ```ts
-const person = valueScope(
+const inboxScope = valueScope(
   {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    lastUpdated: value(0),
+    userId: value<string>(),
+    lastReadAt: value<number>(0),
+    lastSyncedAt: value(0),
   },
   {
     onChange: ({ scope, changes, changesByScope }) => {
@@ -64,17 +64,16 @@ see what moved from where.
 ### Writes inside onChange
 
 Synchronous writes made from inside an `onChange` callback do **not** trigger
-another `onChange` invocation. Patterns like a "last touched" timestamp or a
+another `onChange` invocation. Patterns like a "last synced" timestamp or a
 "change count" can be expressed plainly:
 
 ```ts
 onChange: ({ scope, changes }) => {
-  scope.lastUpdated.set(Date.now());
-  scope.changeCount.set((prev) => prev + changes.size);
+  scope.lastSyncedAt.set(Date.now());
 },
 ```
 
-Subscribers, derivations, and React renders still see those self-writes — only
+Subscribers, derivations, and React renders still see those self-writes; only
 the `onChange` machinery treats them as part of the same change event.
 
 ## beforeChange
@@ -83,16 +82,16 @@ the `onChange` machinery treats them as part of the same change event.
 gives you a chance to prevent the change entirely:
 
 ```ts
-const person = valueScope(
+const cartScope = valueScope(
   {
-    firstName: value<string>(),
-    age: value(0),
+    quantity: value(1),
+    couponCode: value(''),
   },
   {
     beforeChange: ({ changes, prevent }) => {
       for (const change of changes) {
-        if (change.path === 'age' && (change.to as number) < 0) {
-          prevent(change); // block negative ages
+        if (change.path === 'quantity' && (change.to as number) < 1) {
+          prevent(change); // block zero or negative quantities
         }
       }
     },
@@ -119,7 +118,7 @@ Each change is a `Change<T>` object:
 ```ts
 interface Change<T = unknown> {
   readonly scope: ScopeNode; // the field's wrapper object
-  readonly path: string; // dot-separated path, e.g. 'job.title'
+  readonly path: string; // dot-separated path, e.g. 'preferences.email'
   readonly from: T; // previous value
   readonly to: T; // new value
 }
@@ -136,24 +135,27 @@ own field node, its parent subtree, its grandparent subtree, and so on up to the
 root. This makes it easy to check whether a particular subtree changed:
 
 ```ts
-const employee = valueScope(
+const inboxScope = valueScope(
   {
-    name: value<string>(),
-    job: {
-      title: value<string>(),
-      salary: value(0),
+    userId: value<string>(),
+    preferences: {
+      email: value(true),
+      push: value(true),
     },
   },
   {
     onChange: ({ scope, changesByScope }) => {
-      // Did anything nested under job change?
-      if (changesByScope.has(scope.job)) {
-        console.log('job changed:', changesByScope.get(scope.job));
+      // Did anything nested under preferences change?
+      if (changesByScope.has(scope.preferences)) {
+        console.log(
+          'preferences changed:',
+          changesByScope.get(scope.preferences),
+        );
       }
 
       // Did a specific field change?
-      if (changesByScope.has(scope.name)) {
-        console.log('name changed');
+      if (changesByScope.has(scope.userId)) {
+        console.log('userId changed');
       }
     },
   },
@@ -176,7 +178,7 @@ beforeChange: ({ scope, changes, prevent }) => {
   }
 
   // Prevent all changes under a nested subtree
-  prevent(scope.job);
+  prevent(scope.preferences);
 
   // Prevent everything (no argument)
   prevent();
@@ -202,8 +204,8 @@ get a single `onChange` call with all changes in the `changes` set:
 import { batchSets } from 'valuse';
 
 batchSets(() => {
-  bob.firstName.set('Robert');
-  bob.lastName.set('Smith');
+  inbox.userId.set('bob');
+  inbox.lastReadAt.set(0);
 });
 // onChange fires once with 2 changes
 ```
@@ -222,8 +224,8 @@ Outside of [config-layer](scopes.md#config-layer) hooks, each reactive field has
 its own `.subscribe()`:
 
 ```ts
-bob.firstName.subscribe((value, previous) => {
-  console.log(`Name changed: ${previous} → ${value}`);
+inbox.userId.subscribe((value, previous) => {
+  console.log(`User changed: ${previous} → ${value}`);
 });
 ```
 
@@ -239,8 +241,8 @@ Per-field subscriptions:
 `$subscribe()` fires when any reactive field in the scope changes:
 
 ```ts
-const unsub = bob.$subscribe(() => {
-  console.log('something changed on bob');
+const unsub = inbox.$subscribe(() => {
+  console.log('something changed on inbox');
 });
 ```
 

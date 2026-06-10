@@ -29,21 +29,30 @@ A derivation is a non-async function in a derivation layer (any argument to
 receives a context object with a `scope` property for reading other fields:
 
 ```ts
-const person = valueScope(
+const tableScope = valueScope(
   {
-    firstName: value<string>(),
-    lastName: value<string>(),
+    search: value(''),
+    status: value<'all' | 'active' | 'archived'>('all'),
+    page: value(1),
   },
   {
-    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+    activeFilterCount: ({ scope }) => {
+      let count = 0;
+      if (scope.search.use() !== '') count++;
+      if (scope.status.use() !== 'all') count++;
+      return count;
+    },
   },
 );
 
-const bob = person.create({ firstName: 'Bob', lastName: 'Jones' });
-bob.fullName.get(); // 'Bob Jones'
+const table = tableScope.create();
+table.activeFilterCount.get(); // 0
 
-bob.firstName.set('Robert');
-bob.fullName.get(); // 'Robert Jones'
+table.search.set('overdue');
+table.activeFilterCount.get(); // 1
+
+table.status.set('archived');
+table.activeFilterCount.get(); // 2
 ```
 
 The `scope` parameter is contextually typed from the field layer. No manual type
@@ -62,22 +71,23 @@ Inside a derivation, each field on the scope context has two read methods:
 | `.get()` | **Untracked read.** Current value, no dependency created.   |
 
 ```ts
-const scope = valueScope(
+const inboxScope = valueScope(
   {
-    query: value(''),
+    filter: value('all'),
     locale: value('en'),
   },
   {
-    results: ({ scope }) => search(scope.query.use(), scope.locale.get()),
-    //                                       ^^^^                  ^^^^
-    //                              tracked — re-runs       untracked — reads once
+    filterLabel: ({ scope }) =>
+      localize(scope.filter.use(), scope.locale.get()),
+    //                                             ^^^^                  ^^^^
+    //                                    tracked, re-runs       untracked, reads once
   },
 );
 ```
 
-When `query` changes, `results` re-runs. When `locale` changes, `results` does
-not re-run (but if something else triggers a re-run, it will read the current
-`locale`).
+When `filter` changes, `filterLabel` re-runs. When `locale` changes,
+`filterLabel` does not re-run (but if something else triggers a re-run, it will
+read the current `locale`).
 
 This distinction matters for performance. Track the dependencies that should
 trigger recomputation, and use untracked reads for values you only need at
@@ -89,7 +99,7 @@ The derivation function receives `{ scope }` where `scope` mirrors the instance
 tree structure. Every reactive field, ref, and nested object is accessible:
 
 ```ts
-const order = valueScope(
+const cartScope = valueScope(
   {
     items: valueArray<{ price: number; qty: number }>(),
     taxRate: value(0.08),
@@ -122,31 +132,48 @@ derivation layer. Within a single layer, siblings are not visible to one
 another:
 
 ```ts
-const person = valueScope(
+const inboxScope = valueScope(
   {
-    first: value<string>(),
-    last: value<string>(),
+    userId: value<string>(),
+    lastReadAt: value<number>(0),
   },
   {
-    full: ({ scope }) => `${scope.first.use()} ${scope.last.use()}`,
-  },
-  {
-    greeting: ({ scope }) => `Hello, ${scope.full.use()}!`,
-    initials: ({ scope }) => {
-      const name = scope.full.use();
-      return name
-        .split(' ')
-        .map((w) => w[0])
-        .join('');
+    notifications: async ({ scope, set, signal, deferBy }) => {
+      while (!signal.aborted) {
+        const res = await fetch(`/api/notifications/${scope.userId.use()}`, {
+          signal,
+        });
+        set(await res.json());
+        await deferBy(30_000);
+      }
     },
+  },
+  {
+    unreadCount: ({ scope }) => {
+      const notifs = scope.notifications.use() ?? [];
+      const readAt = scope.lastReadAt.use();
+      return notifs.filter((n: { ts: number }) => n.ts > readAt).length;
+    },
+  },
+  {
+    badge: ({ scope }) => {
+      const count = scope.unreadCount.use();
+      return count > 99 ? '99+' : String(count);
+    },
+    hasUnread: ({ scope }) => scope.unreadCount.use() > 0,
   },
 );
 ```
 
-When `first` changes:
+Four layers, each building on the ones before it. When `lastReadAt` changes:
 
-1. `full` recomputes (depends on `first`)
-2. `greeting` and `initials` recompute (depend on `full`)
+1. `unreadCount` recomputes (depends on `lastReadAt`)
+2. `badge` and `hasUnread` recompute (depend on `unreadCount`)
+
+When `userId` changes, `notifications` aborts and refetches, which cascades
+through all three downstream layers. The sync derivations read the async
+`notifications` via `.use()` without any special handling; see
+[Async Derivations: Sync depending on async](async-derivations.md#sync-derivations-depending-on-async).
 
 Because each derivation layer can only read earlier layers, the dependency graph
 flows strictly left to right. Circular references between derivations are
@@ -160,19 +187,19 @@ track the whole collection, or `.use()` on individual elements if the collection
 supports it:
 
 ```ts
-const dashboard = valueScope(
+const portfolioScope = valueScope(
   {
-    scores: valueMap<string, number>(),
-    tags: valueSet<string>(),
-    items: valueArray<number>(),
+    holdings: valueMap<string, number>(),
+    watchlist: valueSet<string>(),
+    recentTrades: valueArray<{ symbol: string; amount: number }>(),
   },
   {
-    average: ({ scope }) => {
-      const values = [...scope.scores.use().values()];
-      return values.reduce((a, b) => a + b, 0) / (values.length || 1);
+    totalValue: ({ scope }) => {
+      const values = [...scope.holdings.use().values()];
+      return values.reduce((a, b) => a + b, 0);
     },
-    tagCount: ({ scope }) => scope.tags.use().size,
-    total: ({ scope }) => scope.items.use().reduce((sum, n) => sum + n, 0),
+    watchlistSize: ({ scope }) => scope.watchlist.use().size,
+    tradeCount: ({ scope }) => scope.recentTrades.use().length,
   },
 );
 ```
@@ -185,17 +212,17 @@ re-computation of derivations that called `.use()` on it.
 Derivations can read from any field in the scope, regardless of nesting depth:
 
 ```ts
-const employee = valueScope(
+const cartScope = valueScope(
   {
-    name: value<string>(),
-    job: {
-      title: value<string>(),
-      salary: value(0),
+    customerName: value<string>(),
+    shipping: {
+      method: value<string>('standard'),
+      cost: value(0),
     },
   },
   {
     summary: ({ scope }) =>
-      `${scope.name.use()} — ${scope.job.title.use()} ($${scope.job.salary.use()})`,
+      `${scope.customerName.use()} via ${scope.shipping.method.use()} ($${scope.shipping.cost.use()})`,
   },
 );
 ```
@@ -209,13 +236,10 @@ A derivation with zero `.use()` calls is a constant. It runs exactly once during
 instance creation and never recomputes:
 
 ```ts
-const config = valueScope(
-  { apiUrl: value('https://api.example.com') },
+const inboxScope = valueScope(
+  { userId: value<string>() },
   {
-    headers: ({ scope }) => ({
-      Authorization: `Bearer ${scope.apiUrl.get()}`, // untracked
-      'Content-Type': 'application/json',
-    }),
+    endpoint: ({ scope }) => `/api/notifications/${scope.userId.get()}`, // untracked
   },
 );
 ```
@@ -231,8 +255,8 @@ dependencies changed. This is useful for derivations that use only `.get()`
 (untracked reads) or that depend on external state:
 
 ```ts
-bob.fullName.recompute(); // re-run this one derivation
-bob.$recompute(); // re-run all derivations on the instance
+inbox.unreadCount.recompute(); // re-run this one derivation
+inbox.$recompute(); // re-run all derivations on the instance
 ```
 
 Recomputation follows the same rules as automatic recomputation. If the
@@ -242,8 +266,8 @@ see [Async Derivations](async-derivations.md#error-handling).
 
 `.flush()` is a different operation: it expedites in-flight deferred work (e.g.,
 `deferBy()` in an async derivation) rather than restarting the run. On sync
-derivations `.flush()` is a no-op — sync derivations have no deferred state to
-expedite. See
+derivations `.flush()` is a no-op since sync derivations have no deferred state
+to expedite. See
 [Flushing async derivations](async-derivations.md#flushing-async-derivations).
 
 ## React integration
@@ -252,9 +276,9 @@ Derivations support `.use()` in React components, just like values. The
 difference is that derivations return a single-element tuple (no setter):
 
 ```tsx
-function Greeting({ person }) {
-  const [greeting] = person.greeting.use();
-  return <h1>{greeting}</h1>;
+function BadgeCount({ inbox }) {
+  const [badge] = inbox.badge.use();
+  return <span className="badge">{badge}</span>;
 }
 ```
 

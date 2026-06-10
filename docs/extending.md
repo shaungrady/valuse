@@ -1,17 +1,17 @@
 # Extending Scopes
 
 `.extendValues()` and `.extendConfig()` create new scope templates that build on
-a base — adding values, [derivations](derivations.md), and
+a base, adding values, [derivations](derivations.md), and
 [lifecycle hooks](lifecycle.md) without mutating the original. Together they are
 the primary mechanism for composition, specialization, and middleware in ValUse.
 
 The split mirrors `valueScope()`'s variadic shape, with intent baked into the
 method name:
 
-- `.extendValues(values, deriv1?, deriv2?, …)` — add or override values and
+- `.extendValues(values, deriv1?, deriv2?, …)` adds or overrides values and
   derivations. Variadic, same slot structure as `valueScope()` minus the
   trailing config slot.
-- `.extendConfig(config)` — attach lifecycle hooks. The definition is unchanged;
+- `.extendConfig(config)` attaches lifecycle hooks. The definition is unchanged;
   only the config is merged.
 
 ## Table of contents
@@ -34,29 +34,29 @@ The simplest extend adds new values to a base. Pass a values layer; the result
 is a new `ScopeTemplate` with the merged definition:
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
+const chatMessage = valueScope({
+  body: value<string>(),
+  sentAt: value<number>(0),
 });
 
-const employee = person.extendValues({
-  title: value<string>(),
-  salary: value(50000),
+const channelMessage = chatMessage.extendValues({
+  channelId: value<string>(),
+  threadId: value<string | null>(null),
 });
 
-const bob = employee.create({
-  firstName: 'Bob',
-  lastName: 'Jones',
-  title: 'Engineer',
+const msg = channelMessage.create({
+  body: 'Hello!',
+  sentAt: Date.now(),
+  channelId: 'general',
 });
 
-bob.firstName.get(); // 'Bob' — inherited from person
-bob.title.get(); // 'Engineer' — added by extension
-bob.salary.get(); // 50000 — default from extension
+msg.body.get(); // 'Hello!', inherited from chatMessage
+msg.channelId.get(); // 'general', added by extension
+msg.threadId.get(); // null, default from extension
 ```
 
 The extended template is fully independent from the base. Creating an instance
-of `employee` does not affect `person` or its instances.
+of `channelMessage` does not affect `chatMessage` or its instances.
 
 ## Adding derivations
 
@@ -64,22 +64,21 @@ Extensions can add derivations that reference base and newly-added values. Like
 `valueScope()`, values and derivations live in separate layers:
 
 ```ts
-const employee = person.extendValues(
-  { title: value<string>() },
+const channelMessage = chatMessage.extendValues(
+  { channelId: value<string>() },
   {
-    label: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()} — ${scope.title.use()}`,
+    label: ({ scope }) => `[${scope.channelId.use()}] ${scope.body.use()}`,
   },
 );
 ```
 
-If you only need to add derivations, pass a derivation layer alone — slot 1 of
+If you only need to add derivations, pass a derivation layer alone. Slot 1 of
 `.extendValues()` can be either a values layer or a derivation layer against the
 base:
 
 ```ts
-const withFullName = person.extendValues({
-  fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+const withPreview = chatMessage.extendValues({
+  preview: ({ scope }) => scope.body.use().slice(0, 80),
 });
 ```
 
@@ -91,24 +90,22 @@ For multi-arg calls, slot 1 must be a values layer (which may be empty). To add
 multiple derivation layers without new values, pass an empty values layer first:
 
 ```ts
-const layered = person.extendValues(
+const layered = chatMessage.extendValues(
   {}, // empty values layer
   {
-    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+    preview: ({ scope }) => scope.body.use().slice(0, 80),
   },
   {
-    initials: ({ scope }) =>
-      scope.fullName
-        .use()
-        .split(' ')
-        .map((s) => s[0])
-        .join(''),
+    previewWithEllipsis: ({ scope }) =>
+      scope.preview.use().length < scope.body.use().length ?
+        scope.preview.use() + '…'
+      : scope.preview.use(),
   },
 );
 ```
 
 Siblings defined in the same derivation layer are not visible to one another (by
-design — sibling references run from the next layer). Self-references (a
+design; sibling references run from the next layer). Self-references (a
 derivation that reads the value it's replacing in the same layer) are caught at
 runtime by cycle detection on first evaluation, not at compile time.
 
@@ -149,17 +146,17 @@ Set a key to `undefined` to remove it from the definition:
 
 ```ts
 const full = valueScope({
-  name: value<string>(),
-  age: value(0),
+  body: value<string>(),
+  sentAt: value(0),
   debug: value(''),
 });
 
 const production = full.extendValues({
-  debug: undefined, // removed — not on the instance
+  debug: undefined, // removed, not on the instance
 });
 
-const inst = production.create({ name: 'Alice' });
-// inst.debug — does not exist
+const msg = production.create({ body: 'Hello' });
+// msg.debug, does not exist
 // TypeScript catches references to removed values
 ```
 
@@ -173,23 +170,23 @@ hooks, both fire in order (base first, then extension):
 
 ```ts
 const base = valueScope(
-  { name: value<string>() },
+  { roomId: value<string>() },
   {
-    onCreate: ({ scope }) => console.log('base onCreate:', scope.name.get()),
+    onCreate: ({ scope }) => console.log('base onCreate:', scope.roomId.get()),
     onDestroy: ({ scope }) => console.log('base onDestroy'),
   },
 );
 
-const extended = base.extendValues({ role: value('viewer') }).extendConfig({
-  onCreate: ({ scope }) => console.log('ext onCreate:', scope.role.get()),
+const extended = base.extendValues({ topic: value('General') }).extendConfig({
+  onCreate: ({ scope }) => console.log('ext onCreate:', scope.topic.get()),
   onDestroy: () => console.log('ext onDestroy'),
 });
 
-const inst = extended.create({ name: 'Alice', role: 'admin' });
-// logs: base onCreate: Alice
-// logs: ext onCreate: admin
+const room = extended.create({ roomId: 'r1', topic: 'Announcements' });
+// logs: base onCreate: r1
+// logs: ext onCreate: Announcements
 
-inst.$destroy();
+room.$destroy();
 // logs: base onDestroy
 // logs: ext onDestroy
 ```
@@ -237,16 +234,16 @@ function withSoftDelete<Def extends Record<string, unknown>>(
 Apply middleware by composing:
 
 ```ts
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
+const chatMessage = valueScope({
+  body: value<string>(),
+  channelId: value<string>(),
 });
 
-const trackedPerson = withSoftDelete(withTimestamps(person));
+const trackedMessage = withSoftDelete(withTimestamps(chatMessage));
 
-const bob = trackedPerson.create({ firstName: 'Bob', lastName: 'Jones' });
-bob.createdAt.get(); // timestamp
-bob.isDeleted.get(); // false
+const msg = trackedMessage.create({ body: 'Hello', channelId: 'general' });
+msg.createdAt.get(); // timestamp
+msg.isDeleted.get(); // false
 ```
 
 Middleware composes naturally because each step returns a valid `ScopeTemplate`.
@@ -262,19 +259,18 @@ Extensions can be chained without limit:
 ```ts
 const base = valueScope({ id: value<string>() });
 
-const withName = base.extendValues({
-  firstName: value<string>(),
-  lastName: value<string>(),
+const withChannel = base.extendValues({
+  channelId: value<string>(),
+  roomId: value<string>(),
 });
 
-const withJob = withName.extendValues({
-  title: value<string>(),
-  salary: value(0),
+const withMetadata = withChannel.extendValues({
+  sentAt: value(0),
+  editedAt: value<number | null>(null),
 });
 
-const withLabel = withJob.extendValues({
-  label: ({ scope }) =>
-    `${scope.firstName.use()} ${scope.lastName.use()} — ${scope.title.use()}`,
+const withLabel = withMetadata.extendValues({
+  label: ({ scope }) => `[${scope.channelId.use()}] message ${scope.id.use()}`,
 });
 ```
 
@@ -286,20 +282,20 @@ values and hooks from every step in the chain.
 TypeScript tracks the full merged type through extensions:
 
 ```ts
-const person = valueScope({
-  name: value<string>(),
-  age: value(0),
+const chatMessage = valueScope({
+  body: value<string>(),
+  sentAt: value(0),
 });
 
-const extended = person.extendValues({
-  role: value('viewer'),
-  age: undefined, // removed
+const extended = chatMessage.extendValues({
+  channelId: value<string>(),
+  sentAt: undefined, // removed
 });
 
-const inst = extended.create({ name: 'Alice', role: 'admin' });
-inst.name.get(); // string | undefined
-inst.role.get(); // string
-// inst.age — type error, removed by extension
+const msg = extended.create({ body: 'Hello', channelId: 'general' });
+msg.body.get(); // string | undefined
+msg.channelId.get(); // string
+// msg.sentAt, type error, removed by extension
 ```
 
 If you are writing generic middleware functions, you may need to type the
@@ -323,13 +319,13 @@ The return type automatically includes all of `Def` plus
 For middleware that operates on templates without knowing their concrete shape,
 ValUse exposes typed helpers that avoid raw `as any` casts:
 
-- `UnknownValueScope` — alias for `ScopeTemplate<Record<string, unknown>>`. Use
-  as a cast target inside middleware that attaches `$`-methods or reads
+- `UnknownValueScope` is an alias for `ScopeTemplate<Record<string, unknown>>`.
+  Use as a cast target inside middleware that attaches `$`-methods or reads
   snapshots without knowing the definition shape.
-- `ValueScope<RequiredDef>` — definition-shape constraint helper. Apply as
+- `ValueScope<RequiredDef>` is a definition-shape constraint helper. Apply as
   `Def extends ValueScope<{ field: Value<…> }>` to require that the input
   template includes specific values.
-- `asUnknownValueScope(template)` — typed cast helper returning
+- `asUnknownValueScope(template)` is a typed cast helper returning
   `UnknownValueScope`. Equivalent to `template as UnknownValueScope` but
   self-documenting at the call site.
 
@@ -361,16 +357,16 @@ constraint with `asUnknownValueScope` if you also need to attach methods:
 import type { Value } from 'valuse';
 import { asUnknownValueScope, type ValueScope } from 'valuse';
 
-function withCountLogger<Def extends ValueScope<{ count: Value<number> }>>(
-  template: ScopeTemplate<Def>,
-) {
-  // The constraint validates that the input declares `count` at the call
-  // site. Inside the hook, `scope` is still generic — read typed values
+function withUnreadBadge<
+  Def extends ValueScope<{ unreadCount: Value<number> }>,
+>(template: ScopeTemplate<Def>) {
+  // The constraint validates that the input declares `unreadCount` at the call
+  // site. Inside the hook, `scope` is still generic; read typed values
   // via `$getSnapshot()` or by casting to a known shape.
   return template.extendConfig({
     onChange: ({ scope }) => {
       const snap = scope.$getSnapshot();
-      console.log(snap.count);
+      console.log(snap.unreadCount);
     },
   });
 }

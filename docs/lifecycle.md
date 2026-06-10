@@ -42,15 +42,16 @@ establishing connections, or computing initial derived state that requires
 imperative logic.
 
 ```ts
-const timer = valueScope(
+const inboxScope = valueScope(
   {
-    elapsed: value(0),
+    userId: value<string>(),
+    pollCount: value(0),
   },
   {
     onCreate: ({ scope, signal, onCleanup }) => {
       const interval = setInterval(() => {
-        scope.elapsed.set((prev) => prev + 1);
-      }, 1000);
+        scope.pollCount.set((prev) => prev + 1);
+      }, 30_000);
       onCleanup(() => clearInterval(interval));
     },
   },
@@ -80,15 +81,15 @@ does not fit the `onCleanup` pattern, like logging or notifying external
 systems:
 
 ```ts
-const session = valueScope(
+const inboxScope = valueScope(
   {
     userId: value<string>(),
-    startTime: value(Date.now()),
+    connectedAt: value(Date.now()),
   },
   {
     onDestroy: ({ scope }) => {
-      const duration = Date.now() - scope.startTime.get();
-      analytics.track('session_ended', {
+      const duration = Date.now() - scope.connectedAt.get();
+      analytics.track('inbox_closed', {
         userId: scope.userId.get(),
         duration,
       });
@@ -118,15 +119,16 @@ This includes `.subscribe()`, `$subscribe()`, and React `.use()` hooks.
 someone is actually watching:
 
 ```ts
-const feed = valueScope(
+const chatRoom = valueScope(
   {
-    messages: value<string[]>([]),
+    roomId: value<string>(),
+    messages: value<Message[]>([]),
   },
   {
     onUsed: ({ scope, signal, onCleanup }) => {
-      const ws = new WebSocket('/feed');
+      const ws = new WebSocket(`/ws/rooms/${scope.roomId.get()}`);
       ws.onmessage = (e) => {
-        scope.messages.set((prev) => [...prev, e.data]);
+        scope.messages.set((prev) => [...prev, JSON.parse(e.data)]);
       };
       onCleanup(() => ws.close());
     },
@@ -153,7 +155,7 @@ Fires when the last subscriber detaches from all reactive fields in the scope.
 ```ts
 {
   onUnused: ({ scope }) => {
-    console.log('No more watchers for', scope.name.get());
+    console.log('No more watchers for', scope.userId.get());
   },
 }
 ```
@@ -174,11 +176,11 @@ else:
 
 ```ts
 onCreate: ({ scope, signal, onCleanup }) => {
-  // Event listener — automatically removed when signal aborts on $destroy()
-  window.addEventListener('resize', () => scope.width.set(innerWidth), { signal });
+  // Event listener, automatically removed when signal aborts on $destroy()
+  window.addEventListener('online', () => scope.notifications.recompute(), { signal });
 
-  // Timer — cleaned up on $destroy() via onCleanup
-  const interval = setInterval(() => { /* ... */ }, 1000);
+  // Timer, cleaned up on $destroy() via onCleanup
+  const interval = setInterval(() => { /* ... */ }, 30_000);
   onCleanup(() => clearInterval(interval));
 },
 ```
@@ -236,15 +238,15 @@ for details.
 
 ```ts
 const base = valueScope(
-  { name: value<string>() },
+  { userId: value<string>() },
   { onCreate: () => console.log('base') },
 );
 
 const ext = base
-  .extendValues({ role: value('viewer') })
+  .extendValues({ filter: value('all') })
   .extendConfig({ onCreate: () => console.log('extension') });
 
-ext.create({ name: 'Alice' });
+ext.create({ userId: 'alice' });
 // logs: base
 // logs: extension
 ```
@@ -255,11 +257,11 @@ Each instance in a [ScopeMap](scope-map.md) has its own lifecycle. Hooks fire
 per-instance:
 
 ```ts
-const map = template.createMap();
-map.set('a', { name: 'Alice' }); // fires onCreate for 'a'
-map.set('b', { name: 'Bob' }); // fires onCreate for 'b'
-map.delete('a'); // fires onDestroy for 'a'
-map.clear(); // fires onDestroy for 'b'
+const map = inboxTemplate.createMap();
+map.set('alice', { userId: 'alice' }); // fires onCreate for 'alice'
+map.set('bob', { userId: 'bob' }); // fires onCreate for 'bob'
+map.delete('alice'); // fires onDestroy for 'alice'
+map.clear(); // fires onDestroy for 'bob'
 ```
 
 The ScopeMap itself does not have lifecycle hooks. It only manages the

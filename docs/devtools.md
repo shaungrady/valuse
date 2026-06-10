@@ -10,15 +10,15 @@ app.
 import { valueScope, value } from 'valuse';
 import { withDevtools } from 'valuse/middleware';
 
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
+const inboxScope = valueScope({
+  userId: value<string>(),
+  lastReadAt: value<number>(0),
 });
 
-const debugPerson = withDevtools(person, { name: 'person' });
-const bob = debugPerson.create({ firstName: 'Bob', lastName: 'Jones' });
+const debugInbox = withDevtools(inboxScope, { name: 'inbox' });
+const inbox = debugInbox.create({ userId: 'alice', lastReadAt: 0 });
 
-bob.firstName.set('Robert'); // shows up as set:firstName in the timeline
+inbox.lastReadAt.set(Date.now()); // shows up as set:lastReadAt in the timeline
 ```
 
 ## Table of contents
@@ -40,13 +40,13 @@ Wraps a `ScopeTemplate`. Every instance you create from the wrapped template
 gets its own DevTools connection, keyed by `options.name`:
 
 ```ts
-const debugPerson = withDevtools(person, {
-  name: 'person',
+const debugInbox = withDevtools(inboxScope, {
+  name: 'inbox',
   maxAge: 50,
 });
 
-debugPerson.create({ firstName: 'Bob' }); // shown as a "person" instance
-debugPerson.create({ firstName: 'Alice' }); // a separate "person" entry
+debugInbox.create({ userId: 'alice' }); // shown as an "inbox" instance
+debugInbox.create({ userId: 'bob' }); // a separate "inbox" entry
 ```
 
 Each instance dispatches an `@@INIT`-like init state on `onCreate` and an action
@@ -62,8 +62,8 @@ per-instance changes:
 ```ts
 import { connectMapDevtools } from 'valuse/middleware';
 
-const todos = todoTemplate.createMap();
-const disconnect = connectMapDevtools(todos, { name: 'todos' });
+const inboxes = inboxTemplate.createMap();
+const disconnect = connectMapDevtools(inboxes, { name: 'inboxes' });
 
 // Later, to tear down:
 disconnect();
@@ -87,10 +87,10 @@ For a standalone `Value<T>`:
 import { value } from 'valuse';
 import { connectDevtools } from 'valuse/middleware';
 
-const count = value(0);
-const disconnect = connectDevtools(count, { name: 'count' });
+const unreadCount = value(0);
+const disconnect = connectDevtools(unreadCount, { name: 'unreadCount' });
 
-count.set(1); // action { type: 'set', payload: { from: 0, to: 1 } }
+unreadCount.set(5); // action { type: 'set', payload: { from: 0, to: 5 } }
 ```
 
 ## Options
@@ -122,12 +122,12 @@ one action:
 
 | Part      | Shape                                                    |
 | --------- | -------------------------------------------------------- |
-| `type`    | `set:<field>[,<field>…]` — sorted by change order        |
+| `type`    | `set:<field>[,<field>…]`, sorted by change order         |
 | `payload` | `{ [field]: { from, to } }` for every field that changed |
 | `state`   | Filtered `$getSnapshot()` of the instance                |
 
-So a `$setSnapshot({ firstName: 'Bob', lastName: 'Jones' })` produces one action
-with type `set:firstName,lastName` and a two-entry payload.
+So a `$setSnapshot({ userId: 'bob', lastReadAt: 0 })` produces one action with
+type `set:userId,lastReadAt` and a two-entry payload.
 
 ## Time travel
 

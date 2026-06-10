@@ -84,11 +84,11 @@ reactive primitive, a nested object, or static data:
 ```ts
 import { value, valueScope, valueSet } from 'valuse';
 
-const person = valueScope({
-  firstName: value<string>(),
-  lastName: value<string>(),
-  mood: value('happy'),
-  hobbies: valueSet<string>(),
+const inboxScope = valueScope({
+  userId: value<string>(),
+  lastReadAt: value<number>(0),
+  filter: value('all'),
+  labels: valueSet<string>(),
 });
 ```
 
@@ -103,15 +103,15 @@ contextually typed against everything declared in earlier layers, with no manual
 annotation required:
 
 ```ts
-const person = valueScope(
+const inboxScope = valueScope(
   {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    mood: value('happy'),
-    hobbies: valueSet<string>(),
+    userId: value<string>(),
+    lastReadAt: value<number>(0),
+    filter: value('all'),
+    labels: valueSet<string>(),
   },
   {
-    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+    labelSummary: ({ scope }) => [...scope.labels.use()].join(', ') || 'none',
   },
 );
 ```
@@ -120,7 +120,7 @@ For a derivation to read another derivation, declare the dependency in an
 earlier layer:
 
 ```ts
-const cart = valueScope(
+const cartScope = valueScope(
   { price: value(0), quantity: value(0) },
   { subtotal: ({ scope }) => scope.price.use() * scope.quantity.use() },
   { tax: ({ scope }) => scope.subtotal.use() * 0.1 },
@@ -142,12 +142,12 @@ The optional last argument is the **config layer**: lifecycle hooks (`onCreate`,
 every derivation layer:
 
 ```ts
-const board = valueScope(
-  { boardId: value<string>() },
-  { name: ({ scope }) => scope.boardId.use() ?? 'untitled' },
+const inboxScope = valueScope(
+  { userId: value<string>(), lastReadAt: value<number>(0) },
+  { isStale: ({ scope }) => Date.now() - scope.lastReadAt.use() > 60_000 },
   {
     onCreate: ({ scope }) => {
-      // scope.boardId, scope.name are typed
+      // scope.userId, scope.isStale are typed
     },
     allowUndeclaredProperties: true,
   },
@@ -174,9 +174,9 @@ instances.
 ## Creating instances
 
 ```ts
-const bob = person.create({
-  firstName: 'Bob',
-  lastName: 'Jones',
+const inbox = inboxScope.create({
+  userId: 'alice',
+  lastReadAt: Date.now(),
 });
 ```
 
@@ -185,8 +185,8 @@ derivation seeds, and nested objects accept input. Derivation keys are excluded
 at the type level:
 
 ```ts
-const empty = person.create(); // all fields start as default/undefined
-const partial = person.create({ mood: 'ok' }); // only set mood
+const empty = inboxScope.create(); // all fields start as default/undefined
+const partial = inboxScope.create({ filter: 'unread' }); // only set filter
 ```
 
 ## Field access
@@ -196,22 +196,22 @@ Values have `.get()`, `.set()`, `.use()`, and `.subscribe()`. Derivations have
 the same except `.set()`:
 
 ```ts
-bob.firstName.get(); // 'Bob'
-bob.firstName.set('Robert');
-bob.firstName.set((prev) => prev.toUpperCase());
+inbox.userId.get(); // 'alice'
+inbox.userId.set('bob');
+inbox.userId.set((prev) => prev.toUpperCase());
 
-bob.fullName.get(); // 'ROBERT Jones'
-// bob.fullName.set() — does not exist
+inbox.unreadCount.get(); // 5
+// inbox.unreadCount.set() does not exist
 
-bob.hobbies.add('climbing');
-bob.hobbies.get(); // Set { 'climbing' }
+inbox.labels.add('important');
+inbox.labels.get(); // Set { 'important' }
 ```
 
 In React, `.use()` returns tuples:
 
 ```tsx
-const [firstName, setFirstName] = bob.firstName.use(); // [value, setter]
-const [fullName] = bob.fullName.use(); // [value] — no setter
+const [userId, setUserId] = inbox.userId.use(); // [value, setter]
+const [unreadCount] = inbox.unreadCount.use(); // [value] (no setter)
 ```
 
 ## Instance methods
@@ -230,11 +230,11 @@ Instance-level methods use a `$` prefix to stay out of the way of field names:
 | `$destroy()`     | Tear down the instance (see [Lifecycle](lifecycle.md))          |
 
 ```ts
-bob.$subscribe(() => {
+inbox.$subscribe(() => {
   console.log('something changed');
 });
 
-bob.$destroy(); // runs onDestroy hook, aborts async work, cleans up
+inbox.$destroy(); // runs onDestroy hook, aborts async work, cleans up
 ```
 
 ## Flushing pending work
@@ -259,10 +259,10 @@ mid-flight intermediates.
 Individual fields and derivations also expose `.flush(): Promise<void>`
 directly:
 
-- `valueField.flush()` — cascades through the pipe chain, expediting any
-  in-flight `deferBy()` and awaiting other async work (fetches, uploads,
-  microtask batches). Resolves when the signal commits.
-- `asyncDeriv.flush()` — expedites the run's deferrals and resolves when it
+- `valueField.flush()` cascades through the pipe chain, expediting any in-flight
+  `deferBy()` and awaiting other async work (fetches, uploads, microtask
+  batches). Resolves when the signal commits.
+- `asyncDeriv.flush()` expedites the run's deferrals and resolves when it
   produces its next output (a `set()` emit or final `return`). Works on
   streaming derivations too. See
   [Flushing async derivations](async-derivations.md#flushing-async-derivations).
@@ -281,17 +281,17 @@ Use cases that motivate this:
 a one-time read, not reactive:
 
 ```ts
-bob.$getSnapshot();
-// { firstName: 'Robert', lastName: 'Jones', mood: 'happy', fullName: 'Robert Jones' }
+inbox.$getSnapshot();
+// { userId: 'alice', lastReadAt: 1717776000000, filter: 'all', unreadCount: 5 }
 ```
 
 `$setSnapshot()` accepts a nested partial. Only reactive value fields are
 written; derivations and static data are ignored:
 
 ```ts
-bob.$setSnapshot({
-  firstName: 'Alice',
-  mood: 'excited',
+inbox.$setSnapshot({
+  userId: 'bob',
+  filter: 'unread',
 });
 ```
 
@@ -305,7 +305,7 @@ rehydration or undo), pass `{ recreate: true }`. The instance steps through:
 5. Runs `onCreate` fresh.
 
 ```ts
-bob.$setSnapshot(savedState, { recreate: true });
+inbox.$setSnapshot(savedState, { recreate: true });
 ```
 
 ## Nesting
@@ -314,17 +314,17 @@ Scope definitions support nested plain objects. Reactive fields can appear at
 any depth:
 
 ```ts
-const person = valueScope(
+const inboxScope = valueScope(
   {
-    firstName: value<string>(),
-    job: {
-      title: value<string>(),
-      company: value<string>(),
+    userId: value<string>(),
+    preferences: {
+      email: value(true),
+      push: value(true),
     },
   },
   {
     label: ({ scope }) =>
-      `${scope.firstName.use()}, ${scope.job.title.use()} at ${scope.job.company.use()}`,
+      `${scope.userId.use()}: email=${scope.preferences.email.use()}, push=${scope.preferences.push.use()}`,
   },
 );
 ```
@@ -333,14 +333,14 @@ Nested objects appear as frozen objects on the instance. You access nested
 fields the same way:
 
 ```ts
-const bob = person.create({
-  firstName: 'Bob',
-  job: { title: 'Engineer', company: 'Acme' },
+const inbox = inboxScope.create({
+  userId: 'alice',
+  preferences: { email: true, push: false },
 });
 
-bob.job.title.get(); // 'Engineer'
-bob.job.title.set('Senior Engineer');
-bob.job.company.get(); // 'Acme'
+inbox.preferences.email.get(); // true
+inbox.preferences.email.set(false);
+inbox.preferences.push.get(); // false
 ```
 
 Nesting is purely organizational. It does not create separate scopes or separate
@@ -349,7 +349,8 @@ reactive graph. For cross-scope composition (sharing state between independent
 scopes), use [valueRef](refs.md) instead.
 
 Nested objects also appear in [change hooks](change-hooks.md). You can check
-`changesByScope.has(scope.job)` to see if any field nested under `job` changed.
+`changesByScope.has(scope.preferences)` to see if any field nested under
+`preferences` changed.
 
 ## Plain data
 
@@ -358,15 +359,15 @@ nested object is treated as static readonly data. It travels with the instance
 but does not participate in reactivity:
 
 ```ts
-const board = valueScope({
-  boardId: value<string>(),
+const inboxScope = valueScope({
+  userId: value<string>(),
   schemaVersion: 1,
-  defaultConfig: { theme: 'dark', locale: 'en' },
+  defaultConfig: { pollInterval: 30_000, maxResults: 50 },
 });
 
-const inst = board.create({ boardId: 'a' });
-inst.schemaVersion; // 1
-inst.defaultConfig; // { theme: 'dark', locale: 'en' } — frozen
+const inbox = inboxScope.create({ userId: 'alice' });
+inbox.schemaVersion; // 1
+inbox.defaultConfig; // { pollInterval: 30000, maxResults: 50 }, frozen
 ```
 
 Static data is included in snapshots as-is.
@@ -379,16 +380,16 @@ re-derivations, use `valuePlain()`:
 ```ts
 import { valuePlain } from 'valuse';
 
-const board = valueScope({
-  boardId: value<string>(),
-  metadata: valuePlain({ createdBy: '' }),
-  config: valuePlain({ theme: 'dark' }, { readonly: true }),
+const inboxScope = valueScope({
+  userId: value<string>(),
+  metadata: valuePlain({ syncedAt: 0 }),
+  config: valuePlain({ pollInterval: 30_000 }, { readonly: true }),
 });
 
-const inst = board.create({ boardId: 'a' });
-inst.metadata.get(); // { createdBy: '' }
-inst.metadata.set({ createdBy: 'alice' });
-inst.config.set({ theme: 'light' }); // throws — readonly
+const inbox = inboxScope.create({ userId: 'alice' });
+inbox.metadata.get(); // { syncedAt: 0 }
+inbox.metadata.set({ syncedAt: Date.now() });
+inbox.config.set({ pollInterval: 10_000 }); // throws, readonly
 ```
 
 This is useful for bookkeeping state that changes frequently but should not
@@ -401,19 +402,19 @@ declares (API responses, rich text nodes), enable `allowUndeclaredProperties` to
 preserve the extras:
 
 ```ts
-const node = valueScope(
+const notificationScope = valueScope(
   {
     id: value<string>(),
     type: value<string>(),
-    isHighlighted: value(false),
+    isRead: value(false),
   },
   { allowUndeclaredProperties: true },
 );
 
-const nodes = node.createMap();
-nodes.set('n1', richTextNode);
-// id, type, isHighlighted — reactive
-// text, children, bold, italic — preserved as plain data
+const notifications = notificationScope.createMap();
+notifications.set('n1', apiNotification);
+// id, type, isRead, reactive
+// title, body, sender, metadata, preserved as plain data
 ```
 
 Undeclared properties are stored as non-reactive passthrough data. They appear
@@ -426,18 +427,18 @@ subscriptions or derivations.
 knows the exact type of every field:
 
 ```ts
-const person = valueScope(
+const inboxScope = valueScope(
   {
-    name: value<string>(),
-    age: value(30),
+    userId: value<string>(),
+    lastReadAt: value(0),
   },
-  { greeting: ({ scope }) => `Hello, ${scope.name.use()}` },
+  { summary: ({ scope }) => `Inbox for ${scope.userId.use()}` },
 );
 
-const bob = person.create({ name: 'Bob' });
-// bob.name    → FieldValue<string | undefined>
-// bob.age     → FieldValue<number>
-// bob.greeting → FieldDerived<string>
+const inbox = inboxScope.create({ userId: 'alice' });
+// inbox.userId     → FieldValue<string | undefined>
+// inbox.lastReadAt → FieldValue<number>
+// inbox.summary    → FieldDerived<string>
 ```
 
 The `ScopeInstance<Def>` type maps each definition entry to its instance
@@ -450,5 +451,5 @@ These utility types are exported for use in your own generic code:
 ```ts
 import type { ScopeInstance, ValueInputOf, SnapshotOf } from 'valuse';
 
-function savePerson(snapshot: SnapshotOf<typeof personDef>) { ... }
+function saveInbox(snapshot: SnapshotOf<typeof inboxDef>) { ... }
 ```

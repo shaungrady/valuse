@@ -5,9 +5,10 @@ template. Each entry is an independent reactive instance with its own state,
 derivations, and lifecycle. The key list itself is observable, so React
 components can re-render when instances are added or removed.
 
-Use `ScopeMap` when you have many instances of the same shape: rows in a table,
-items in a list, entries in a cache, players in a game. Templates can be
-specialized with [`.extendValues()`](extending.md) before creating a map.
+Use `ScopeMap` when you have many instances of the same shape: accounts in a
+multi-inbox view, threads in a channel, entries in a cache, players in a game.
+Templates can be specialized with [`.extendValues()`](extending.md) before
+creating a map.
 
 ## Table of contents
 
@@ -28,31 +29,35 @@ specialized with [`.extendValues()`](extending.md) before creating a map.
 Call `.createMap()` on any scope template:
 
 ```ts
-const person = valueScope(
+const inboxScope = valueScope(
   {
-    firstName: value<string>(),
-    lastName: value<string>(),
+    userId: value<string>(),
+    lastReadAt: value<number>(0),
+    messages: valueArray<{ ts: number; read: boolean }>(),
   },
   {
-    fullName: ({ scope }) => `${scope.firstName.use()} ${scope.lastName.use()}`,
+    unreadCount: ({ scope }) => {
+      const readAt = scope.lastReadAt.use();
+      return scope.messages.use().filter((m) => m.ts > readAt).length;
+    },
   },
 );
 
 // Empty collection
-const people = person.createMap();
+const inboxes = inboxScope.createMap();
 
 // Pre-populated from a Map
-const people = person.createMap(
+const inboxes = inboxScope.createMap(
   new Map([
-    ['alice', { firstName: 'Alice', lastName: 'Smith' }],
-    ['bob', { firstName: 'Bob', lastName: 'Jones' }],
+    ['alice', { userId: 'alice', lastReadAt: 1717776000 }],
+    ['bob', { userId: 'bob', lastReadAt: 1717780000 }],
   ]),
 );
 
 // Pre-populated from [key, data] tuples
-const people = person.createMap([
-  ['alice', { firstName: 'Alice', lastName: 'Smith' }],
-  ['bob', { firstName: 'Bob', lastName: 'Jones' }],
+const inboxes = inboxScope.createMap([
+  ['alice', { userId: 'alice', lastReadAt: 1717776000 }],
+  ['bob', { userId: 'bob', lastReadAt: 1717780000 }],
 ]);
 ```
 
@@ -64,14 +69,14 @@ initialization rules (defaults, derivations, lifecycle hooks) apply normally.
 `.set()` either creates a new instance or updates an existing one:
 
 ```ts
-// Create new — calls template.create() under the hood
-people.set('carol', { firstName: 'Carol', lastName: 'Davis' });
+// Create new, calls template.create() under the hood
+inboxes.set('carol', { userId: 'carol', lastReadAt: 0 });
 
-// Update existing — calls $setSnapshot() on the instance
-people.set('carol', { firstName: 'Caroline' });
+// Update existing, calls $setSnapshot() on the instance
+inboxes.set('carol', { lastReadAt: Date.now() });
 
 // Create with defaults only
-people.set('empty', {});
+inboxes.set('empty', {});
 ```
 
 When updating an existing entry, only the provided fields are written. Fields
@@ -80,13 +85,13 @@ not in the update object are left unchanged.
 ## Reading entries
 
 ```ts
-const alice = people.get('alice'); // ScopeInstance | undefined
-alice?.firstName.get(); // 'Alice'
-alice?.fullName.get(); // 'Alice Smith'
+const alice = inboxes.get('alice'); // ScopeInstance | undefined
+alice?.userId.get(); // 'alice'
+alice?.unreadCount.get(); // 5
 
-people.has('alice'); // true
-people.has('nobody'); // false
-people.size; // 3
+inboxes.has('alice'); // true
+inboxes.has('nobody'); // false
+inboxes.size; // 3
 ```
 
 The instance returned by `.get()` is a live scope instance. You can read fields,
@@ -97,14 +102,14 @@ set values, subscribe, and use React hooks on it.
 `.delete()` removes an instance and calls `$destroy()` on it:
 
 ```ts
-people.delete('alice'); // true — instance destroyed
-people.delete('nobody'); // false — key not found
+inboxes.delete('alice'); // true, instance destroyed
+inboxes.delete('nobody'); // false, key not found
 ```
 
 `.clear()` removes all instances, calling `$destroy()` on each:
 
 ```ts
-people.clear(); // all instances destroyed, size is 0
+inboxes.clear(); // all instances destroyed, size is 0
 ```
 
 Destruction runs lifecycle hooks (`onDestroy`), aborts async derivations, and
@@ -113,9 +118,9 @@ cleans up subscriptions. See [Lifecycle hooks](lifecycle.md) for details.
 ## Iterating
 
 ```ts
-people.keys(); // ['alice', 'bob'] — array of keys
-people.values(); // [aliceInstance, bobInstance] — array of instances
-people.entries(); // [['alice', aliceInstance], ['bob', bobInstance]]
+inboxes.keys(); // ['alice', 'bob'], array of keys
+inboxes.values(); // [aliceInstance, bobInstance], array of instances
+inboxes.entries(); // [['alice', aliceInstance], ['bob', bobInstance]]
 ```
 
 These methods return fresh arrays on each call. They are snapshots, not live
@@ -127,15 +132,15 @@ views.
 does not fire when fields within an existing instance change:
 
 ```ts
-const unsub = people.subscribe((keys) => {
-  console.log('Current keys:', keys);
+const unsub = inboxes.subscribe((keys) => {
+  console.log('Current accounts:', keys);
 });
 
-people.set('dave', { firstName: 'Dave', lastName: 'Lee' });
-// logs: Current keys: ['alice', 'bob', 'dave']
+inboxes.set('dave', { userId: 'dave', lastReadAt: 0 });
+// logs: Current accounts: ['alice', 'bob', 'dave']
 
-people.get('alice')!.firstName.set('Alicia');
-// does NOT fire — key list didn't change
+inboxes.get('alice')!.lastReadAt.set(Date.now());
+// does NOT fire, key list didn't change
 ```
 
 For per-field changes within an instance, use the instance's own `.subscribe()`
@@ -149,12 +154,12 @@ or `$subscribe()`.
 are added or removed:
 
 ```tsx
-function PeopleList({ people }) {
-  const keys = people.useKeys();
+function InboxList({ inboxes }) {
+  const keys = inboxes.useKeys();
   return (
     <ul>
       {keys.map((key) => (
-        <PersonRow key={key} person={people.get(key)!} />
+        <InboxRow key={key} inbox={inboxes.get(key)!} />
       ))}
     </ul>
   );
@@ -162,7 +167,7 @@ function PeopleList({ people }) {
 ```
 
 The parent component re-renders when entries are added or removed. Individual
-`PersonRow` components only re-render when their own fields change, because they
+`InboxRow` components only re-render when their own fields change, because they
 subscribe to individual field values via `.use()`.
 
 ### Per-instance hooks
@@ -170,33 +175,28 @@ subscribe to individual field values via `.use()`.
 Pass the instance down to child components and use field-level `.use()`:
 
 ```tsx
-function PersonRow({ person }) {
-  const [firstName, setFirstName] = person.firstName.use();
-  const [fullName] = person.fullName.use();
+function InboxRow({ inbox }) {
+  const [userId] = inbox.userId.use();
+  const [unreadCount] = inbox.unreadCount.use();
   return (
     <tr>
-      <td>
-        <input
-          value={firstName}
-          onChange={(e) => setFirstName(e.target.value)}
-        />
-      </td>
-      <td>{fullName}</td>
+      <td>{userId}</td>
+      <td>{unreadCount} unread</td>
     </tr>
   );
 }
 ```
 
-This pattern gives you fine-grained reactivity: changes to one person's name
-only re-render that person's row.
+This pattern gives you fine-grained reactivity: changes to one account's unread
+count only re-render that account's row.
 
 ## Typed keys
 
 The key type defaults to `string | number`. Narrow it with a type parameter:
 
 ```ts
-const userMap = person.createMap<number>(); // numeric keys
-const nodeMap = person.createMap<string>(); // string keys only
+const inboxesByNumber = inboxScope.createMap<number>(); // numeric keys
+const inboxesByEmail = inboxScope.createMap<string>(); // string keys only
 ```
 
 The type parameter flows through to `.get()`, `.set()`, `.delete()`, `.keys()`,
@@ -210,16 +210,16 @@ or `.clear()` removes one.
 
 ```ts
 const tracked = valueScope(
-  { name: value<string>() },
+  { userId: value<string>() },
   {
-    onCreate: ({ scope }) => console.log('created:', scope.name.get()),
-    onDestroy: ({ scope }) => console.log('destroyed:', scope.name.get()),
+    onCreate: ({ scope }) => console.log('connected:', scope.userId.get()),
+    onDestroy: ({ scope }) => console.log('disconnected:', scope.userId.get()),
   },
 );
 
 const map = tracked.createMap();
-map.set('a', { name: 'Alice' }); // logs: created: Alice
-map.delete('a'); // logs: destroyed: Alice
+map.set('alice', { userId: 'alice' }); // logs: connected: alice
+map.delete('alice'); // logs: disconnected: alice
 map.clear(); // logs onDestroy for each remaining entry
 ```
 
