@@ -1,785 +1,476 @@
 # ValUse vs Zustand
 
-Zustand gives you a single store with getters, setters, and selectors. It's
-simple to start with, but structured data (collections of entities with per-item
-derived state, change tracking, and async) requires increasingly manual wiring.
+Zustand gives you a single flat store with getters, setters, and selectors. The
+API is small, the mental model is predictable, and the ecosystem (devtools,
+persist, immer) is mature. Zustand stores are easy to reason about because
+everything is explicit: you see every mutation, every selector, every state
+transition. The cost of that explicitness shows up as structured data grows,
+because per-entity logic (derivations, history, async) becomes boilerplate.
 
-All examples below build the same user model: `firstName`, `lastName`, `email`,
-`role`, a derived `displayName`, change tracking via `lastUpdated`, and an async
-`profile` fetch.
+Both implementations build the same stock portfolio: holdings with symbol,
+shares, costBasis, an async price poll, derived gain/loss metrics, per-field
+undo/redo, and a shared refresh rate.
 
 ## Table of contents
 
-- [Define a model](#define-a-model)
-- [Collection CRUD](#collection-crud)
-- [Change tracking](#change-tracking)
-- [Per-row isolation](#per-row-isolation)
-- [Async data fetch](#async-data-fetch)
-- [Sync reads async](#sync-reads-async)
-- [Multiple independent instances](#multiple-independent-instances)
-- [Type safety](#type-safety)
-- [Extending and reuse](#extending-and-reuse)
-- [Lifecycle](#lifecycle)
-- [Shared and nested state](#shared-and-nested-state)
+- [Model definition](#model-definition)
+- [Derived values](#derived-values)
+- [Async polling](#async-polling)
+- [Undo / redo](#undo--redo)
+- [Shared config](#shared-config)
+- [React components](#react-components)
 - [The full picture](#the-full-picture)
 
 ---
 
-## Define a model
+## Model definition
 
-**ValUse**: fields and derivations in one call, organized by layer:
+**ValUse** defines the holding as layered declarations, wrapped with history
+middleware:
 
 ```ts
-const user = valueScope(
-  {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    email: value<string>(),
-    role: value<string>('viewer'),
-  },
-  {
-    displayName: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()}`,
-  },
+export const holdingScope = withHistory(
+  valueScope(
+    {
+      symbol: value<string>(),
+      shares: value<number>(0),
+      costBasis: value<number>(0),
+      refreshRate: valueRef(refreshRateMs),
+    },
+    // Layer 2: async price poll
+    { price: async ({ scope, set, signal, deferBy }) => { /* ... */ } },
+    // Layer 3: sync derivations from price
+    { marketValue: ({ scope }) => { /* ... */ }, gainLoss: /* ... */ },
+    // Layer 4: derived from derived
+    { isUp: ({ scope }) => { /* ... */ } },
+  ),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
 );
 ```
 
-**Zustand**: type, store, and derived state are separate concepts:
+Fields, derivations, async, and undo/redo middleware are all declared together.
+The `withHistory` wrapper adds `$undo`, `$redo`, `$canUndo`, `$canRedo` to every
+instance automatically.
+
+**Zustand** separates the type, the store factory, and each operation:
 
 ```ts
-type User = {
-  firstName: string;
-  lastName: string;
-  email: string;
-  role: string;
-};
-
-const useUserStore = create<{ users: Record<string, User> }>((set) => ({
-  users: {},
-}));
-
-// displayName? Computed in the component. Or write a selector.
-```
-
-There's no place in the store definition where `displayName` lives. It's either
-inline in every component that needs it, or a selector function defined
-elsewhere.
-
----
-
-## Collection CRUD
-
-**ValUse:**
-
-```ts
-const users = user.createMap();
-
-users.set('alice', {
-  firstName: 'Alice',
-  lastName: 'Smith',
-  email: 'alice@co',
-});
-users.delete('alice');
-users.has('bob');
-```
-
-**Zustand:**
-
-```ts
-const useUserStore = create((set) => ({
-  users: {} as Record<string, User>,
-  addUser: (id: string, user: User) =>
-    set((s) => ({ users: { ...s.users, [id]: user } })),
-  removeUser: (id: string) =>
-    set((s) => {
-      const { [id]: _, ...rest } = s.users;
-      return { users: rest };
-    }),
-}));
-```
-
-Every mutation spreads the entire `users` object. Each operation is a new method
-on the store. (Zustand's `immer` middleware eliminates the spreading, but the
-per-operation boilerplate remains.)
-
----
-
-## Change tracking
-
-Track `lastUpdated` whenever any field changes.
-
-**ValUse**: one hook, declared alongside the model:
-
-```ts
-const user = valueScope(
-  { /* ...fields... */ lastUpdated: value<number>(0) },
-  {
-    onChange: ({ scope }) => {
-      scope.lastUpdated.set(Date.now());
-    },
-  },
-);
-```
-
-**Zustand**: duplicated in every setter:
-
-```ts
-setField: (id, field, value) =>
-  set((s) => ({
-    users: {
-      ...s.users,
-      [id]: { ...s.users[id], [field]: value, lastUpdated: Date.now() },
-    },
-  })),
-```
-
-Add a new setter? Remember to include `lastUpdated`. Forget once and tracking
-silently breaks.
-
----
-
-## Per-row isolation
-
-Editing one user's email must not re-render other rows.
-
-**ValUse**: automatic. Each field `.use()` subscribes to that field only:
-
-```tsx
-function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
-  const [email, setEmail] = user.email.use();
-  return <input value={email} onChange={(e) => setEmail(e.target.value)} />;
+export interface Holding {
+  symbol: string;
+  shares: number;
+  costBasis: number;
+  price: number | undefined;
 }
-```
 
-**Zustand**: requires selectors. Either one per field, or a shallow-compared
-object selector:
-
-```tsx
-function UserRow({ id }: { id: string }) {
-  // Option A: per-field selectors (most granular, most verbose)
-  const email = useUserStore((s) => s.users[id]?.email ?? '');
-  const firstName = useUserStore((s) => s.users[id]?.firstName ?? '');
-
-  // Option B: useShallow for a grouped selector (less verbose, still manual)
-  const { email, firstName, lastName, role } = useUserStore(
-    useShallow(
-      (s) =>
-        s.users[id] ?? { email: '', firstName: '', lastName: '', role: '' },
-    ),
-  );
-
-  const setField = useUserStore((s) => s.setField);
-  // ...
-}
-```
-
-Either way, you're writing selectors manually. Per-field gives the finest
-granularity; `useShallow` groups them but still re-renders when any selected
-field changes.
-
----
-
-## Async data fetch
-
-Fetch a user's profile by email. Abort the previous request when email changes.
-
-**ValUse**: a derivation that happens to be async:
-
-```ts
-const user = valueScope(
-  { email: value<string>() },
-  {
-    profile: async ({ scope, signal }) => {
-      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-      return res.json();
-    },
-  },
-);
-```
-
-Abort is automatic. Re-fetch is reactive: change `email`, previous request
-aborts, new one starts. In components, `profile.useAsync()` returns
-`[value, state]` with `state.isPending` / `state.isError` / `state.isUpdating`
-flags — no manual `isLoading`/`error` bookkeeping required.
-
-**Zustand**: manual AbortController, manual state fields, imperative trigger:
-
-```ts
-// AbortControllers kept outside the store — non-serializable, non-reactive
-const controllers = new Map<string, AbortController>();
-
-const useUserStore = create((set) => ({
-  profiles: {} as Record<
-    string,
-    { data: unknown; isLoading: boolean; error: unknown }
-  >,
-
-  fetchProfile: async (id: string, email: string) => {
-    controllers.get(id)?.abort();
-    const controller = new AbortController();
-    controllers.set(id, controller);
-    set((s) => ({
-      profiles: {
-        ...s.profiles,
-        [id]: { data: s.profiles[id]?.data, isLoading: true, error: null },
-      },
-    }));
-    try {
-      const res = await fetch(`/api/users/${email}`, {
-        signal: controller.signal,
-      });
-      const data = await res.json();
+export function createPortfolioStore() {
+  return createStore<PortfolioState>((set, get) => ({
+    refreshRateMs: 5_000,
+    holdings: {},
+    past: [],
+    future: [],
+    controllers: {},
+    addHolding: (key, init) =>
       set((s) => ({
-        profiles: {
-          ...s.profiles,
-          [id]: { data, isLoading: false, error: null },
-        },
-      }));
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        set((s) => ({
-          profiles: {
-            ...s.profiles,
-            [id]: { data: null, isLoading: false, error: err },
-          },
-        }));
-      }
-    }
-  },
-}));
-
-// In component — must trigger manually:
-useEffect(() => {
-  fetchProfile(id, email);
-}, [id, email, fetchProfile]);
-```
-
-Manual loading/error state, a `try`/`catch` with abort guard, and a `useEffect`
-to trigger the fetch. None of this is reactive; the component must know when to
-call `fetchProfile`.
-
----
-
-## Sync reads async
-
-Derive `avatarUrl` from the async `profile`. This should be a plain sync
-computation.
-
-**ValUse**: just another derivation. Sees `Profile | undefined`, never a
-promise:
-
-```ts
-avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
-```
-
-If you later change `profile` from async to sync (or vice versa), `avatarUrl`
-doesn't change at all.
-
-**Zustand**: no derivation layer. Computed inline with null checks:
-
-```tsx
-const avatarUrl =
-  profile?.data ? (profile.data as any).avatar : '/default-avatar.png';
-```
-
-Per-component, untyped, and duplicated wherever you need it.
-
----
-
-## Multiple independent instances
-
-Two independent user tables, no shared state.
-
-**ValUse:**
-
-```ts
-const tableA = user.createMap();
-const tableB = user.createMap();
-```
-
-**Zustand**: factory wrapper + context provider:
-
-```ts
-function createUserStore() {
-  return create<UserStore>((set, get) => ({
-    /* ...same 60+ lines... */
+        /* spread */
+      })),
+    removeHolding: (key) =>
+      set((s) => {
+        /* spread, abort */
+      }),
+    setShares: (key, shares) =>
+      set((s) => ({ ...pushHistory(s) /* spread */ })),
+    setCostBasis: (key, costBasis) =>
+      set((s) => ({
+        /* ... */
+      })),
+    setSymbol: (key, symbol) =>
+      set((s) => {
+        /* restart polling */
+      }),
+    setPrice: (key, price) =>
+      set((s) => ({
+        /* spread */
+      })),
+    getDerived: (key) => {
+      /* compute on call */
+    },
+    undo: () =>
+      set((s) => {
+        /* restore from past */
+      }),
+    redo: () =>
+      set((s) => {
+        /* restore from future */
+      }),
+    startPolling: (key) => {
+      /* async IIFE with AbortController */
+    },
+    stopPolling: (key) => {
+      /* abort controller */
+    },
+    destroy: () => {
+      /* abort all */
+    },
   }));
 }
+```
 
-const StoreContext = createContext<ReturnType<typeof createUserStore>>(null!);
+Every operation is a named method on the store. This is explicit and debuggable,
+but the method count grows linearly with operations. The Zustand store ends up
+at ~175 lines of action methods; the ValUse scope definition is ~55 lines.
 
-function IndependentTable() {
-  const [store] = useState(() => createUserStore());
+The explicitness is genuine upside. You can read every mutation in one place,
+and there is no hidden reactivity. Whether that trades favorably against the
+compactness of the declarative approach depends on the team and the codebase.
+
+---
+
+## Derived values
+
+**ValUse** derivations are reactive and cached. They declare their dependencies
+via `scope.field.use()` and only recompute when those dependencies change:
+
+```ts
+marketValue: ({ scope }) => {
+  const price = scope.price.use();
+  return price != null ? scope.shares.use() * price : undefined;
+},
+```
+
+**Zustand** computes derived values on demand via `getDerived()`:
+
+```ts
+getDerived: (key) => {
+  const holding = get().holdings[key];
+  if (!holding || holding.price == null) return { /* all undefined */ };
+  const { price, shares, costBasis } = holding;
+  const marketValue = shares * price;
+  // ...
+  return { marketValue, gainLoss, gainLossPercent, isUp };
+},
+```
+
+This recomputes on every call. For a handful of holdings that is fine. For large
+collections, ValUse's signal-based caching avoids redundant work. But Zustand's
+approach is transparent: there is no cache invalidation to think about, and the
+derived function is a plain function you can test in isolation.
+
+---
+
+## Async polling
+
+**ValUse** treats the price poll as an async derivation. The `signal` is
+provided automatically and abort fires when `scope.symbol.use()` changes:
+
+```ts
+price: async ({ scope, set, signal, deferBy }) => {
+  while (!signal.aborted) {
+    const res = await fetch(`/api/quote/${scope.symbol.use()}`, { signal });
+    set((await res.json()).price as number);
+    await deferBy(scope.refreshRate.use());
+  }
+},
+```
+
+**Zustand** manages the AbortController manually, stored outside the reactive
+state (controllers are non-serializable):
+
+```ts
+startPolling: (key) => {
+  const state = get();
+  state.stopPolling(key);
+  const controller = new AbortController();
+  set((s) => ({ controllers: { ...s.controllers, [key]: controller } }));
+
+  (async () => {
+    const { signal } = controller;
+    while (!signal.aborted) {
+      const holding = get().holdings[key];
+      if (!holding) break;
+      const res = await fetch(`/api/quote/${holding.symbol}`, { signal });
+      if (signal.aborted) break;
+      get().setPrice(key, (await res.json()).price as number);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, get().refreshRateMs);
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+      });
+    }
+  })();
+},
+```
+
+ValUse handles abort and re-trigger automatically. Zustand requires explicit
+lifecycle management, but gives you full control over when polling starts and
+stops. If you need to pause polling without destroying the holding, Zustand
+makes that straightforward; ValUse ties the poll lifecycle to the derivation's
+dependency graph.
+
+---
+
+## Undo / redo
+
+**ValUse** wraps the scope with `withHistory()`, which snapshots tracked fields
+on every mutation and adds `$undo`/`$redo` methods per instance:
+
+```ts
+export const holdingScope = withHistory(
+  valueScope({
+    /* ... */
+  }),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
+);
+
+// In components:
+holding.$undo();
+holding.$redo();
+```
+
+**Zustand** builds a manual history stack across all holdings:
+
+```ts
+past: [] as HistoryEntry[],
+future: [] as HistoryEntry[],
+
+setShares: (key, shares) =>
+  set((state) => ({
+    ...pushHistory(state),
+    holdings: {
+      ...state.holdings,
+      [key]: { ...state.holdings[key]!, shares },
+    },
+  })),
+
+undo: () =>
+  set((state) => {
+    if (state.past.length === 0) return state;
+    const previous = state.past[state.past.length - 1]!;
+    const restored: Record<string, Holding> = {};
+    for (const [k, h] of Object.entries(previous.holdings)) {
+      restored[k] = { ...h, price: state.holdings[k]?.price };
+    }
+    return {
+      past: state.past.slice(0, -1),
+      future: [{ holdings: snapshotForHistory(state.holdings) }, ...state.future],
+      holdings: restored,
+    };
+  }),
+```
+
+Every setter that should be undoable must call `pushHistory()`. ValUse's
+middleware handles this automatically for the declared `fields`. The Zustand
+approach gives you a global undo (all holdings at once), while ValUse's is
+per-instance. Which is better depends on the use case.
+
+---
+
+## Shared config
+
+**ValUse** uses `valueRef` to share a reactive value across instances:
+
+```ts
+export const refreshRateMs = value<number>(5_000);
+
+const holdingScope = valueScope({
+  refreshRate: valueRef(refreshRateMs),
+  // ...
+});
+```
+
+Each holding reads `scope.refreshRate.use()` in its poll loop. When the shared
+value changes, every holding's poll cycle picks up the new rate reactively.
+
+**Zustand** puts the config in the store:
+
+```ts
+refreshRateMs: 5_000,
+setRefreshRate: (ms) => set({ refreshRateMs: ms }),
+```
+
+Polling loops read it via `get().refreshRateMs`. This works, but the read is a
+point-in-time snapshot inside the async loop rather than a reactive
+subscription. The next poll iteration picks up the change, which is good enough
+for most cases.
+
+---
+
+## React components
+
+**ValUse** hooks subscribe per field, so only the changed field triggers a
+re-render:
+
+```tsx
+function HoldingRow({ id }: { id: string }) {
+  const holding = holdings.get(id)!;
+  const [symbol] = holding.symbol.use();
+  const [shares, setShares] = holding.shares.use();
+  const [costBasis] = holding.costBasis.use();
+  const [marketValue] = holding.marketValue.use();
+  const [gainLossPercent] = holding.gainLossPercent.use();
+  const [isUp] = holding.isUp.use();
+
   return (
-    <StoreContext.Provider value={store}>
-      <UserTable />
-    </StoreContext.Provider>
+    <tr
+      className={
+        isUp ? 'gain'
+        : isUp === false ?
+          'loss'
+        : ''
+      }
+    >
+      <td>{symbol}</td>
+      <td>
+        <input
+          type="number"
+          value={shares}
+          onChange={(e) => setShares(Number(e.target.value))}
+        />
+      </td>
+      {/* ... */}
+      <td>
+        <button onClick={holding.$undo}>Undo</button>
+        <button onClick={holding.$redo}>Redo</button>
+      </td>
+    </tr>
   );
 }
 ```
 
-Zustand stores are singletons by default. Multi-instance requires a factory, a
-context, and a provider per instance.
+**Zustand** uses selectors for per-holding isolation:
 
----
+```tsx
+function HoldingRow({ id }: { id: string }) {
+  const holding = useStore(store, selectHolding(id));
+  const setShares = useStore(store, (s) => s.setShares);
+  const derived = useStore(store, (s) => s.getDerived(id));
+  const undo = useStore(store, (s) => s.undo);
+  const redo = useStore(store, (s) => s.redo);
 
-## Type safety
+  if (!holding) return null;
 
-**ValUse**: field access is fully type-checked via dot-access on the instance:
-
-```ts
-user.email.get(); // string
-user.displayName.get(); // string
-user.emal; // TS error — typo caught
-user.displayName.set('x'); // TS error — derived fields have no set()
+  return (
+    <tr
+      className={
+        derived.isUp ? 'gain'
+        : derived.isUp === false ?
+          'loss'
+        : ''
+      }
+    >
+      <td>{holding.symbol}</td>
+      <td>
+        <input
+          type="number"
+          value={holding.shares}
+          onChange={(e) => setShares(id, Number(e.target.value))}
+        />
+      </td>
+      {/* ... */}
+      <td>
+        <button onClick={undo}>Undo</button>
+        <button onClick={redo}>Redo</button>
+      </td>
+    </tr>
+  );
+}
 ```
 
-**Zustand**: `setField(id, 'email', value)` accepts any string for the field
-name at runtime. Type safety depends on how carefully the store interface is
-written and how disciplined the selectors are.
+Both achieve per-row isolation. ValUse does it via field-level signals; Zustand
+does it via selectors. The ValUse approach is more granular (a price change does
+not re-render the shares input), but the Zustand approach is more familiar to
+teams already using selector patterns.
 
----
-
-## Extending and reuse
-
-Add tracking to any scope without modifying the original.
-
-**ValUse**: `.extendValues()` and `.extendConfig()` return new scopes that add
-state and lifecycle without mutating the original:
-
-```ts
-const withTracking = (scope) =>
-  scope
-    .extendValues({
-      lastUpdated: value<number>(0),
-      changeCount: value<number>(0),
-    })
-    .extendConfig({
-      onChange: ({ scope, changes }) => {
-        scope.lastUpdated.set(Date.now());
-        scope.changeCount.set((prev) => prev + changes.size);
-      },
-    });
-
-// Apply to any scope — fields, derivations, and lifecycle compose
-const trackedUser = withTracking(user);
-const trackedTodo = withTracking(todo);
-```
-
-**Zustand**: custom middleware wrapping `set`:
-
-```ts
-import { type StateCreator, type StoreMutatorIdentifier } from 'zustand';
-
-const tracking =
-  <T, Mps extends [StoreMutatorIdentifier, unknown][] = []>(
-    initializer: StateCreator<T, Mps>,
-  ): StateCreator<T & { lastUpdated: number; changeCount: number }, Mps> =>
-  (set, get, store) => {
-    const trackedSet: typeof set = (...args) => {
-      set(...(args as Parameters<typeof set>));
-      set({
-        lastUpdated: Date.now(),
-        changeCount: ((get() as any).changeCount ?? 0) + 1,
-      } as any);
-    };
-    return {
-      ...initializer(trackedSet, get, store),
-      lastUpdated: 0,
-      changeCount: 0,
-    };
-  };
-
-const useUserStore = create(
-  tracking((set) => ({
-    name: '',
-    setName: (name: string) => set({ name }),
-  })),
-);
-```
-
-Zustand's middleware pattern is powerful: `devtools`, `persist`, and `immer` are
-all built this way. The tradeoff is that the type signature for custom
-middleware is complex (the `StoreMutatorIdentifier` generics are notoriously
-difficult), and most custom implementations resort to `as any` casts.
-
----
-
-## Lifecycle
-
-Create a WebSocket on init, announce presence when observed, clean up on
-destroy.
-
-**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
-
-```ts
-const chatRoom = valueScope(
-  {
-    roomId: value<string>(),
-    ws: value<WebSocket | null>(null),
-  },
-  {
-    onCreate: ({ scope, onCleanup }) => {
-      const ws = new WebSocket(`/rooms/${scope.roomId.get()}`);
-      scope.ws.set(ws);
-      onCleanup(() => ws.close());
-    },
-    onUsed: ({ scope, onCleanup }) => {
-      scope.ws.get()?.send(JSON.stringify({ type: 'join' }));
-      onCleanup(() => scope.ws.get()?.send(JSON.stringify({ type: 'leave' })));
-    },
-  },
-);
-
-const rooms = chatRoom.createMap();
-rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
-rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
-```
-
-**Zustand**: imperative logic in action methods:
-
-```ts
-const connections = new Map<string, WebSocket>();
-
-const useRoomStore = create((set, get) => ({
-  rooms: {} as Record<string, { roomId: string }>,
-
-  addRoom: (id: string) => {
-    // "onInit" — manual, inside the action
-    const ws = new WebSocket(`/rooms/${id}`);
-    connections.set(id, ws);
-    set((s) => ({ rooms: { ...s.rooms, [id]: { roomId: id } } }));
-  },
-
-  removeRoom: (id: string) => {
-    // "onDestroy" — manual, must remember to clean up
-    connections.get(id)?.close();
-    connections.delete(id);
-    set((s) => {
-      const { [id]: _, ...rest } = s.rooms;
-      return { rooms: rest };
-    });
-  },
-}));
-```
-
-Zustand has no entity lifecycle. Init and cleanup logic lives inside action
-methods. Side-effect resources (WebSockets, timers, controllers) must be tracked
-outside the store. There's no "start when first subscribed, stop when last
-unsubscribes" semantics; lazy activation requires manually wrapping `subscribe`
-with reference counting.
-
----
-
-## Shared and nested state
-
-A person with tags that derive from a shared global set. A board where each
-instance gets its own column collection.
-
-**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
-
-```ts
-const globalTags = valueSet<string>(['admin', 'root']);
-
-const person = valueScope(
-  {
-    name: value<string>(),
-    tags: valueSet<string>(),
-    specialTags: valueRef(globalTags),
-  },
-  {
-    hasSpecialTag: ({ scope }) =>
-      scope.tags.use().some((t) => scope.specialTags.use().has(t)),
-  },
-);
-
-// Per-instance ref — each board gets its own column map
-const column = valueScope({ id: value<string>(), name: value<string>() });
-
-const board = valueScope(
-  {
-    boardId: value<string>(),
-    columns: valueRef(() => column.createMap()),
-  },
-  {
-    columnCount: ({ scope }) => scope.columns.use().size,
-  },
-);
-
-const a = board.create({ boardId: 'a' });
-const b = board.create({ boardId: 'b' });
-// a and b each have independent column maps
-```
-
-**Zustand**: normalized IDs in one store, or `getState()` across stores:
-
-```ts
-// Single store with normalized state — IDs as references
-const useBoardStore = create((set, get) => ({
-  boards: {} as Record<string, { name: string; columnIds: string[] }>,
-  columns: {} as Record<string, { id: string; title: string }>,
-
-  getBoardColumns: (boardId: string) => {
-    const { boards, columns } = get();
-    return (
-      boards[boardId]?.columnIds.map((id) => columns[id]).filter(Boolean) ?? []
-    );
-  },
-}));
-
-// Or separate stores — cross-reference via getState()
-const useTagStore = create(() => ({
-  tags: new Set(['admin', 'root']),
-}));
-
-const usePersonStore = create((set, get) => ({
-  persons: {} as Record<string, { name: string; tagIds: string[] }>,
-
-  hasSpecialTag: (personId: string) => {
-    const tags = useTagStore.getState().tags; // point-in-time read
-    return get().persons[personId]?.tagIds.some((t) => tags.has(t)) ?? false;
-  },
-}));
-```
-
-Zustand uses normalized state (ID references) within a single store, or
-`getState()` across stores. Neither provides reactive cross-store references;
-`getState()` is a point-in-time read, and `getBoardColumns` returns a new array
-on every call with no memoization. Components that need reactivity across stores
-must subscribe to each independently. There's no concept of per-instance nested
-state, because every entity shares the same flat store.
+Note that `getDerived(id)` returns a new object on every call, so the `derived`
+selector triggers a re-render whenever any holding in the store changes.
+Zustand's `useShallow` or a custom equality function can fix this, but it
+requires awareness of the issue.
 
 ---
 
 ## The full picture
 
-All concerns combined: model, collection, derivations, change tracking, async
-with abort, and React components.
+Complete source for both implementations. The ValUse model is 62 lines; the
+Zustand store is 270 lines. The React components are comparable in length (77 vs
+80 lines).
 
-### ValUse
+### ValUse — model ([`valuse.ts`](src/comparison/valuse.ts))
 
 ```ts
-import { value, valueScope } from 'valuse';
+import { value, valueRef, valueScope } from 'valuse';
+import { withHistory } from 'valuse/middleware';
 
-const user = valueScope(
-  {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    email: value<string>(),
-    role: value<string>('viewer'),
-    lastUpdated: value<number>(0),
-  },
-  {
-    displayName: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()}`,
-    profile: async ({ scope, signal }) => {
-      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-      return res.json();
+export const refreshRateMs = value<number>(5_000);
+
+export const holdingScope = withHistory(
+  valueScope(
+    {
+      symbol: value<string>(),
+      shares: value<number>(0),
+      costBasis: value<number>(0),
+      refreshRate: valueRef(refreshRateMs),
     },
-  },
-  {
-    avatarUrl: ({ scope }) =>
-      scope.profile.use()?.avatar ?? '/default-avatar.png',
-  },
-  {
-    onChange: ({ scope }) => {
-      scope.lastUpdated.set(Date.now());
+    {
+      price: async ({ scope, set, signal, deferBy }) => {
+        while (!signal.aborted) {
+          const res = await fetch(`/api/quote/${scope.symbol.use()}`, {
+            signal,
+          });
+          set((await res.json()).price as number);
+          await deferBy(scope.refreshRate.use());
+        }
+      },
     },
-  },
+    {
+      marketValue: ({ scope }) => {
+        const price = scope.price.use();
+        return price != null ? scope.shares.use() * price : undefined;
+      },
+      gainLoss: ({ scope }) => {
+        const price = scope.price.use();
+        if (price == null) return undefined;
+        return (price - scope.costBasis.use()) * scope.shares.use();
+      },
+      gainLossPercent: ({ scope }) => {
+        const price = scope.price.use();
+        const basis = scope.costBasis.use();
+        if (price == null || basis === 0) return undefined;
+        return ((price - basis) / basis) * 100;
+      },
+    },
+    {
+      isUp: ({ scope }) => {
+        const gainLoss = scope.gainLoss.use();
+        return gainLoss != null ? gainLoss >= 0 : undefined;
+      },
+    },
+  ),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
 );
-
-const users = user.createMap();
 ```
 
-```tsx
-function UserTable() {
-  const keys = users.useKeys();
+### Zustand — store ([`zustand.ts`](src/comparison/zustand.ts))
 
-  return (
-    <table>
-      <tbody>
-        {keys.map((id) => (
-          <UserRow key={id} id={id} />
-        ))}
-      </tbody>
-    </table>
-  );
-}
+See [`zustand.ts`](src/comparison/zustand.ts) for the complete 270-line
+implementation including the `PortfolioState` type, `pushHistory` /
+`snapshotForHistory` helpers, `createPortfolioStore` factory (holdings CRUD,
+derived computation, undo/redo, polling lifecycle), and `selectHolding`
+selector.
 
-function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
-  const [displayName] = user.displayName.use();
-  const [avatarUrl] = user.avatarUrl.use();
-  const [email, setEmail] = user.email.use();
-  const [role] = user.role.use();
+### Components
 
-  return (
-    <tr>
-      <td>{displayName}</td>
-      <td>
-        <img src={avatarUrl} />
-      </td>
-      <td>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} />
-      </td>
-      <td>{role}</td>
-    </tr>
-  );
-}
-```
+See [`valuse.ui.tsx`](src/comparison/valuse.ui.tsx) and
+[`zustand.ui.tsx`](src/comparison/zustand.ui.tsx). Both are compact (77 vs 80
+lines). Zustand components use selectors for per-holding isolation; ValUse uses
+field-level signals.
 
-### Zustand
+The React layer is similar in size. The difference is upstream: ValUse's 62
+lines of model definition replaces Zustand's 270 lines of store + helpers,
+largely because derivations, history, and async lifecycle are handled by the
+framework rather than implemented per store.
 
-```ts
-import { create } from 'zustand';
-import { useShallow } from 'zustand/react/shallow';
-
-type User = {
-  firstName: string;
-  lastName: string;
-  email: string;
-  role: string;
-  lastUpdated: number;
-};
-
-type ProfileState = {
-  data: unknown;
-  isLoading: boolean;
-  error: unknown;
-};
-
-interface UserStore {
-  users: Record<string, User>;
-  profiles: Record<string, ProfileState>;
-  addUser: (id: string, user: User) => void;
-  removeUser: (id: string) => void;
-  setField: <K extends keyof User>(
-    id: string,
-    field: K,
-    value: User[K],
-  ) => void;
-  fetchProfile: (id: string, email: string) => void;
-}
-
-// AbortControllers kept outside the store — non-serializable, non-reactive
-const controllers = new Map<string, AbortController>();
-
-const useUserStore = create<UserStore>((set, get) => ({
-  users: {},
-  profiles: {},
-
-  addUser: (id, user) =>
-    set((s) => ({
-      users: { ...s.users, [id]: user },
-    })),
-
-  removeUser: (id) =>
-    set((s) => {
-      const { [id]: _, ...restUsers } = s.users;
-      const { [id]: __, ...restProfiles } = s.profiles;
-      controllers.get(id)?.abort();
-      controllers.delete(id);
-      return { users: restUsers, profiles: restProfiles };
-    }),
-
-  setField: (id, field, value) =>
-    set((s) => ({
-      users: {
-        ...s.users,
-        [id]: { ...s.users[id], [field]: value, lastUpdated: Date.now() },
-      },
-    })),
-
-  fetchProfile: async (id, email) => {
-    controllers.get(id)?.abort();
-    const controller = new AbortController();
-    controllers.set(id, controller);
-    set((s) => ({
-      profiles: {
-        ...s.profiles,
-        [id]: {
-          data: s.profiles[id]?.data ?? null,
-          isLoading: true,
-          error: null,
-        },
-      },
-    }));
-
-    try {
-      const res = await fetch(`/api/users/${email}`, {
-        signal: controller.signal,
-      });
-      const data = await res.json();
-      set((s) => ({
-        profiles: {
-          ...s.profiles,
-          [id]: { data, isLoading: false, error: null },
-        },
-      }));
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        set((s) => ({
-          profiles: {
-            ...s.profiles,
-            [id]: { data: null, isLoading: false, error: err },
-          },
-        }));
-      }
-    }
-  },
-}));
-```
-
-```tsx
-function UserTable() {
-  const ids = useUserStore(useShallow((s) => Object.keys(s.users)));
-  return (
-    <table>
-      <tbody>
-        {ids.map((id) => (
-          <UserRow key={id} id={id} />
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function UserRow({ id }: { id: string }) {
-  const email = useUserStore((s) => s.users[id]?.email ?? '');
-  const firstName = useUserStore((s) => s.users[id]?.firstName ?? '');
-  const lastName = useUserStore((s) => s.users[id]?.lastName ?? '');
-  const role = useUserStore((s) => s.users[id]?.role ?? '');
-  const profile = useUserStore((s) => s.profiles[id]);
-  const setField = useUserStore((s) => s.setField);
-  const fetchProfile = useUserStore((s) => s.fetchProfile);
-
-  useEffect(() => {
-    fetchProfile(id, email);
-  }, [id, email, fetchProfile]);
-
-  const displayName = `${firstName} ${lastName}`;
-  const avatarUrl =
-    profile?.data ? (profile.data as any).avatar : '/default-avatar.png';
-
-  return (
-    <tr>
-      <td>{displayName}</td>
-      <td>
-        <img src={avatarUrl} />
-      </td>
-      <td>
-        <input
-          value={email}
-          onChange={(e) => setField(id, 'email', e.target.value)}
-        />
-      </td>
-      <td>{role}</td>
-    </tr>
-  );
-}
-```
-
-Three type definitions, a store with six methods, manual abort tracking,
-per-field selectors in every row (with `useShallow` for the key list),
-`useEffect` to trigger fetches, and `displayName`/`avatarUrl` computed inline.
+Zustand's store is longer, but it is also completely transparent. There is no
+hidden reactivity, no implicit dependency tracking, no middleware magic. For
+teams that value explicit control and debuggability over brevity, that is a real
+advantage.

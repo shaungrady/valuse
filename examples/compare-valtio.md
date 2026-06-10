@@ -1,703 +1,388 @@
 # ValUse vs Valtio
 
-Valtio gives you proxy-based state: mutate a plain object and the UI reacts.
-It's the simplest API of any state library. But that simplicity comes with
-tradeoffs: no structured model, no per-entity derivations (though `derive()`
-from `valtio/utils` works at the store level), no lifecycle hooks, and no
-scope-aware collection primitive (`proxyMap` / `proxySet` from `valtio/utils`
-are reactive wrappers around the JS built-ins; per-entity reactivity and
-lifecycle is on you to wire). As requirements grow, Valtio's "just mutate" model
-requires increasingly manual wiring.
+Valtio gives you proxy-based state: mutate a plain object and subscribers react.
+It has the simplest mutation API of any state library. For straightforward state
+needs, nothing is easier to learn or quicker to write. The tradeoff becomes
+visible as requirements grow: Valtio provides no built-in derivation caching, no
+lifecycle hooks, no async primitives, and no undo/redo. Adding those means
+writing the same imperative code you would without a library.
 
-All examples below build the same user model: `firstName`, `lastName`, `email`,
-`role`, a derived `displayName`, change tracking via `lastUpdated`, and an async
-`profile` fetch.
+Both implementations build the same stock portfolio: holdings with symbol,
+shares, costBasis, an async price poll, derived gain/loss metrics, per-field
+undo/redo, and a shared refresh rate.
 
 ## Table of contents
 
-- [Define a model](#define-a-model)
-- [Collection CRUD](#collection-crud)
-- [Change tracking](#change-tracking)
-- [Per-row isolation](#per-row-isolation)
-- [Async data fetch](#async-data-fetch)
-- [Sync reads async](#sync-reads-async)
-- [Multiple independent instances](#multiple-independent-instances)
-- [Type safety](#type-safety)
-- [Extending and reuse](#extending-and-reuse)
-- [Lifecycle](#lifecycle)
-- [Shared and nested state](#shared-and-nested-state)
+- [Model definition](#model-definition)
+- [Derived values](#derived-values)
+- [Async polling](#async-polling)
+- [Undo / redo](#undo--redo)
+- [Shared config](#shared-config)
+- [React components](#react-components)
 - [The full picture](#the-full-picture)
 
 ---
 
-## Define a model
+## Model definition
 
-**ValUse**: fields and derivations in one call, organized by layer:
+**ValUse** defines the holding as layered declarations with history middleware:
 
 ```ts
-const user = valueScope(
-  {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    email: value<string>(),
-    role: value<string>('viewer'),
-  },
-  {
-    displayName: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()}`,
-  },
+export const holdingScope = withHistory(
+  valueScope(
+    { symbol: value<string>(), shares: value<number>(0), /* ... */ },
+    { price: async ({ scope, set, signal, deferBy }) => { /* ... */ } },
+    { marketValue: /* ... */, gainLoss: /* ... */ },
+    { isUp: /* ... */ },
+  ),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
 );
 ```
 
-**Valtio**: proxy object, no derivation concept:
+**Valtio** creates a proxy with data, history arrays, and an abort controller:
 
 ```ts
-const state = proxy({
-  users: {} as Record<
-    string,
-    {
-      firstName: string;
-      lastName: string;
-      email: string;
-      role: string;
-    }
-  >,
-});
-
-// displayName? Computed in the component, or use derive() from valtio/utils:
-import { derive } from 'valtio/utils';
-
-const derived = derive({
-  displayNames: (get) => {
-    const users = get(state).users;
-    return Object.fromEntries(
-      Object.entries(users).map(([id, u]) => [
-        id,
-        `${u.firstName} ${u.lastName}`,
-      ]),
-    );
-  },
-});
+export function createHolding(init: {
+  symbol: string;
+  shares: number;
+  costBasis: number;
+}): HoldingState {
+  return proxy<HoldingState>({
+    data: { ...init, price: undefined },
+    past: [],
+    future: [],
+    controller: undefined,
+  });
+}
 ```
 
-Valtio's `derive()` operates on the entire proxy, not per entity. There's no way
-to define "a user has these fields and this derived state" as a reusable
-template.
+Valtio's setup is minimal: `proxy()` makes the object reactive, and that is all
+the library does. Everything else (derivations, history, polling) is your code.
+This simplicity is both the appeal and the limitation.
 
 ---
 
-## Collection CRUD
+## Derived values
+
+**ValUse** derivations are reactive and cached:
+
+```ts
+marketValue: ({ scope }) => {
+  const price = scope.price.use();
+  return price != null ? scope.shares.use() * price : undefined;
+},
+```
+
+**Valtio** computes on demand via a plain function:
+
+```ts
+export function getDerived(state: HoldingState) {
+  const { price, shares, costBasis } = state.data;
+  if (price == null) {
+    return {
+      marketValue: undefined,
+      gainLoss: undefined,
+      gainLossPercent: undefined,
+      isUp: undefined,
+    };
+  }
+  const marketValue = shares * price;
+  const gainLoss = (price - costBasis) * shares;
+  const gainLossPercent =
+    costBasis === 0 ? undefined : ((price - costBasis) / costBasis) * 100;
+  return { marketValue, gainLoss, gainLossPercent, isUp: gainLoss >= 0 };
+}
+```
+
+No caching, no dependency tracking. The function runs every time you call it.
+For a small number of holdings this is negligible. For large collections or
+expensive derivations, it becomes wasteful.
+
+Valtio does have `derive()` from `valtio/utils`, but it operates on the store
+level (not per entity) and does not compose into a reusable model definition.
+
+---
+
+## Async polling
+
+**ValUse** treats the poll as an async derivation:
+
+```ts
+price: async ({ scope, set, signal, deferBy }) => {
+  while (!signal.aborted) {
+    const res = await fetch(`/api/quote/${scope.symbol.use()}`, { signal });
+    set((await res.json()).price as number);
+    await deferBy(scope.refreshRate.use());
+  }
+},
+```
+
+**Valtio** manages polling imperatively with a manual AbortController:
+
+```ts
+export function startPolling(state: HoldingState) {
+  stopPolling(state);
+  const controller = new AbortController();
+  // ref() prevents Valtio from proxying the controller
+  // (private #signal fields break under proxies)
+  state.controller = ref(controller);
+  const { signal } = controller;
+
+  (async () => {
+    while (!signal.aborted) {
+      try {
+        const res = await fetch(`/api/quote/${state.data.symbol}`, { signal });
+        if (signal.aborted) break;
+        state.data.price = (await res.json()).price as number;
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, refreshConfig.rateMs);
+          signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(new DOMException('Aborted', 'AbortError'));
+            },
+            { once: true },
+          );
+        });
+      } catch {
+        break;
+      }
+    }
+  })();
+}
+```
+
+Note the `ref()` wrapper on the AbortController. Valtio proxies nested objects
+by default, but `AbortController` has private `#signal` fields that break under
+proxies. This is a real-world edge case that surprises new users. ValUse's
+signal-based state does not have this issue because it does not wrap values in
+proxies.
+
+The mutation inside the loop (`state.data.price = ...`) is clean, though.
+Valtio's write ergonomics are excellent. You just assign.
+
+---
+
+## Undo / redo
+
+**ValUse** uses middleware:
+
+```ts
+export const holdingScope = withHistory(
+  valueScope({
+    /* ... */
+  }),
+  {
+    maxDepth: 50,
+    fields: ['shares', 'costBasis'],
+  },
+);
+
+holding.$undo();
+holding.$redo();
+```
+
+**Valtio** builds a manual history stack with snapshot/restore functions:
+
+```ts
+function pushHistory(state: HoldingState) {
+  state.past.push(historySnap(state.data));
+  if (state.past.length > 50) state.past.shift();
+  state.future.length = 0;
+}
+
+export function setShares(state: HoldingState, shares: number) {
+  pushHistory(state);
+  state.data.shares = shares;
+}
+
+export function undo(state: HoldingState) {
+  if (state.past.length === 0) return;
+  state.future.unshift(historySnap(state.data));
+  const prev = state.past.pop()!;
+  state.data.shares = prev.shares;
+  state.data.costBasis = prev.costBasis;
+}
+```
+
+Straightforward, but every setter that should be undoable must call
+`pushHistory()`. The mutation side is clean (just assign to properties), but the
+undo/redo logic is manual and repetitive.
+
+Valtio has `proxyWithHistory` in `valtio/utils`, which provides undo/redo for
+the entire proxy. It snapshots the whole object on every change, which is
+simpler but less selective than ValUse's per-field tracking.
+
+---
+
+## Shared config
 
 **ValUse:**
 
 ```ts
-const users = user.createMap();
-
-users.set('alice', {
-  firstName: 'Alice',
-  lastName: 'Smith',
-  email: 'alice@co',
-});
-users.delete('alice');
-users.has('bob');
+export const refreshRateMs = value<number>(5_000);
+// In scope definition:
+refreshRate: valueRef(refreshRateMs),
 ```
 
 **Valtio:**
 
 ```ts
-state.users['alice'] = {
-  firstName: 'Alice',
-  lastName: 'Smith',
-  email: 'alice@co',
-  role: 'viewer',
-};
-delete state.users['alice'];
-'bob' in state.users;
+export const refreshConfig = proxy({ rateMs: 5_000 });
 ```
 
-Mutation syntax is clean; this is Valtio's strength. But there's no validation,
-no defaults, no lifecycle on add/remove. You must always provide every field (or
-risk `undefined` values), and there's no `onDestroy` equivalent when an entry is
-deleted.
+Both are simple. Valtio's approach is arguably simpler: it is just another proxy
+that anyone can read or mutate. No special API needed.
 
 ---
 
-## Change tracking
+## React components
 
-Track `lastUpdated` whenever any field changes.
-
-**ValUse**: one hook, declared alongside the model:
-
-```ts
-const user = valueScope(
-  { /* ...fields... */ lastUpdated: value<number>(0) },
-  {
-    onChange: ({ scope }) => {
-      scope.lastUpdated.set(Date.now());
-    },
-  },
-);
-```
-
-**Valtio**: `subscribe()` per nested proxy:
-
-```ts
-// Subscribe to a specific user — nested objects are also proxies
-subscribe(state.users['alice'], () => {
-  state.users['alice'].lastUpdated = Date.now();
-});
-```
-
-Valtio does support per-entity subscription via nested proxies. The difference
-is co-location: ValUse declares `onChange` once in the model and every instance
-created via `createMap()` gets it automatically. With Valtio, you wire up
-`subscribe()` per entry in your factory function. There's also no `changes` map
-telling you which fields changed or what the previous values were.
-
----
-
-## Per-row isolation
-
-Editing one user's email must not re-render other rows.
-
-**ValUse**: automatic. Each field `.use()` subscribes to that field only:
+**ValUse** uses per-field hooks:
 
 ```tsx
-function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
-  const [email, setEmail] = user.email.use();
-  return <input value={email} onChange={(e) => setEmail(e.target.value)} />;
-}
-```
-
-**Valtio**: `useSnapshot()` on the nested proxy gives per-row isolation:
-
-```tsx
-function UserRow({ id }: { id: string }) {
-  const user = useSnapshot(state.users[id]);
-
+function HoldingRow({ id }: { id: string }) {
+  const holding = holdings.get(id)!;
+  const [symbol] = holding.symbol.use();
+  const [shares, setShares] = holding.shares.use();
+  // ...
   return (
-    <input
-      value={user.email}
-      onChange={(e) => {
-        state.users[id].email = e.target.value;
-      }}
-    />
+    <tr>
+      {/* ... */}
+      <td>
+        <button onClick={holding.$undo}>Undo</button>
+        <button onClick={holding.$redo}>Redo</button>
+      </td>
+    </tr>
   );
 }
 ```
 
-This works well; Valtio's nested proxies let you scope subscriptions to a single
-entry. The caveat: the parent list component that calls `useSnapshot(state)` and
-reads `Object.keys(snap.users)` will re-render on any user field change, not
-just add/remove. Separating the key-list subscription from per-row rendering
-requires careful component splitting.
-
----
-
-## Async data fetch
-
-Fetch a user's profile by email. Abort the previous request when email changes.
-
-**ValUse**: a derivation that happens to be async:
-
-```ts
-const user = valueScope(
-  { email: value<string>() },
-  {
-    profile: async ({ scope, signal }) => {
-      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-      return res.json();
-    },
-  },
-);
-```
-
-Abort is automatic. Re-fetch is reactive. In components, `profile.useAsync()`
-returns `[value, state]` with `state.isPending` / `state.isError` /
-`state.isUpdating` flags for loading/error UI.
-
-**Valtio**: no async primitive. Manual fetch, manual state, manual abort:
-
-```ts
-async function fetchProfile(id: string) {
-  const user = state.users[id];
-  if (!user) return;
-
-  state.profiles[id] = { data: null, isLoading: true, error: null };
-
-  // Abort? You need your own controller map.
-  try {
-    const res = await fetch(`/api/users/${user.email}`);
-    state.profiles[id] = {
-      data: await res.json(),
-      isLoading: false,
-      error: null,
-    };
-  } catch (err) {
-    state.profiles[id] = { data: null, isLoading: false, error: err };
-  }
-}
-
-// Must trigger manually and re-trigger on email change via subscribe() or useEffect
-```
-
-No reactive re-fetch, no abort, no loading state integration. You're back to
-imperative async management.
-
----
-
-## Sync reads async
-
-Derive `avatarUrl` from the async `profile`.
-
-**ValUse**: just another derivation:
-
-```ts
-avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
-```
-
-**Valtio**: inline in the component:
+**Valtio** uses `useSnapshot()` for reading and direct mutation for writing:
 
 ```tsx
-const avatarUrl = state.profiles[id]?.data?.avatar ?? '/default-avatar.png';
-```
+function HoldingRow({ state }: { state: HoldingState }) {
+  const snap = useSnapshot(state);
+  const { symbol, shares, costBasis } = snap.data;
+  const derived = getDerived(state);
 
-No derivation layer, so this is duplicated wherever you need it.
-
----
-
-## Multiple independent instances
-
-Two independent user tables, no shared state.
-
-**ValUse:**
-
-```ts
-const tableA = user.createMap();
-const tableB = user.createMap();
-```
-
-**Valtio**: separate proxy per table:
-
-```ts
-const tableA = proxy({ users: {} as Record<string, User> });
-const tableB = proxy({ users: {} as Record<string, User> });
-```
-
-This works, but there's no shared model definition. Both proxies must
-independently maintain the same shape, and any factory logic (defaults,
-validation, lifecycle) must be duplicated or extracted into a helper.
-
----
-
-## Type safety
-
-**ValUse**: field access is fully type-checked via dot-access on the instance:
-
-```ts
-user.email.get(); // string
-user.displayName.get(); // string
-user.emal; // TS error — typo caught
-user.displayName.set('x'); // TS error — derived fields have no set()
-```
-
-**Valtio**: direct property access is typed:
-
-```ts
-state.users['alice'].email; // string
-state.users['alice'].emal; // TS error
-```
-
-Property access gives good type safety. The gap appears when you need to
-constrain _which_ properties are writable; Valtio has no concept of read-only
-derived fields at the type level.
-
----
-
-## Extending and reuse
-
-Add tracking to any scope without modifying the original.
-
-**ValUse**: `.extendValues()` and `.extendConfig()` return new scopes that add
-state and lifecycle without mutating the original:
-
-```ts
-const withTracking = (scope) =>
-  scope
-    .extendValues({
-      lastUpdated: value<number>(0),
-      changeCount: value<number>(0),
-    })
-    .extendConfig({
-      onChange: ({ scope, changes }) => {
-        scope.lastUpdated.set(Date.now());
-        scope.changeCount.set((prev) => prev + changes.size);
-      },
-    });
-
-const trackedUser = withTracking(user);
-const trackedTodo = withTracking(todo);
-```
-
-**Valtio**: factory function with `subscribe()`:
-
-```ts
-import { proxy, subscribe } from 'valtio';
-
-function withTracking<T extends object>(initial: T) {
-  const state = proxy({
-    ...initial,
-    lastUpdated: 0,
-    changeCount: 0,
-  });
-
-  subscribe(state, () => {
-    state.lastUpdated = Date.now();
-    state.changeCount++;
-  });
-
-  return state;
-}
-
-const user = withTracking({ name: '', email: '' });
-user.name = 'Alice'; // lastUpdated and changeCount update
-```
-
-Valtio's proxy model makes this pattern simple: spread the base shape, add
-tracking fields, wire up `subscribe()`. No special API needed. The tracking
-fields updating inside the callback triggers another notification cycle, which
-Valtio batches but can be a subtle footgun. The bigger gap is that there's no
-reusable "model" that carries derivations and lifecycle together; `withTracking`
-only adds fields and a subscription, not derived state.
-
----
-
-## Lifecycle
-
-Create a WebSocket on init, announce presence when observed, clean up on
-destroy.
-
-**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
-
-```ts
-const chatRoom = valueScope(
-  {
-    roomId: value<string>(),
-    ws: value<WebSocket | null>(null),
-  },
-  {
-    onCreate: ({ scope, onCleanup }) => {
-      const ws = new WebSocket(`/rooms/${scope.roomId.get()}`);
-      scope.ws.set(ws);
-      onCleanup(() => ws.close());
-    },
-    onUsed: ({ scope, onCleanup }) => {
-      scope.ws.get()?.send(JSON.stringify({ type: 'join' }));
-      onCleanup(() => scope.ws.get()?.send(JSON.stringify({ type: 'leave' })));
-    },
-  },
-);
-
-const rooms = chatRoom.createMap();
-rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
-rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
-```
-
-**Valtio**: factory functions with manual cleanup:
-
-```ts
-import { proxy } from 'valtio';
-
-const rooms = proxy<Record<string, { roomId: string; messages: Message[] }>>(
-  {},
-);
-const connections = new Map<string, WebSocket>();
-
-function addRoom(id: string) {
-  const ws = new WebSocket(`/rooms/${id}`);
-  ws.onmessage = (e) => rooms[id].messages.push(JSON.parse(e.data));
-  connections.set(id, ws);
-  rooms[id] = { roomId: id, messages: [] };
-}
-
-function removeRoom(id: string) {
-  // Must call before delete — no automatic teardown
-  connections.get(id)?.close();
-  connections.delete(id);
-  delete rooms[id];
-}
-
-// Lazy activation? Manual ref-counting — no built-in API.
-```
-
-Valtio has no lifecycle hooks. Init and cleanup are factory functions you write
-yourself. Side-effect resources live outside the proxy. If you
-`delete rooms[id]` without calling cleanup first, the WebSocket leaks. There's
-no equivalent to `onUsed`/`onUnused`; lazy activation requires manual reference
-counting wired to React's `useEffect`.
-
----
-
-## Shared and nested state
-
-A person with tags that derive from a shared global set. A board where each
-instance gets its own column collection.
-
-**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
-
-```ts
-const globalTags = valueSet<string>(['admin', 'root']);
-
-const person = valueScope(
-  {
-    name: value<string>(),
-    tags: valueSet<string>(),
-    specialTags: valueRef(globalTags),
-  },
-  {
-    hasSpecialTag: ({ scope }) =>
-      scope.tags.use().some((t) => scope.specialTags.use().has(t)),
-  },
-);
-
-// Per-instance ref — each board gets its own column map
-const column = valueScope({ id: value<string>(), name: value<string>() });
-
-const board = valueScope(
-  {
-    boardId: value<string>(),
-    columns: valueRef(() => column.createMap()),
-  },
-  {
-    columnCount: ({ scope }) => scope.columns.use().size,
-  },
-);
-
-const a = board.create({ boardId: 'a' });
-const b = board.create({ boardId: 'b' });
-// a and b each have independent column maps
-```
-
-**Valtio**: direct proxy references:
-
-```ts
-import { proxy } from 'valtio';
-
-const globalTags = proxy({ items: new Set(['admin', 'root']) });
-
-function createPerson(name: string) {
-  return proxy({
-    name,
-    tags: new Set<string>(),
-    get hasSpecialTag() {
-      return [...this.tags].some((t) => globalTags.items.has(t));
-    },
-  });
-}
-
-// Per-instance nested state — create in the factory
-function createBoard(boardId: string) {
-  return proxy({
-    boardId,
-    columns: {} as Record<string, { id: string; title: string }>,
-    get columnCount() {
-      return Object.keys(this.columns).length;
-    },
-  });
+  return (
+    <tr
+      className={
+        derived.isUp ? 'gain'
+        : derived.isUp === false ?
+          'loss'
+        : ''
+      }
+    >
+      <td>{symbol}</td>
+      <td>
+        <input
+          type="number"
+          value={shares}
+          onChange={(e) => valtioSetShares(state, Number(e.target.value))}
+        />
+      </td>
+      {/* ... */}
+      <td>
+        <button onClick={() => undo(state)}>Undo</button>
+        <button onClick={() => redo(state)}>Redo</button>
+      </td>
+    </tr>
+  );
 }
 ```
 
-Valtio handles shared references naturally; proxies are mutable objects with
-identity, so referencing the same proxy from multiple places just works. The
-`hasSpecialTag` getter reads from both `this.tags` and `globalTags`, and
-`useSnapshot()` tracks both during render. The caveat: cross-proxy reactivity
-only works inside React's render via `useSnapshot()`. A `subscribe(person, ...)`
-call will _not_ fire when `globalTags` changes, only when `person`'s own
-properties change.
+Valtio's `useSnapshot()` gives per-entry isolation (each holding's snapshot is
+independent). But `getDerived(state)` reads the proxy directly, not the
+snapshot, so it does not participate in Valtio's render tracking. A price update
+will re-derive when the component re-renders for other reasons, but will not
+trigger a re-render on its own. Fixing this requires reading derived values from
+the snapshot, which means moving the computation into the proxy (e.g., via
+getters or `derive()`).
+
+ValUse does not have this pitfall because all reactive reads go through
+`.use()`, which always subscribes.
 
 ---
 
 ## The full picture
 
-All concerns combined.
+Complete source for both implementations. The ValUse model is 62 lines; the
+Valtio model + helper functions are 205 lines. React components are similar: 77
+vs 81 lines.
 
-### ValUse
+### ValUse — model ([`valuse.ts`](src/comparison/valuse.ts))
 
 ```ts
-import { value, valueScope } from 'valuse';
+import { value, valueRef, valueScope } from 'valuse';
+import { withHistory } from 'valuse/middleware';
 
-const user = valueScope(
-  {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    email: value<string>(),
-    role: value<string>('viewer'),
-    lastUpdated: value<number>(0),
-  },
-  {
-    displayName: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()}`,
-    profile: async ({ scope, signal }) => {
-      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-      return res.json();
+export const refreshRateMs = value<number>(5_000);
+
+export const holdingScope = withHistory(
+  valueScope(
+    {
+      symbol: value<string>(),
+      shares: value<number>(0),
+      costBasis: value<number>(0),
+      refreshRate: valueRef(refreshRateMs),
     },
-  },
-  {
-    avatarUrl: ({ scope }) =>
-      scope.profile.use()?.avatar ?? '/default-avatar.png',
-  },
-  {
-    onChange: ({ scope }) => {
-      scope.lastUpdated.set(Date.now());
+    {
+      price: async ({ scope, set, signal, deferBy }) => {
+        while (!signal.aborted) {
+          const res = await fetch(`/api/quote/${scope.symbol.use()}`, {
+            signal,
+          });
+          set((await res.json()).price as number);
+          await deferBy(scope.refreshRate.use());
+        }
+      },
     },
-  },
+    {
+      marketValue: ({ scope }) => {
+        const price = scope.price.use();
+        return price != null ? scope.shares.use() * price : undefined;
+      },
+      gainLoss: ({ scope }) => {
+        const price = scope.price.use();
+        if (price == null) return undefined;
+        return (price - scope.costBasis.use()) * scope.shares.use();
+      },
+      gainLossPercent: ({ scope }) => {
+        const price = scope.price.use();
+        const basis = scope.costBasis.use();
+        if (price == null || basis === 0) return undefined;
+        return ((price - basis) / basis) * 100;
+      },
+    },
+    {
+      isUp: ({ scope }) => {
+        const gainLoss = scope.gainLoss.use();
+        return gainLoss != null ? gainLoss >= 0 : undefined;
+      },
+    },
+  ),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
 );
-
-const users = user.createMap();
 ```
 
-```tsx
-function UserTable() {
-  const keys = users.useKeys();
+### Valtio — model ([`valtio.ts`](src/comparison/valtio.ts))
 
-  return (
-    <table>
-      <tbody>
-        {keys.map((id) => (
-          <UserRow key={id} id={id} />
-        ))}
-      </tbody>
-    </table>
-  );
-}
+See [`valtio.ts`](src/comparison/valtio.ts) for the complete 206-line
+implementation including `createHolding`, `getDerived`, mutations (`setShares`,
+`setCostBasis`, `setSymbol`), undo/redo, polling, and the `createHoldingsMap`
+collection wrapper.
 
-function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
-  const [displayName] = user.displayName.use();
-  const [avatarUrl] = user.avatarUrl.use();
-  const [email, setEmail] = user.email.use();
-  const [role] = user.role.use();
+### Components
 
-  return (
-    <tr>
-      <td>{displayName}</td>
-      <td>
-        <img src={avatarUrl} />
-      </td>
-      <td>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} />
-      </td>
-      <td>{role}</td>
-    </tr>
-  );
-}
-```
+See [`valuse.ui.tsx`](src/comparison/valuse.ui.tsx) and
+[`valtio.ui.tsx`](src/comparison/valtio.ui.tsx). Both are compact. Valtio's
+read/write split (`useSnapshot` for reads, proxy for writes) is clean once you
+internalize it, but the `getDerived` gap (reading proxy vs. snapshot) is a real
+DX gotcha.
 
-### Valtio
-
-```ts
-import { proxy, useSnapshot, subscribe } from 'valtio';
-
-type User = {
-  firstName: string;
-  lastName: string;
-  email: string;
-  role: string;
-  lastUpdated: number;
-};
-
-type ProfileState = {
-  data: unknown;
-  isLoading: boolean;
-  error: unknown;
-};
-
-const state = proxy({
-  users: {} as Record<string, User>,
-  profiles: {} as Record<string, ProfileState>,
-});
-
-function addUser(id: string, data: Omit<User, 'lastUpdated'>) {
-  state.users[id] = { ...data, lastUpdated: Date.now() };
-}
-
-function removeUser(id: string) {
-  delete state.users[id];
-  delete state.profiles[id];
-}
-
-function setField<K extends keyof User>(id: string, field: K, value: User[K]) {
-  state.users[id][field] = value;
-  state.users[id].lastUpdated = Date.now();
-}
-
-async function fetchProfile(id: string) {
-  const user = state.users[id];
-  if (!user) return;
-  state.profiles[id] = { data: null, isLoading: true, error: null };
-  try {
-    const res = await fetch(`/api/users/${user.email}`);
-    state.profiles[id] = {
-      data: await res.json(),
-      isLoading: false,
-      error: null,
-    };
-  } catch (err) {
-    state.profiles[id] = { data: null, isLoading: false, error: err };
-  }
-}
-```
-
-```tsx
-function UserTable() {
-  const snap = useSnapshot(state);
-  const ids = Object.keys(snap.users);
-
-  return (
-    <table>
-      <tbody>
-        {ids.map((id) => (
-          <UserRow key={id} id={id} />
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function UserRow({ id }: { id: string }) {
-  const user = useSnapshot(state.users[id]);
-  const snap = useSnapshot(state);
-  const profile = snap.profiles[id];
-
-  // Must trigger fetch manually
-  useEffect(() => {
-    fetchProfile(id);
-  }, [id, user.email]);
-
-  const displayName = `${user.firstName} ${user.lastName}`;
-  const avatarUrl =
-    profile?.data ? (profile.data as any).avatar : '/default-avatar.png';
-
-  return (
-    <tr>
-      <td>{displayName}</td>
-      <td>
-        <img src={avatarUrl} />
-      </td>
-      <td>
-        <input
-          value={user.email}
-          onChange={(e) => setField(id, 'email', e.target.value)}
-        />
-      </td>
-      <td>{user.role}</td>
-    </tr>
-  );
-}
-```
-
-Valtio's mutation API is clean, but adding structured concerns (derivations,
-change tracking, async, per-row isolation) requires the same manual wiring as
-any non-reactive approach. The proxy makes writes easy; everything else is on
-you.
+For apps where state is simple (a few values, minimal derivations, no undo),
+Valtio's simplicity is a genuine advantage over ValUse. The gap widens in the
+other direction as structured concerns accumulate.

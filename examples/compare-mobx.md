@@ -1,795 +1,432 @@
 # ValUse vs MobX
 
-MobX is the closest philosophical match: observable objects with computed values
-and reactions. It pioneered fine-grained reactivity in React. But MobX uses
-classes, decorators, and proxy magic where ValUse uses plain objects and
-explicit `use()` calls. MobX has no async derivation with abort, and its
-`observable.map` is a plain map of values rather than a scope-aware entity
-collection (per-entity reactivity requires wrapping each value in a class). It
-does have lifecycle hooks (`onBecomeObserved`/`onBecomeUnobserved`) and
-`reaction()` for responding to changes, though they're set up separately from
-the model definition.
+MobX is the closest philosophical match to ValUse. It pioneered fine-grained
+reactivity in React, and its cached `computed` getters remain the gold standard
+for derived state. Property access is clean, dependency tracking is automatic,
+and the library is battle-tested across thousands of production apps. The
+differences are mostly in API shape: MobX uses classes and decorators, ValUse
+uses plain object declarations; MobX wraps components with `observer()`, ValUse
+uses per-field `.use()` hooks; MobX's async story is generator-based `flow()` or
+manual, ValUse treats async as a derivation.
 
-All examples below build the same user model: `firstName`, `lastName`, `email`,
-`role`, a derived `displayName`, change tracking via `lastUpdated`, and an async
-`profile` fetch.
+Both implementations build the same stock portfolio: holdings with symbol,
+shares, costBasis, an async price poll, derived gain/loss metrics, per-field
+undo/redo, and a shared refresh rate.
 
 ## Table of contents
 
-- [Define a model](#define-a-model)
-- [Collection CRUD](#collection-crud)
-- [Change tracking](#change-tracking)
-- [Per-row isolation](#per-row-isolation)
-- [Async data fetch](#async-data-fetch)
-- [Sync reads async](#sync-reads-async)
-- [Multiple independent instances](#multiple-independent-instances)
-- [Type safety](#type-safety)
-- [Extending and reuse](#extending-and-reuse)
-- [Lifecycle](#lifecycle)
-- [Shared and nested state](#shared-and-nested-state)
+- [Model definition](#model-definition)
+- [Derived values](#derived-values)
+- [Async polling](#async-polling)
+- [Undo / redo](#undo--redo)
+- [Shared config](#shared-config)
+- [React components](#react-components)
 - [The full picture](#the-full-picture)
 
 ---
 
-## Define a model
+## Model definition
 
-**ValUse**: fields and derivations in one call, organized by layer:
+**ValUse** defines the holding as layered declarations with history middleware:
 
 ```ts
-const user = valueScope(
-  {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    email: value<string>(),
-    role: value<string>('viewer'),
-  },
-  {
-    displayName: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()}`,
-  },
+export const holdingScope = withHistory(
+  valueScope(
+    { symbol: value<string>(), shares: value<number>(0), /* ... */ },
+    { price: async ({ scope, set, signal, deferBy }) => { /* ... */ } },
+    { marketValue: /* ... */, gainLoss: /* ... */ },
+    { isUp: /* ... */ },
+  ),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
 );
 ```
 
-**MobX**: class with decorators or `makeObservable`:
+**MobX** uses a class with `makeAutoObservable`:
 
 ```ts
-class UserModel {
-  firstName = '';
-  lastName = '';
-  email = '';
-  role = 'viewer';
+export class HoldingModel {
+  symbol: string;
+  shares: number;
+  costBasis: number;
+  price: number | undefined = undefined;
 
-  constructor() {
-    makeAutoObservable(this);
+  private past: HistorySnapshot[] = [];
+  private future: HistorySnapshot[] = [];
+  private controller: AbortController | undefined = undefined;
+
+  constructor(init: { symbol: string; shares: number; costBasis: number }) {
+    this.symbol = init.symbol;
+    this.shares = init.shares;
+    this.costBasis = init.costBasis;
+    makeAutoObservable(this, {
+      startPolling: false,
+      stopPolling: false,
+      destroy: false,
+    });
   }
 
-  get displayName() {
-    return `${this.firstName} ${this.lastName}`;
+  get marketValue() {
+    /* ... */
   }
+  get gainLoss() {
+    /* ... */
+  }
+
+  setShares(shares: number) {
+    this.pushHistory();
+    this.shares = shares;
+  }
+  // ...
 }
 ```
 
-MobX's class approach is familiar, but it ties your model to a class hierarchy.
-`makeAutoObservable` uses proxies under the hood; property access is implicitly
-tracked, which is powerful but can be surprising when passing observables to
-non-MobX code.
+MobX's class model is familiar and self-contained: fields, computed getters, and
+actions live together on the class. The `makeAutoObservable` call tells MobX to
+infer observable/computed/action annotations automatically (with explicit
+overrides for non-reactive methods like `startPolling`).
+
+ValUse's declaration is more compact, but MobX's class has a genuine advantage:
+the model is standard TypeScript. You can use inheritance, implement interfaces,
+add private methods, and use all of TypeScript's class features. ValUse's scope
+declarations are more constrained. (One caveat: `makeAutoObservable` cannot be
+used on classes that have a superclass or are themselves subclassed. You must
+fall back to `makeObservable` with explicit annotations when inheritance is
+involved.)
 
 ---
 
-## Collection CRUD
+## Derived values
+
+Both libraries cache derived values and recompute only when dependencies change.
+This is where MobX and ValUse are most alike.
 
 **ValUse:**
 
 ```ts
-const users = user.createMap();
-
-users.set('alice', {
-  firstName: 'Alice',
-  lastName: 'Smith',
-  email: 'alice@co',
-});
-users.delete('alice');
-users.has('bob');
+marketValue: ({ scope }) => {
+  const price = scope.price.use();
+  return price != null ? scope.shares.use() * price : undefined;
+},
 ```
 
-**MobX**: observable map with class instantiation:
+**MobX:**
 
 ```ts
-const users = observable.map<string, UserModel>();
-
-users.set(
-  'alice',
-  new UserModel({
-    firstName: 'Alice',
-    lastName: 'Smith',
-    email: 'alice@co',
-  }),
-);
-
-users.delete('alice');
-users.has('bob');
+get marketValue(): number | undefined {
+  return this.price != null ? this.shares * this.price : undefined;
+}
 ```
 
-MobX has `observable.map` and the class constructor can accept partial data, so
-the per-entry API is similar. The difference is that MobX requires you to define
-the class, its constructor, and `makeAutoObservable` call. ValUse's `createMap`
-derives the collection API from the scope definition with no extra code.
+MobX's version is cleaner: a plain getter with `this` access, no wrapping
+function, no `.use()` call. MobX tracks property reads through its proxy, so
+`this.price` and `this.shares` are automatically registered as dependencies.
+This is arguably the better DX for computed values specifically.
+
+ValUse requires the explicit `.use()` to register dependencies, which is more
+verbose but also more predictable: you always know exactly which reads are
+tracked.
 
 ---
 
-## Change tracking
+## Async polling
 
-Track `lastUpdated` whenever any field changes.
-
-**ValUse**: one hook, declared alongside the model:
+**ValUse** treats the poll as an async derivation:
 
 ```ts
-const user = valueScope(
-  { /* ...fields... */ lastUpdated: value<number>(0) },
+price: async ({ scope, set, signal, deferBy }) => {
+  while (!signal.aborted) {
+    const res = await fetch(`/api/quote/${scope.symbol.use()}`, { signal });
+    set((await res.json()).price as number);
+    await deferBy(scope.refreshRate.use());
+  }
+},
+```
+
+Abort and re-trigger are handled by the framework. Changing the symbol
+automatically aborts the current poll and starts a new one.
+
+**MobX** uses a manual async loop with `runInAction` for state updates:
+
+```ts
+startPolling() {
+  this.stopPolling();
+  const controller = new AbortController();
+  this.controller = controller;
+  const { signal } = controller;
+
+  (async () => {
+    while (!signal.aborted) {
+      try {
+        const res = await fetch(`/api/quote/${this.symbol}`, { signal });
+        if (signal.aborted) break;
+        const data = await res.json();
+        runInAction(() => {
+          this.price = data.price as number;
+        });
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, refreshConfig.rateMs);
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new DOMException('Aborted', 'AbortError'));
+          }, { once: true });
+        });
+      } catch { break; }
+    }
+  })();
+}
+```
+
+MobX's `flow()` with generators is the idiomatic alternative to `runInAction`,
+but either way the AbortController management, re-trigger on symbol change, and
+polling lifecycle are manual. MobX offers `reaction()` to watch the symbol and
+restart polling, but wiring that up is additional code.
+
+This is the widest gap between the two libraries. Both handle sync reactivity
+well; async is where ValUse's derivation model provides the most leverage.
+
+---
+
+## Undo / redo
+
+**ValUse** uses middleware:
+
+```ts
+export const holdingScope = withHistory(
+  valueScope({
+    /* ... */
+  }),
   {
-    onChange: ({ scope }) => {
-      scope.lastUpdated.set(Date.now());
-    },
+    maxDepth: 50,
+    fields: ['shares', 'costBasis'],
   },
 );
+
+holding.$undo();
+holding.$redo();
 ```
 
-**MobX**: `reaction()` or `autorun()`, set up separately:
+**MobX** implements a manual snapshot stack on the class:
 
 ```ts
-class UserModel {
-  lastUpdated = 0;
+private snapshot(): HistorySnapshot {
+  return { shares: this.shares, costBasis: this.costBasis };
+}
 
-  constructor() {
-    makeAutoObservable(this);
-    // Must set up reaction per instance, outside the class or in constructor
-    reaction(
-      () => [this.firstName, this.lastName, this.email, this.role],
-      action(() => {
-        this.lastUpdated = Date.now();
-      }),
-    );
-  }
+private pushHistory() {
+  this.past.push(this.snapshot());
+  if (this.past.length > 50) this.past.shift();
+  this.future.length = 0;
+}
+
+setShares(shares: number) {
+  this.pushHistory();
+  this.shares = shares;
+}
+
+undo() {
+  if (this.past.length === 0) return;
+  this.future.unshift(this.snapshot());
+  const prev = this.past.pop()!;
+  this.shares = prev.shares;
+  this.costBasis = prev.costBasis;
 }
 ```
 
-The reaction callback must be wrapped in `action()` to avoid strict-mode
-warnings. You must explicitly list tracked fields in the reaction expression, or
-use `observe()` which fires per-field (no batching). Adding a field means
-remembering to add it to the reaction list too.
+The implementation is straightforward. Every mutating method must call
+`pushHistory()`. MobX libraries like `mobx-state-tree` have built-in
+snapshotting that makes undo simpler, but the core library leaves it to you.
+
+ValUse's middleware eliminates the manual `pushHistory()` call in each setter.
+MobX's manual approach gives you full control over what gets snapshotted and
+when, at the cost of remembering to call `pushHistory()` in every setter.
 
 ---
 
-## Per-row isolation
+## Shared config
 
-Editing one user's email must not re-render other rows.
+**ValUse** shares via `valueRef`:
 
-**ValUse**: automatic. Each field `.use()` subscribes to that field only:
+```ts
+export const refreshRateMs = value<number>(5_000);
+// In scope definition:
+refreshRate: valueRef(refreshRateMs),
+```
+
+**MobX** uses a shared observable class:
+
+```ts
+export class RefreshConfig {
+  rateMs = 5_000;
+  constructor() {
+    makeAutoObservable(this);
+  }
+  setRate(ms: number) {
+    this.rateMs = ms;
+  }
+}
+
+export const refreshConfig = new RefreshConfig();
+```
+
+Both work well. MobX's approach is standard OOP: a shared instance referenced by
+whoever needs it. ValUse's is a shared reactive value threaded into scopes.
+MobX's automatic proxy tracking means any computed or reaction reading
+`refreshConfig.rateMs` will update when it changes.
+
+---
+
+## React components
+
+**ValUse** uses per-field `.use()` hooks:
 
 ```tsx
-function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
-  const [email, setEmail] = user.email.use();
-  return <input value={email} onChange={(e) => setEmail(e.target.value)} />;
+function HoldingRow({ id }: { id: string }) {
+  const holding = holdings.get(id)!;
+  const [symbol] = holding.symbol.use();
+  const [shares, setShares] = holding.shares.use();
+  // ...
+  return (
+    <tr>
+      {/* ... */}
+      <td>
+        <button onClick={holding.$undo}>Undo</button>
+        <button onClick={holding.$redo}>Redo</button>
+      </td>
+    </tr>
+  );
 }
 ```
 
-**MobX**: automatic with `observer()`, but requires wrapping every component:
+**MobX** wraps the component with `observer()` and reads properties directly:
 
 ```tsx
-const UserRow = observer(function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
+const HoldingRow = observer(function HoldingRow({
+  holding,
+}: {
+  holding: HoldingModel;
+}) {
+  const { symbol, shares, costBasis, marketValue, gainLossPercent, isUp } =
+    holding;
+
   return (
-    <input
-      value={user.email}
-      onChange={(e) => {
-        user.email = e.target.value;
-      }}
-    />
+    <tr
+      className={
+        isUp ? 'gain'
+        : isUp === false ?
+          'loss'
+        : ''
+      }
+    >
+      <td>{symbol}</td>
+      <td>
+        <input
+          type="number"
+          value={shares}
+          onChange={(e) => holding.setShares(Number(e.target.value))}
+        />
+      </td>
+      {/* ... */}
+      <td>
+        <button onClick={() => holding.undo()}>Undo</button>
+        <button onClick={() => holding.redo()}>Redo</button>
+      </td>
+    </tr>
   );
 });
 ```
 
-MobX's proxy tracking gives excellent per-row isolation, but only if you wrap
-the component with `observer()`. Forget it and the component silently stops
-reacting.
-
----
-
-## Async data fetch
-
-Fetch a user's profile by email. Abort the previous request when email changes.
-
-**ValUse**: a derivation that happens to be async:
-
-```ts
-const user = valueScope(
-  { email: value<string>() },
-  {
-    profile: async ({ scope, signal }) => {
-      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-      return res.json();
-    },
-  },
-);
-```
-
-Abort is automatic. Re-fetch is reactive. In components, `profile.useAsync()`
-returns `[value, state]` with `state.isPending` / `state.isError` /
-`state.isUpdating` flags for loading/error UI.
-
-**MobX**: `flow()` for async, but abort and re-trigger are manual:
-
-```ts
-class UserModel {
-  profile: unknown = null;
-  profileLoading = false;
-  profileError: unknown = null;
-  private controller?: AbortController;
-
-  constructor() {
-    makeAutoObservable(this, { fetchProfile: flow });
-    // Must manually trigger re-fetch when email changes
-    reaction(
-      () => this.email,
-      (email) => this.fetchProfile(email),
-    );
-  }
-
-  *fetchProfile(email: string) {
-    this.controller?.abort();
-    this.controller = new AbortController();
-    this.profileLoading = true;
-    this.profileError = null;
-    try {
-      const res = yield fetch(`/api/users/${email}`, {
-        signal: this.controller.signal,
-      });
-      this.profile = yield res.json();
-      this.profileLoading = false;
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        this.profileError = err;
-        this.profileLoading = false;
-      }
-    }
-  }
-}
-```
-
-`flow()` uses generators for async, which is MobX-idiomatic but unfamiliar to
-most developers. Abort logic, loading/error state, and the `reaction()` to
-re-trigger are all manual.
-
----
-
-## Sync reads async
-
-Derive `avatarUrl` from the async `profile`.
-
-**ValUse**: just another derivation. Sees `Profile | undefined`, never a
-promise:
-
-```ts
-avatarUrl: ({ scope }) => scope.profile.use()?.avatar ?? '/default-avatar.png',
-```
-
-**MobX**: computed getter reads the observable, but you must handle the loading
-state yourself:
-
-```ts
-get avatarUrl() {
-  return (this.profile as any)?.avatar ?? '/default-avatar.png';
-}
-```
-
-This works; MobX computeds can read any observable. But there's no type-safe
-distinction between "not yet loaded" and "loaded with null." You're reading a
-property that might not be populated yet, with no `AsyncState` to tell you why.
-
----
-
-## Multiple independent instances
-
-Two independent user tables, no shared state.
-
-**ValUse:**
-
-```ts
-const tableA = user.createMap();
-const tableB = user.createMap();
-```
-
-**MobX**: classes are already per-instance, but you need a collection wrapper:
-
-```ts
-class UserStore {
-  users = observable.map<string, UserModel>();
-
-  addUser(id: string, data?: UserData) {
-    this.users.set(id, new UserModel(data));
-  }
-}
-
-const storeA = new UserStore();
-const storeB = new UserStore();
-```
-
-MobX classes are naturally multi-instance, but you end up building your own
-collection class with factory logic, which is essentially what `createMap()`
-does out of the box.
-
----
-
-## Type safety
-
-**ValUse**: field access is fully type-checked via dot-access on the instance:
-
-```ts
-user.email.get(); // string
-user.displayName.get(); // string
-user.emal; // TS error — typo caught
-user.displayName.set('x'); // TS error — derived fields have no set()
-```
-
-**MobX**: direct property access is fully typed:
-
-```ts
-user.email; // string
-user.displayName; // string
-user.emal; // TS error
-user.displayName = 'x'; // TS error if using getter
-```
-
-MobX has excellent type safety via direct property access. This is one area
-where MobX and ValUse are on equal footing. Both use dot-access with inferred
-types. The tradeoff is that MobX requires class definitions and
-`makeAutoObservable` to get there, while ValUse infers types from a plain object
-definition.
-
----
-
-## Extending and reuse
-
-Add tracking to any scope without modifying the original.
-
-**ValUse**: `.extendValues()` and `.extendConfig()` return new scopes that add
-state and lifecycle without mutating the original:
-
-```ts
-const withTracking = (scope) =>
-  scope
-    .extendValues({
-      lastUpdated: value<number>(0),
-      changeCount: value<number>(0),
-    })
-    .extendConfig({
-      onChange: ({ scope, changes }) => {
-        scope.lastUpdated.set(Date.now());
-        scope.changeCount.set((prev) => prev + changes.size);
-      },
-    });
-
-const trackedUser = withTracking(user);
-const trackedTodo = withTracking(todo);
-```
-
-**MobX**: class inheritance with `makeObservable`:
-
-```ts
-import { makeObservable, observable, action } from 'mobx';
-
-class Tracked {
-  lastUpdated = 0;
-  changeCount = 0;
-
-  constructor() {
-    // Each class must annotate its own properties
-    makeObservable(this, {
-      lastUpdated: observable,
-      changeCount: observable,
-      recordUpdate: action,
-    });
-  }
-
-  recordUpdate() {
-    this.lastUpdated = Date.now();
-    this.changeCount++;
-  }
-}
-
-class TrackedUser extends Tracked {
-  name = '';
-  email = '';
-
-  constructor() {
-    super();
-    makeObservable(this, {
-      name: observable,
-      email: observable,
-      setName: action,
-    });
-  }
-
-  setName(name: string) {
-    this.name = name;
-    this.recordUpdate(); // must call manually in each setter
-  }
-}
-```
-
-MobX supports class inheritance, but `makeAutoObservable` (the convenient API)
-cannot be used in both a base class and its subclass. You must fall back to
-`makeObservable` with explicit annotations at every level. Each setter must
-manually call `recordUpdate()`; there's no centralized "on any write" hook that
-composes across the hierarchy.
-
----
-
-## Lifecycle
-
-Create a WebSocket on init, announce presence when observed, clean up on
-destroy.
-
-**ValUse**: two hooks with scoped `onCleanup`, declared alongside the model:
-
-```ts
-const chatRoom = valueScope(
-  {
-    roomId: value<string>(),
-    ws: value<WebSocket | null>(null),
-  },
-  {
-    onCreate: ({ scope, onCleanup }) => {
-      const ws = new WebSocket(`/rooms/${scope.roomId.get()}`);
-      scope.ws.set(ws);
-      onCleanup(() => ws.close());
-    },
-    onUsed: ({ scope, onCleanup }) => {
-      scope.ws.get()?.send(JSON.stringify({ type: 'join' }));
-      onCleanup(() => scope.ws.get()?.send(JSON.stringify({ type: 'leave' })));
-    },
-  },
-);
-
-const rooms = chatRoom.createMap();
-rooms.set('room-1', { roomId: 'room-1' }); // onCreate fires
-rooms.delete('room-1'); // onCreate's onCleanup fires, WebSocket closes
-```
-
-**MobX**: constructor for init, `onBecomeObserved`/`onBecomeUnobserved` for lazy
-activation, manual `dispose()` for cleanup:
-
-```ts
-import { makeAutoObservable, onBecomeObserved, onBecomeUnobserved } from 'mobx';
-
-class ChatRoom {
-  roomId: string;
-  messages: Message[] = [];
-  private ws?: WebSocket;
-  private disposers: (() => void)[] = [];
-
-  constructor(roomId: string) {
-    this.roomId = roomId;
-    makeAutoObservable(this, { ws: false, disposers: false });
-
-    // "onInit" — constructor
-    this.ws = new WebSocket(`/rooms/${roomId}`);
-    this.ws.onmessage = (e) => this.messages.push(JSON.parse(e.data));
-
-    // "onUsed" / "onUnused" — per property
-    this.disposers.push(
-      onBecomeObserved(this, 'messages', () => {
-        this.ws?.send(JSON.stringify({ type: 'join' }));
-      }),
-      onBecomeUnobserved(this, 'messages', () => {
-        this.ws?.send(JSON.stringify({ type: 'leave' }));
-      }),
-    );
-  }
-
-  // "onDestroy" — manual, caller must invoke
-  dispose() {
-    this.ws?.close();
-    this.disposers.forEach((d) => d());
-  }
-}
-```
-
-MobX has genuine lazy activation support;
-`onBecomeObserved`/`onBecomeUnobserved` fire when the first observer subscribes
-and when the last detaches. However, there's no built-in `onDestroy`, so you
-implement a `dispose()` method and collect disposers manually. The caller must
-remember to call it. The property names passed to `onBecomeObserved` are strings
-with no compile-time check; a typo silently does nothing.
-
----
-
-## Shared and nested state
-
-A person with tags that derive from a shared global set. A board where each
-instance gets its own column collection.
-
-**ValUse**: `valueRef` for shared state, factory refs for per-instance state:
-
-```ts
-const globalTags = valueSet<string>(['admin', 'root']);
-
-const person = valueScope(
-  {
-    name: value<string>(),
-    tags: valueSet<string>(),
-    specialTags: valueRef(globalTags),
-  },
-  {
-    hasSpecialTag: ({ scope }) =>
-      scope.tags.use().some((t) => scope.specialTags.use().has(t)),
-  },
-);
-
-// Per-instance ref — each board gets its own column map
-const column = valueScope({ id: value<string>(), name: value<string>() });
-
-const board = valueScope(
-  {
-    boardId: value<string>(),
-    columns: valueRef(() => column.createMap()),
-  },
-  {
-    columnCount: ({ scope }) => scope.columns.use().size,
-  },
-);
-
-const a = board.create({ boardId: 'a' });
-const b = board.create({ boardId: 'b' });
-// a and b each have independent column maps
-```
-
-**MobX**: constructor injection of shared observables:
-
-```ts
-import { makeAutoObservable, observable } from 'mobx';
-
-class TagRegistry {
-  tags = observable.set<string>(['admin', 'root']);
-  constructor() {
-    makeAutoObservable(this);
-  }
-}
-
-class Person {
-  name = '';
-  tags = observable.set<string>();
-
-  constructor(private globalTags: TagRegistry) {
-    makeAutoObservable(this);
-  }
-
-  get hasSpecialTag(): boolean {
-    return [...this.tags].some((t) => this.globalTags.tags.has(t));
-  }
-}
-
-const registry = new TagRegistry();
-const alice = new Person(registry);
-const bob = new Person(registry); // same registry
-```
-
-MobX handles shared state well: pass shared observables via constructor and
-MobX's dependency tracking reacts automatically. `hasSpecialTag` re-derives when
-either `this.tags` or `this.globalTags.tags` changes. The tradeoff is manual
-wiring: you must pass shared instances through constructors or a root store.
-There's no per-instance factory concept; if a `Board` needs its own `columns`
-store, you instantiate it in the constructor and manage its lifetime yourself.
+MobX's component code is arguably cleaner: destructure the model, use the
+values, done. No `.use()` calls, no `[value, setter]` tuples. The `observer()`
+HOC tracks which properties the render function reads and subscribes to exactly
+those.
+
+The tradeoff is that `observer()` must wrap every component that reads
+observables. Forget it and the component silently stops reacting. There is no
+runtime warning. ValUse's `.use()` calls are more verbose but fail loudly if
+misused (calling a hook outside React throws).
+
+Both achieve the same granularity: changing one holding's price re-renders only
+that row.
 
 ---
 
 ## The full picture
 
-All concerns combined.
+Complete source for both implementations. The ValUse model is 62 lines; the MobX
+model (class + collection) is 218 lines. React components are similar: 77 vs 74
+lines.
 
-### ValUse
+### ValUse — model ([`valuse.ts`](src/comparison/valuse.ts))
 
 ```ts
-import { value, valueScope } from 'valuse';
+import { value, valueRef, valueScope } from 'valuse';
+import { withHistory } from 'valuse/middleware';
 
-const user = valueScope(
-  {
-    firstName: value<string>(),
-    lastName: value<string>(),
-    email: value<string>(),
-    role: value<string>('viewer'),
-    lastUpdated: value<number>(0),
-  },
-  {
-    displayName: ({ scope }) =>
-      `${scope.firstName.use()} ${scope.lastName.use()}`,
-    profile: async ({ scope, signal }) => {
-      const res = await fetch(`/api/users/${scope.email.use()}`, { signal });
-      return res.json();
+export const refreshRateMs = value<number>(5_000);
+
+export const holdingScope = withHistory(
+  valueScope(
+    {
+      symbol: value<string>(),
+      shares: value<number>(0),
+      costBasis: value<number>(0),
+      refreshRate: valueRef(refreshRateMs),
     },
-  },
-  {
-    avatarUrl: ({ scope }) =>
-      scope.profile.use()?.avatar ?? '/default-avatar.png',
-  },
-  {
-    onChange: ({ scope }) => {
-      scope.lastUpdated.set(Date.now());
+    {
+      price: async ({ scope, set, signal, deferBy }) => {
+        while (!signal.aborted) {
+          const res = await fetch(`/api/quote/${scope.symbol.use()}`, {
+            signal,
+          });
+          set((await res.json()).price as number);
+          await deferBy(scope.refreshRate.use());
+        }
+      },
     },
-  },
+    {
+      marketValue: ({ scope }) => {
+        const price = scope.price.use();
+        return price != null ? scope.shares.use() * price : undefined;
+      },
+      gainLoss: ({ scope }) => {
+        const price = scope.price.use();
+        if (price == null) return undefined;
+        return (price - scope.costBasis.use()) * scope.shares.use();
+      },
+      gainLossPercent: ({ scope }) => {
+        const price = scope.price.use();
+        const basis = scope.costBasis.use();
+        if (price == null || basis === 0) return undefined;
+        return ((price - basis) / basis) * 100;
+      },
+    },
+    {
+      isUp: ({ scope }) => {
+        const gainLoss = scope.gainLoss.use();
+        return gainLoss != null ? gainLoss >= 0 : undefined;
+      },
+    },
+  ),
+  { maxDepth: 50, fields: ['shares', 'costBasis'] },
 );
-
-const users = user.createMap();
 ```
 
-```tsx
-function UserTable() {
-  const keys = users.useKeys();
+### MobX — model ([`mobx.ts`](src/comparison/mobx.ts))
 
-  return (
-    <table>
-      <tbody>
-        {keys.map((id) => (
-          <UserRow key={id} id={id} />
-        ))}
-      </tbody>
-    </table>
-  );
-}
+See [`mobx.ts`](src/comparison/mobx.ts) for the complete 218-line implementation
+including `HoldingModel` (fields, computeds, history, polling) and
+`HoldingsCollection` (observable map wrapper).
 
-function UserRow({ id }: { id: string }) {
-  const user = users.get(id)!;
-  const [displayName] = user.displayName.use();
-  const [avatarUrl] = user.avatarUrl.use();
-  const [email, setEmail] = user.email.use();
-  const [role] = user.role.use();
+### Components
 
-  return (
-    <tr>
-      <td>{displayName}</td>
-      <td>
-        <img src={avatarUrl} />
-      </td>
-      <td>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} />
-      </td>
-      <td>{role}</td>
-    </tr>
-  );
-}
-```
+See [`valuse.ui.tsx`](src/comparison/valuse.ui.tsx) and
+[`mobx.ui.tsx`](src/comparison/mobx.ui.tsx). Both are compact (77 and 74 lines).
+MobX's component code is slightly cleaner thanks to direct property access and
+destructuring, but every component must be wrapped with `observer()`.
 
-### MobX
-
-```ts
-import { makeAutoObservable, observable, reaction, flow, action } from 'mobx';
-
-type UserData = {
-  firstName?: string;
-  lastName?: string;
-  email?: string;
-  role?: string;
-};
-
-class UserModel {
-  firstName = '';
-  lastName = '';
-  email = '';
-  role = 'viewer';
-  lastUpdated = 0;
-  profile: unknown = null;
-  profileLoading = false;
-  profileError: unknown = null;
-  private controller?: AbortController;
-
-  constructor(data?: UserData) {
-    makeAutoObservable(this, {
-      fetchProfile: flow,
-      controller: false,
-    });
-    if (data) Object.assign(this, data);
-
-    reaction(
-      () => [this.firstName, this.lastName, this.email, this.role],
-      action(() => {
-        this.lastUpdated = Date.now();
-      }),
-    );
-
-    reaction(
-      () => this.email,
-      (email) => this.fetchProfile(email),
-    );
-  }
-
-  get displayName() {
-    return `${this.firstName} ${this.lastName}`;
-  }
-
-  get avatarUrl() {
-    return (this.profile as any)?.avatar ?? '/default-avatar.png';
-  }
-
-  *fetchProfile(email: string) {
-    this.controller?.abort();
-    this.controller = new AbortController();
-    this.profileLoading = true;
-    this.profileError = null;
-    try {
-      const res = yield fetch(`/api/users/${email}`, {
-        signal: this.controller.signal,
-      });
-      this.profile = yield res.json();
-      this.profileLoading = false;
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        this.profileError = err;
-        this.profileLoading = false;
-      }
-    }
-  }
-}
-
-class UserStore {
-  users = observable.map<string, UserModel>();
-
-  constructor() {
-    makeAutoObservable(this);
-  }
-
-  addUser(id: string, data?: UserData) {
-    this.users.set(id, new UserModel(data));
-  }
-
-  removeUser(id: string) {
-    this.users.delete(id);
-  }
-}
-
-const store = new UserStore();
-```
-
-```tsx
-import { observer } from 'mobx-react-lite';
-
-const UserTable = observer(function UserTable() {
-  const ids = Array.from(store.users.keys());
-  return (
-    <table>
-      <tbody>
-        {ids.map((id) => (
-          <UserRow key={id} id={id} />
-        ))}
-      </tbody>
-    </table>
-  );
-});
-
-const UserRow = observer(function UserRow({ id }: { id: string }) {
-  const user = store.users.get(id)!;
-
-  return (
-    <tr>
-      <td>{user.displayName}</td>
-      <td>
-        <img src={user.avatarUrl} />
-      </td>
-      <td>
-        <input
-          value={user.email}
-          onChange={(e) => {
-            user.email = e.target.value;
-          }}
-        />
-      </td>
-      <td>{user.role}</td>
-    </tr>
-  );
-});
-```
-
-Two classes, two `reaction()` setups, a generator-based `flow()` for async with
-manual abort, and `observer()` on every component. MobX is powerful and the
-property access is clean, but the ceremony adds up, especially around async and
-lifecycle.
+Of the libraries compared here, MobX is the one where the DX is closest to
+ValUse. The core difference is declaration style (classes vs. scope
+declarations) and how much the framework handles for you (async derivation,
+middleware). Teams already invested in MobX have less reason to switch than
+teams using other libraries, because the reactive model is fundamentally
+similar.
