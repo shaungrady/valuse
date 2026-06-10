@@ -1,6 +1,7 @@
 import { expectTypeOf } from 'expect-type';
 import { value } from '../../core/value.js';
 import { valueScope } from '../../core/value-scope.js';
+import { withHistory, type HistoryInstance } from '../../middleware/history.js';
 import type { ScopeMap } from '../../core/scope-map.js';
 import type { ScopeInstance } from '../../core/scope-types.js';
 import type { FieldValue } from '../../core/field-value.js';
@@ -53,3 +54,45 @@ expectTypeOf(userMap.size).toEqualTypeOf<number>();
 
 expectTypeOf(userMap.has(1)).toEqualTypeOf<boolean>();
 expectTypeOf(userMap.delete(1)).toEqualTypeOf<boolean>();
+
+// ── withHistory: createMap() propagates HistoryInstance ─────────────
+
+const historyTemplate = withHistory(valueScope(def));
+const historyMap = historyTemplate.createMap<number>();
+
+// get() returns the enhanced instance type
+const historyInstance = historyMap.get(1);
+expectTypeOf(historyInstance).toEqualTypeOf<
+	(ScopeInstance<typeof def> & HistoryInstance) | undefined
+>();
+
+if (historyInstance) {
+	// Original fields still work
+	expectTypeOf(historyInstance.name).toEqualTypeOf<
+		FieldValue<string | undefined, string | undefined>
+	>();
+	expectTypeOf(historyInstance.score).toEqualTypeOf<
+		FieldValue<number, number>
+	>();
+
+	// History methods are present without casting
+	expectTypeOf(historyInstance.$undo).toEqualTypeOf<() => void>();
+	expectTypeOf(historyInstance.$redo).toEqualTypeOf<() => void>();
+	expectTypeOf(historyInstance.$canUndo).toEqualTypeOf<boolean>();
+	expectTypeOf(historyInstance.$canRedo).toEqualTypeOf<boolean>();
+	expectTypeOf(historyInstance.$clearHistory).toEqualTypeOf<() => void>();
+}
+
+// set() also returns the enhanced instance type
+const setResult = historyMap.set(1, { name: 'Alice' });
+expectTypeOf(setResult).toEqualTypeOf<
+	ScopeInstance<typeof def> & HistoryInstance
+>();
+
+// values() and entries() carry the enhanced type
+expectTypeOf(historyMap.values()).toEqualTypeOf<
+	(ScopeInstance<typeof def> & HistoryInstance)[]
+>();
+expectTypeOf(historyMap.entries()).toEqualTypeOf<
+	[number, ScopeInstance<typeof def> & HistoryInstance][]
+>();
