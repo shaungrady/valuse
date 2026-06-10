@@ -25,6 +25,7 @@ import { getReactHooks, versionedAdapter } from './react-bridge.js';
 export class ScopeMap<
 	K extends string | number = string | number,
 	Def extends Record<string, unknown> = Record<string, unknown>,
+	Instance extends ScopeInstance<Def> = ScopeInstance<Def>,
 > {
 	readonly #template: ScopeTemplate<Def>;
 	readonly #instances = new Map<K, ScopeInstance<Def>>();
@@ -58,8 +59,8 @@ export class ScopeMap<
 	 * @param key - the key to look up.
 	 * @returns the {@link ScopeInstance}, or `undefined` if not found.
 	 */
-	get(key: K): ScopeInstance<Def> | undefined {
-		return this.#instances.get(key);
+	get(key: K): Instance | undefined {
+		return this.#instances.get(key) as Instance | undefined;
 	}
 
 	/**
@@ -73,19 +74,19 @@ export class ScopeMap<
 	 * @param data - optional initial or update values for the instance.
 	 * @returns the new or existing {@link ScopeInstance}.
 	 */
-	set(key: K, data?: Partial<ValueInputOf<Def>>): ScopeInstance<Def> {
+	set(key: K, data?: Partial<ValueInputOf<Def>>): Instance {
 		const existing = this.#instances.get(key);
 		if (existing) {
 			if (data) {
 				existing.$setSnapshot(data);
 			}
-			return existing;
+			return existing as Instance;
 		}
 
 		const instance = this.#template.create(data);
 		this.#instances.set(key, instance);
 		this.#notifyListeners();
-		return instance;
+		return instance as Instance;
 	}
 
 	/**
@@ -116,16 +117,16 @@ export class ScopeMap<
 	 * Return all instances as an array.
 	 * @returns an array of all {@link ScopeInstance}s in the collection.
 	 */
-	values(): ScopeInstance<Def>[] {
-		return [...this.#instances.values()];
+	values(): Instance[] {
+		return [...this.#instances.values()] as Instance[];
 	}
 
 	/**
 	 * Return all entries as `[key, instance]` tuples.
 	 * @returns an array of entries.
 	 */
-	entries(): [K, ScopeInstance<Def>][] {
-		return [...this.#instances.entries()];
+	entries(): [K, Instance][] {
+		return [...this.#instances.entries()] as [K, Instance][];
 	}
 
 	/**
