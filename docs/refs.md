@@ -28,24 +28,24 @@ the scope reads from the same value:
 ```ts
 import { value, valueRef, valueScope, valueSet } from 'valuse';
 
-const currentUser = value<string>('anonymous');
-const globalTags = valueSet(['admin', 'root']);
+const connectionStatus = value<'online' | 'offline'>('online');
+const activeLabels = valueSet(['inbox', 'sent']);
 
-const widget = valueScope({
-  label: value<string>(),
-  user: valueRef(currentUser),
-  tags: valueRef(globalTags),
+const inboxScope = valueScope({
+  userId: value<string>(),
+  connection: valueRef(connectionStatus),
+  labels: valueRef(activeLabels),
 });
 
-const a = widget.create({ label: 'Widget A' });
-const b = widget.create({ label: 'Widget B' });
+const alice = inboxScope.create({ userId: 'alice' });
+const bob = inboxScope.create({ userId: 'bob' });
 
-a.user.get(); // 'anonymous'
-b.user.get(); // 'anonymous' — same source
+alice.connection.get(); // 'online'
+bob.connection.get(); // 'online', same source
 
-currentUser.set('alice');
-a.user.get(); // 'alice'
-b.user.get(); // 'alice' — both updated
+connectionStatus.set('offline');
+alice.connection.get(); // 'offline'
+bob.connection.get(); // 'offline', both updated
 ```
 
 Refs are read-only on the instance. To write, use the original source directly.
@@ -56,22 +56,23 @@ When each instance needs its own independent state, pass a factory function to
 `valueRef()`. The factory is called once per `.create()`:
 
 ```ts
-const column = valueScope({
-  id: value<string>(),
-  name: value<string>(),
+const threadScope = valueScope({
+  threadId: value<string>(),
+  subject: value<string>(),
+  isRead: value(false),
 });
 
-const board = valueScope({
-  boardId: value<string>(),
-  columns: valueRef(() => column.createMap()),
+const inboxScope = valueScope({
+  userId: value<string>(),
+  threads: valueRef(() => threadScope.createMap()),
 });
 
-const boardA = board.create({ boardId: 'a' });
-const boardB = board.create({ boardId: 'b' });
+const alice = inboxScope.create({ userId: 'alice' });
+const bob = inboxScope.create({ userId: 'bob' });
 
-// Each board gets its own independent ScopeMap
-boardA.columns.get(); // Map {}
-boardB.columns.get(); // Map {} — different instance
+// Each inbox gets its own independent ScopeMap
+alice.threads.get(); // Map {}
+bob.threads.get(); // Map {}, different instance
 ```
 
 Factory refs are useful for composition patterns where each parent instance owns
@@ -83,24 +84,24 @@ Derivations can read through refs using `.use()`. Reactivity flows through the
 ref boundary:
 
 ```ts
-const board = valueScope(
+const inboxScope = valueScope(
   {
-    boardId: value<string>(),
-    columns: valueRef(() => column.createMap()),
+    userId: value<string>(),
+    threads: valueRef(() => threadScope.createMap()),
   },
   {
-    columnCount: ({ scope }) => scope.columns.use().size,
+    threadCount: ({ scope }) => scope.threads.use().size,
   },
 );
 
-const inst = board.create({ boardId: 'main' });
-inst.columnCount.get(); // 0
+const inbox = inboxScope.create({ userId: 'alice' });
+inbox.threadCount.get(); // 0
 
-inst.columns.set('col1', { id: 'col1', name: 'Todo' });
-inst.columnCount.get(); // 1
+inbox.threads.set('t1', { threadId: 't1', subject: 'Welcome' });
+inbox.threadCount.get(); // 1
 ```
 
-When `columns` changes (entries added or removed), `columnCount` recomputes
+When `threads` changes (entries added or removed), `threadCount` recomputes
 automatically. The reactive graph does not care that the data comes from a ref;
 `.use()` tracks the dependency the same way.
 
@@ -142,18 +143,18 @@ back the referenced instance itself, so you can reach into its fields with the
 usual `.get()` / `.use()` pattern:
 
 ```ts
-const settings = valueScope({
-  theme: value('dark'),
-  locale: value('en'),
+const preferencesScope = valueScope({
+  pollInterval: value(30_000),
+  maxResults: value(50),
 });
 
-const globalSettings = settings.create({ theme: 'light' });
+const globalPreferences = preferencesScope.create({ pollInterval: 10_000 });
 
-const app = valueScope(
-  { settings: valueRef(globalSettings) },
+const inboxScope = valueScope(
+  { preferences: valueRef(globalPreferences) },
   {
-    greeting: ({ scope }) =>
-      scope.settings.use().locale.get() === 'en' ? 'Hello' : 'Hola',
+    pollLabel: ({ scope }) =>
+      `Polling every ${scope.preferences.use().pollInterval.get() / 1000}s`,
   },
 );
 ```
@@ -171,28 +172,28 @@ derivations.
 When the last subscriber detaches, referenced scopes receive `onUnused` as well.
 
 ```ts
-const dataSource = valueScope(
+const notificationSource = valueScope(
   {
-    data: value<string[]>([]),
+    notifications: value<Notification[]>([]),
   },
   {
     onUsed: ({ scope, onCleanup }) => {
-      const ws = new WebSocket('/feed');
-      ws.onmessage = (e) => scope.data.set(JSON.parse(e.data));
+      const ws = new WebSocket('/ws/notifications');
+      ws.onmessage = (e) => scope.notifications.set(JSON.parse(e.data));
       onCleanup(() => ws.close());
     },
   },
 );
 
-const sharedSource = dataSource.create();
+const sharedSource = notificationSource.create();
 
-const dashboard = valueScope(
+const inboxScope = valueScope(
   { source: valueRef(sharedSource) },
-  { count: ({ scope }) => scope.source.use().data.get().length },
+  { count: ({ scope }) => scope.source.use().notifications.get().length },
 );
 
-const inst = dashboard.create();
-// When dashboard gets its first subscriber, sharedSource's onUsed fires
+const inbox = inboxScope.create();
+// When inbox gets its first subscriber, sharedSource's onUsed fires
 // and the WebSocket opens.
 ```
 
@@ -208,27 +209,27 @@ management is automatic. For full details on `onUsed`/`onUnused`, see
 ```ts
 const authState = value<{ userId: string; role: string } | null>(null);
 
-const protectedScope = valueScope(
+const inboxScope = valueScope(
   { auth: valueRef(authState) },
-  { isAdmin: ({ scope }) => scope.auth.use()?.role === 'admin' },
+  { canManage: ({ scope }) => scope.auth.use()?.role === 'admin' },
 );
 ```
 
 ### Per-instance child collections
 
 ```ts
-const todoList = valueScope(
+const inboxScope = valueScope(
   {
-    name: value<string>(),
-    items: valueRef(() => todoItem.createMap()),
+    userId: value<string>(),
+    threads: valueRef(() => threadScope.createMap()),
   },
   {
-    count: ({ scope }) => scope.items.use().size,
-    completed: ({ scope }) =>
-      scope.items
+    threadCount: ({ scope }) => scope.threads.use().size,
+    hasUnread: ({ scope }) =>
+      scope.threads
         .use()
         .values()
-        .filter((i) => i.done.get()).length,
+        .some((t) => !t.isRead.get()),
   },
 );
 ```
@@ -236,21 +237,24 @@ const todoList = valueScope(
 ### Shared configuration
 
 ```ts
-const theme = value<'light' | 'dark'>('light');
+const pollInterval = value<number>(30_000);
 
-const widget = valueScope(
+const inboxScope = valueScope(
   {
-    theme: valueRef(theme),
-    content: value<string>(),
+    pollInterval: valueRef(pollInterval),
+    userId: value<string>(),
   },
   {
-    className: ({ scope }) =>
-      scope.theme.use() === 'dark' ? 'widget-dark' : 'widget-light',
+    pollLabel: ({ scope }) =>
+      `Refreshing every ${scope.pollInterval.use() / 1000}s`,
   },
 );
 ```
 
 ### Cross-scope communication
+
+Refs are read-only on the instance. The consumer reads through the ref; the
+producer writes to the shared source directly:
 
 ```ts
 const eventBus = valueMap<string, unknown>();
@@ -258,16 +262,16 @@ const eventBus = valueMap<string, unknown>();
 const producer = valueScope(
   { events: valueRef(eventBus) },
   {
-    publish:
-      ({ scope }) =>
-      (type: string, data: unknown) => {
-        scope.events.get().set(type, data);
-      },
+    publish: () => (type: string, data: unknown) => {
+      eventBus.set((draft) => {
+        draft.set(type, data);
+      });
+    },
   },
 );
 
 const consumer = valueScope(
   { events: valueRef(eventBus) },
-  { lastEvent: ({ scope }) => scope.events.use().get('notification') },
+  { lastNotification: ({ scope }) => scope.events.use().get('notification') },
 );
 ```

@@ -9,22 +9,23 @@ buffer.
 import { valueScope, value } from 'valuse';
 import { withHistory } from 'valuse/middleware';
 
-const editor = withHistory(
+const draftScope = withHistory(
   valueScope({
-    title: value<string>(''),
+    to: value<string>(''),
+    subject: value<string>(''),
     body: value<string>(''),
   }),
   { maxDepth: 100, batchMs: 300 },
 );
 
-const doc = editor.create({ title: 'Untitled', body: '' });
-doc.title.set('Draft');
-doc.title.set('Draft (v2)');
+const draft = draftScope.create({ to: '', subject: '', body: '' });
+draft.subject.set('Hello');
+draft.subject.set('Hello, world');
 
-doc.$canUndo; // true
-doc.$undo(); // title: 'Draft'
-doc.$undo(); // title: 'Untitled'
-doc.$redo(); // title: 'Draft'
+draft.$canUndo; // true
+draft.$undo(); // subject: 'Hello'
+draft.$undo(); // subject: ''
+draft.$redo(); // subject: 'Hello'
 ```
 
 ## Table of contents
@@ -90,30 +91,24 @@ interface HistoryInstance {
 ## Reactive $canUndo / $canRedo
 
 Because `$canUndo` / `$canRedo` are signal-backed getters, you can wire them
-into React components via `$use()` (which subscribes to any change on the
-instance, so the getter stays reactive), or into derivations and sibling scopes:
+into React components via `$use()`. `$use()` subscribes to any field change on
+the instance, so the component re-renders whenever a field changes, and the
+getter reflects the latest history state:
 
 ```tsx
-function UndoButton({ doc }) {
-  doc.$use(); // subscribe to any change so $canUndo stays current
+function UndoButton({ draft }) {
+  draft.$use(); // subscribe to any change so $canUndo stays current
   return (
-    <button disabled={!doc.$canUndo} onClick={doc.$undo}>
+    <button disabled={!draft.$canUndo} onClick={draft.$undo}>
       Undo
     </button>
   );
 }
 ```
 
-Or in a derivation:
-
-```ts
-const editor = withHistory(
-  valueScope(
-    { body: value<string>('') },
-    { status: ({ scope }) => (scope.$canUndo ? 'dirty' : 'clean') },
-  ),
-);
-```
+`$canUndo` / `$canRedo` are instance-level properties, not scope fields, so they
+are not accessible inside derivations (derivations see the field tree, not the
+instance). Read them in React components or lifecycle hooks instead.
 
 ## Recording is synchronous
 
@@ -121,9 +116,9 @@ Unlike `onChange` (which batches on a microtask), history recording is
 synchronous. You can call `$undo()` immediately after `.set()`:
 
 ```ts
-doc.title.set('A');
-doc.title.set('B');
-doc.$undo(); // 'A', without awaiting a microtask
+draft.subject.set('A');
+draft.subject.set('B');
+draft.$undo(); // 'A', without awaiting a microtask
 ```
 
 This is deliberate; undo in a typing context needs to feel instant. The
@@ -137,16 +132,16 @@ an input produces five sets, but only one undo-step should be needed to clear
 the word:
 
 ```ts
-const editor = withHistory(scope, { batchMs: 300 });
+const draftScope = withHistory(scope, { batchMs: 300 });
 
-doc.body.set('h');
-doc.body.set('he');
-doc.body.set('hel');
-doc.body.set('hell');
-doc.body.set('hello');
+draft.body.set('h');
+draft.body.set('he');
+draft.body.set('hel');
+draft.body.set('hell');
+draft.body.set('hello');
 // All within 300ms → one entry.
 
-doc.$undo(); // body: ''
+draft.$undo(); // body: ''
 ```
 
 The first change in a new window pushes a fresh entry. Subsequent changes within
@@ -163,12 +158,12 @@ Standard undo/redo rules apply: setting a new value after `$undo()` clears the
 forward history.
 
 ```ts
-doc.title.set('A');
-doc.title.set('B');
-doc.$undo(); // title: 'A', $canRedo: true
+draft.subject.set('A');
+draft.subject.set('B');
+draft.$undo(); // subject: 'A', $canRedo: true
 
-doc.title.set('C'); // fork — redo stack dropped
-doc.$canRedo; // false
+draft.subject.set('C'); // fork, redo stack dropped
+draft.$canRedo; // false
 ```
 
 ## Bounded depth
@@ -178,17 +173,17 @@ the oldest entries are dropped (not the newest, so you always keep the latest
 state).
 
 ```ts
-const editor = withHistory(scope, { maxDepth: 3 });
+const draftScope = withHistory(scope, { maxDepth: 3 });
 
-doc.count.set(1);
-doc.count.set(2);
-doc.count.set(3);
-doc.count.set(4);
+draft.body.set('first edit');
+draft.body.set('second edit');
+draft.body.set('third edit');
+draft.body.set('fourth edit');
 
 // Stack contains only 3 entries.
-doc.$undo(); // count: 3
-doc.$undo(); // count: 2
-doc.$canUndo; // false — entries for {0} and {1} were dropped.
+draft.$undo(); // body: 'third edit'
+draft.$undo(); // body: 'second edit'
+draft.$canUndo; // false, entries for earlier states were dropped.
 ```
 
 ## Tracking a subset of fields
@@ -197,12 +192,12 @@ By default every value field appears in the snapshot. Pass `fields` to ignore
 volatile state like focus, scroll position, or transient UI flags:
 
 ```ts
-withHistory(scope, { fields: ['title', 'body'] });
+withHistory(scope, { fields: ['to', 'subject', 'body'] });
 ```
 
 Fields not listed are still reactive; they just aren't restored by `$undo()` /
 `$redo()`. Useful for state that should be preserved across a time-travel event
-(e.g. "which item is focused") rather than rolled back.
+(e.g. "which field is focused") rather than rolled back.
 
 ## Undo/redo and other hooks
 

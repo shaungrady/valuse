@@ -8,18 +8,23 @@ pick up changes from other tabs in real time.
 import { valueScope, value } from 'valuse';
 import { withPersistence, localStorageAdapter } from 'valuse/middleware';
 
-const prefs = valueScope({
-  theme: value<'light' | 'dark'>(),
-  fontSize: value<number>(),
+const inboxPrefs = valueScope({
+  lastReadAt: value<number>(0),
+  filter: value<'all' | 'unread' | 'starred'>('all'),
+  pollInterval: value<number>(30_000),
 });
 
-const persistedPrefs = withPersistence(prefs, {
-  key: 'user-prefs',
+const persistedPrefs = withPersistence(inboxPrefs, {
+  key: 'inbox-prefs',
   adapter: localStorageAdapter,
 });
 
-const instance = persistedPrefs.create({ theme: 'light', fontSize: 14 });
-// If 'user-prefs' exists in localStorage, stored values override the input.
+const prefs = persistedPrefs.create({
+  lastReadAt: 0,
+  filter: 'all',
+  pollInterval: 30_000,
+});
+// If 'inbox-prefs' exists in localStorage, stored values override the input.
 ```
 
 ## Table of contents
@@ -97,7 +102,7 @@ made in another tab are reflected in your instance without a refresh.
 import { localStorageAdapter } from 'valuse/middleware';
 
 withPersistence(scope, {
-  key: 'settings',
+  key: 'inbox-prefs',
   adapter: localStorageAdapter,
 });
 ```
@@ -111,7 +116,7 @@ SSR-safe.
 import { sessionStorageAdapter } from 'valuse/middleware';
 
 withPersistence(scope, {
-  key: 'wizard-step',
+  key: 'draft-state',
   adapter: sessionStorageAdapter,
 });
 ```
@@ -126,7 +131,7 @@ database and object store on first use.
 import { indexedDBAdapter } from 'valuse/middleware';
 
 withPersistence(scope, {
-  key: 'large-dataset',
+  key: 'notification-cache',
   adapter: indexedDBAdapter({
     dbName: 'my-app',
     storeName: 'state', // optional, defaults to 'valuse'
@@ -144,7 +149,7 @@ No `subscribe`; IndexedDB doesn't emit change events across contexts.
 ## Custom adapters
 
 The adapter interface is intentionally minimal. URL search params, cookies, a
-REST endpoint, a WebSocket; anything that can round-trip a string fits:
+REST endpoint, a WebSocket: anything that can round-trip a string fits:
 
 ```ts
 import type { PersistenceAdapter } from 'valuse/middleware';
@@ -173,9 +178,9 @@ it, useful for skipping large derived blobs or ephemeral UI state:
 
 ```ts
 withPersistence(scope, {
-  key: 'settings',
+  key: 'inbox-prefs',
   adapter: localStorageAdapter,
-  fields: ['theme', 'fontSize'], // skip everything else
+  fields: ['lastReadAt', 'filter'], // skip pollInterval
 });
 ```
 
@@ -188,20 +193,20 @@ while the derivation re-runs, but the default is to skip them.
 > [!WARNING] The default serializer is `JSON.stringify` / `JSON.parse`. It
 > **silently** corrupts values that JSON can't represent: a `Date` rehydrates as
 > a `string`, a `Map` or `Set` becomes `{}` / `[]`, and `undefined` fields are
-> dropped — all with no error. On reload, your fields come back with the wrong
-> runtime type. If a persisted scope holds anything beyond JSON primitives,
-> arrays, and plain objects, provide your own `serialize` / `deserialize`.
+> dropped with no error. On reload, your fields come back with the wrong runtime
+> type. If a persisted scope holds anything beyond JSON primitives, arrays, and
+> plain objects, provide your own `serialize` / `deserialize`.
 
 `JSON.stringify` / `JSON.parse` can't round-trip `Date`, `Map`, `Set`, or typed
 arrays. Override `serialize` / `deserialize` when that matters:
 
 ```ts
 withPersistence(scope, {
-  key: 'settings',
+  key: 'inbox-prefs',
   adapter: localStorageAdapter,
   // `JSON.stringify` calls `Date.prototype.toJSON()` *before* the replacer
   // runs, so by the time an arrow replacer sees the value it's already a
-  // string. Read the original off the holder via `this[key]` instead — which
+  // string. Read the original off the holder via `this[key]` instead, which
   // requires a regular function, not an arrow.
   serialize: (snapshot) =>
     JSON.stringify(snapshot, function (key, value) {
@@ -245,18 +250,18 @@ bouncing back out as a write.
 
 ```ts
 // Tab A
-settingsA.theme.set('dark');
+prefsA.filter.set('unread');
 
-// Tab B — a few ms later
-settingsB.theme.get(); // 'dark'
+// Tab B, a few ms later
+prefsB.filter.get(); // 'unread'
 ```
 
 ```tsx
-// Tab B — a React component that reads theme via .use()
+// Tab B, a React component that reads filter via .use()
 // re-renders automatically when Tab A writes.
-function ThemeLabel({ settings }) {
-  const [theme] = settings.theme.use();
-  return <span>{theme}</span>;
+function FilterLabel({ prefs }) {
+  const [filter] = prefs.filter.use();
+  return <span>{filter}</span>;
 }
 ```
 
@@ -267,7 +272,7 @@ function ThemeLabel({ settings }) {
 | `onCreate`  | Read from adapter; if present, `$setSnapshot` over the input. |
 | `onChange`  | Write selected fields to adapter (throttled if configured).   |
 | `onDestroy` | Flush pending write, unsubscribe from cross-tab events.       |
-| `DISPATCH`  | (cross-tab) External write — hydrate via `$setSnapshot`.      |
+| `DISPATCH`  | (cross-tab) External write, hydrate via `$setSnapshot`.       |
 
 `withPersistence` never removes the stored data; `$destroy` leaves it in place
 so the next instance can hydrate.
