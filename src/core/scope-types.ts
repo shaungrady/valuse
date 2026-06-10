@@ -142,6 +142,35 @@ export type MapDefinition<Def> = {
 // derivation is then properly typed (no `any` leaking out).
 
 /**
+ * Unwrap a ref source to the value a derivation context's `.get()` /
+ * `.use()` should return.
+ *
+ * Unlike `ResolvedRef` (which only strips factory wrappers), this type
+ * also unwraps reactive primitives to their contained values, matching
+ * the runtime behaviour of `wrapRefForDerivation` in `scope-refs.ts`:
+ *
+ * - `Value<In, Out>` → `Out`
+ * - `ValueSchema<In, Out>` → `Out`
+ * - `ValuePlain<V>` → `V`
+ * - `ValueArray<In, Out>` → `readonly Out[]`
+ * - `ValueMap<K, V>` → `ReadonlyMap<K, V>`
+ * - `ValueSet<V>` → `ReadonlySet<V>`
+ * - Scope instances / ScopeMaps / plain objects → passed through as-is
+ *
+ * @typeParam S - the source type captured by `ValueRef<S>`.
+ * @internal
+ */
+type DerivRefValue<S> =
+	S extends () => infer R ? DerivRefValue<R>
+	: S extends Value<any, infer Out> ? Out
+	: S extends ValueSchema<any, infer Out> ? Out
+	: S extends ValuePlain<infer V, any> ? V
+	: S extends ValueArray<any, infer Out> ? readonly Out[]
+	: S extends ValueMap<infer K, infer V> ? ReadonlyMap<K, V>
+	: S extends ValueSet<infer V> ? ReadonlySet<V>
+	: S;
+
+/**
  * The shape of a field as it appears in a derivation context. Each leaf
  * is a `{ get, use }` wrapper. `.use()` returns the value directly
  * (NOT a `[value, setter]` tuple as on `ScopeInstance`), and is
@@ -159,7 +188,7 @@ export type DerivLeaf<T> =
 	: T extends ValueSchema<any, infer Out> ? { get(): Out; use(): Out }
 	: T extends ValuePlain<infer V, any> ? { get(): V; use(): V }
 	: T extends ValueRef<infer S> ?
-		{ get(): ResolvedRef<S>; use(): ResolvedRef<S> }
+		{ get(): DerivRefValue<S>; use(): DerivRefValue<S> }
 	: T extends ValueArray<any, infer Out> ?
 		{ get(): readonly Out[]; use(): readonly Out[] }
 	: T extends ValueMap<infer K, infer V> ?
