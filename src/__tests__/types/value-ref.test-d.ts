@@ -5,6 +5,7 @@ import { valueSet, ValueSet } from '../../core/value-set.js';
 import { valueMap, ValueMap } from '../../core/value-map.js';
 import { valueScope } from '../../core/value-scope.js';
 import type { FieldValue } from '../../core/field-value.js';
+import type { DerivLeaf } from '../../core/scope-types.js';
 
 // ── Ref to Value: source type is preserved ──────────────────────────
 
@@ -99,3 +100,61 @@ expectTypeOf(boardInstance.columns.size).toBeNumber();
 // whose `.get(key)` requires a key — so this is now a type error.
 // @ts-expect-error - ScopeMap.get requires a key argument.
 boardInstance.columns.get();
+
+// ── DerivLeaf: valueRef fields in derivation contexts ──────────────
+// In a derivation, `scope.<refField>.use()` must return the unwrapped
+// contained value, not the reactive wrapper itself. The type must match
+// the runtime behaviour of `wrapRefForDerivation` in `scope-refs.ts`.
+
+// Ref to Value: derivation sees the output type, not the Value wrapper.
+expectTypeOf<DerivLeaf<ValueRef<Value<number, number>>>>().toEqualTypeOf<{
+	get(): number;
+	use(): number;
+}>();
+
+expectTypeOf<DerivLeaf<ValueRef<Value<string, string>>>>().toEqualTypeOf<{
+	get(): string;
+	use(): string;
+}>();
+
+// Ref to ValueSet: derivation sees ReadonlySet.
+expectTypeOf<DerivLeaf<ValueRef<ValueSet<string>>>>().toEqualTypeOf<{
+	get(): ReadonlySet<string>;
+	use(): ReadonlySet<string>;
+}>();
+
+// Ref to ValueMap: derivation sees ReadonlyMap.
+expectTypeOf<DerivLeaf<ValueRef<ValueMap<string, number>>>>().toEqualTypeOf<{
+	get(): ReadonlyMap<string, number>;
+	use(): ReadonlyMap<string, number>;
+}>();
+
+// Ref to scope instance: derivation sees the live instance (pass-through).
+// The instance type is complex, so we check a representative property.
+type SettingsDerivLeaf = DerivLeaf<ValueRef<typeof globalSettings>>;
+expectTypeOf<SettingsDerivLeaf>().toMatchTypeOf<{
+	get(): typeof globalSettings;
+	use(): typeof globalSettings;
+}>();
+
+// Factory ref to ScopeMap: derivation sees the ScopeMap (pass-through).
+type ColumnsFactoryRef = ValueRef<() => ReturnType<typeof column.createMap>>;
+type ColumnsDerivLeaf = DerivLeaf<ColumnsFactoryRef>;
+expectTypeOf<ColumnsDerivLeaf>().toMatchTypeOf<{
+	get(): ReturnType<typeof column.createMap>;
+	use(): ReturnType<typeof column.createMap>;
+}>();
+
+// ── End-to-end: derivation can read unwrapped ref value ────────────
+// A scope definition with a valueRef field consumed in a derivation.
+// This would fail to compile if DerivLeaf still returned Value<number>.
+const refreshRate = value<number>(5_000);
+valueScope(
+	{ rate: valueRef(refreshRate) },
+	{
+		doubled: ({ scope }) => {
+			const rate: number = scope.rate.use();
+			return rate * 2;
+		},
+	},
+);
