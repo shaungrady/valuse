@@ -103,7 +103,10 @@ inbox.threadCount.get(); // 1
 
 When `threads` changes (entries added or removed), `threadCount` recomputes
 automatically. The reactive graph does not care that the data comes from a ref;
-`.use()` tracks the dependency the same way.
+`.use()` tracks the dependency the same way. For a `ScopeMap` ref, `.use()`
+tracks both membership and every member's fields, so a derivation that reads
+into entries re-runs when those entries change, not only when the key list does
+(see [Per-instance child collections](#per-instance-child-collections)).
 
 ## Ref sources
 
@@ -233,6 +236,19 @@ const inboxScope = valueScope(
   },
 );
 ```
+
+`.use()` on a `ScopeMap` ref deep-tracks its members: the derivation re-runs
+when an entry is added or removed, and when any field on any member changes. So
+`hasUnread` re-evaluates the moment any thread's `isRead` flips, not only when
+threads are added or removed. This mirrors how an instance ref tracks all of a
+referenced instance's fields.
+
+The tracking is coarse by design, since comparison and aggregation usually
+depend on every member, and it is pull-based, so members added later are tracked
+automatically. For an untracked read, use `.get()` instead of `.use()`. When a
+derivation returns a fresh array or object built from members, guard referential
+stability yourself (for example, compare against `previousValue`) so you do not
+notify on changes that did not affect the result.
 
 ### Shared configuration
 

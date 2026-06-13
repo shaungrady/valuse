@@ -76,7 +76,7 @@ describe('ref .use() in derivations — factory ref to ScopeMap', () => {
 		expect(instance.initialSize.get()).toBe(0);
 	});
 
-	it('granularity: mutating an entry field does not re-run a .size-only derivation', () => {
+	it('deep tracking: mutating an entry field re-runs a map-ref derivation', () => {
 		const column = valueScope({ name: value<string>() });
 		const runs = vi.fn<(n: number) => number>((n) => n);
 		const board = valueScope({
@@ -89,14 +89,42 @@ describe('ref .use() in derivations — factory ref to ScopeMap', () => {
 		instance.columnCount.subscribe(() => {});
 		runs.mockClear();
 
+		// Adding an entry re-runs (membership changed).
 		(instance as any).columns.set('a', { name: 'Alpha' });
 		expect(runs).toHaveBeenCalledTimes(1);
 
+		// Mutating an entry field also re-runs: `.use()` deep-tracks members,
+		// matching the instance-ref behavior. The body re-evaluates even though
+		// `.size` is unchanged; output dedup stops downstream propagation.
 		const entry = (instance as any).columns.get('a');
 		entry.name.set('Alpha v2');
-		// Renaming an entry field should not re-run a derivation that only
-		// depends on the key-list size.
-		expect(runs).toHaveBeenCalledTimes(1);
+		expect(runs).toHaveBeenCalledTimes(2);
+	});
+
+	it('deep tracking: a map-ref derivation re-runs on member field and membership changes', () => {
+		const column = valueScope({ width: value<number>(0) });
+		const board = valueScope({
+			columns: valueRef(() => column.createMap()),
+			totalWidth: ({ scope }: { scope: any }) =>
+				scope.columns
+					.use()
+					.values()
+					.reduce((sum: number, col: any) => sum + col.width.get(), 0),
+		});
+		const instance = board.create();
+		expect(instance.totalWidth.get()).toBe(0);
+
+		(instance as any).columns.set('a', { width: 10 });
+		expect(instance.totalWidth.get()).toBe(10);
+
+		// Newly added members are tracked too: tracking is pull-based, so the
+		// re-run re-collects dependencies over the current member set.
+		(instance as any).columns.set('b', { width: 5 });
+		expect(instance.totalWidth.get()).toBe(15);
+
+		// Mutating an existing member's tracked field re-runs and updates.
+		(instance as any).columns.get('a').width.set(100);
+		expect(instance.totalWidth.get()).toBe(105);
 	});
 
 	it('instance tree still exposes the raw ScopeMap (not the wrapper)', () => {
@@ -244,9 +272,9 @@ describe('ref .use() in derivations — nested', () => {
  *
  * These tests mirror the sync ref-derivation coverage above, but with `async`
  * derivation functions. Tracking semantics: a tracked `.use()` on a ref source
- * must re-run the derivation when the source's `.subscribe()` would fire
- * (whole-Value/Set/Map change, ScopeMap key-list change, scope-instance any
- * field change).
+ * must re-run the derivation when the source changes (whole-Value/Set/Map
+ * change, scope-instance any field change, ScopeMap membership change OR any
+ * member field change).
  */
 describe('ref .use() in async derivations', () => {
 	const flush = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -280,6 +308,30 @@ describe('ref .use() in async derivations', () => {
 		(instance as any).columns.set('a', { name: 'A' });
 		await flush();
 		expect(instance.columnCount.get()).toBe(1);
+	});
+
+	it('factory ref to a ScopeMap: re-runs on a member field change', async () => {
+		const column = valueScope({ width: value<number>(0) });
+		const board = valueScope({
+			columns: valueRef(() => column.createMap()),
+			totalWidth: async ({ scope }: { scope: any }) =>
+				scope.columns
+					.use()
+					.values()
+					.reduce((sum: number, col: any) => sum + col.width.get(), 0),
+		});
+		const instance = board.create();
+		await flush();
+		expect(instance.totalWidth.get()).toBe(0);
+
+		(instance as any).columns.set('a', { width: 10 });
+		await flush();
+		expect(instance.totalWidth.get()).toBe(10);
+
+		// Member field change re-runs the async derivation, not just membership.
+		(instance as any).columns.get('a').width.set(100);
+		await flush();
+		expect(instance.totalWidth.get()).toBe(100);
 	});
 
 	it('factory ref to a scope instance: re-runs on inner field change', async () => {
