@@ -1,6 +1,7 @@
 {
 	"$schema": "https://unpkg.com/knip@6/schema.json",
-	"project": ["src/**/*.{ts,tsx}"],
+	"project": ["src/**/*.{ts,tsx}", "examples/**/*.{ts,tsx}"],
+	"entry": ["examples/**/*.{ts,tsx}"],
 	"vitest": {
 		"config": "vitest.config.ts",
 		"entry": [
