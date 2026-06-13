@@ -186,6 +186,62 @@ export class ScopeMap<
 		void this.#keyVersion.value;
 	}
 
+	/**
+	 * Register a dependency on the key list AND every member's fields for the
+	 * enclosing Preact computed. Used by the derivation-scope ref wrapper so
+	 * `scope.<mapRef>.use()` inside a sync derivation re-runs on membership
+	 * changes and on any field change within any member, mirroring how an
+	 * instance ref's `_trackAll()` tracks all of one instance's fields.
+	 *
+	 * Coarse by design (comparison and aggregation generally depend on every
+	 * member) and pull-based, so members added later are tracked on the next
+	 * re-run without re-subscription.
+	 * @internal
+	 */
+	_trackAll(): void {
+		void this.#keyVersion.value;
+		for (const instance of this.#instances.values()) {
+			(
+				instance as ScopeInstance<Def> & { _trackAll?: () => void }
+			)._trackAll?.();
+		}
+	}
+
+	/**
+	 * Subscribe to membership changes AND any field change within any member.
+	 * Used by the async derivation ref wrapper, which is push-based and so
+	 * cannot re-collect dependencies on each run the way the sync path does.
+	 * Member subscriptions are reconciled whenever membership changes, and all
+	 * of them are torn down when the returned {@link Unsubscribe} runs.
+	 * @internal
+	 */
+	_subscribeDeep(fn: () => void): Unsubscribe {
+		const memberUnsubscribes = new Map<K, Unsubscribe>();
+		const reconcile = (): void => {
+			for (const [key, instance] of this.#instances) {
+				if (!memberUnsubscribes.has(key)) {
+					memberUnsubscribes.set(key, instance.$subscribe(fn));
+				}
+			}
+			for (const [key, unsubscribe] of memberUnsubscribes) {
+				if (!this.#instances.has(key)) {
+					unsubscribe();
+					memberUnsubscribes.delete(key);
+				}
+			}
+		};
+		reconcile();
+		const membershipUnsubscribe = this.subscribe(() => {
+			reconcile();
+			fn();
+		});
+		return () => {
+			membershipUnsubscribe();
+			for (const unsubscribe of memberUnsubscribes.values()) unsubscribe();
+			memberUnsubscribes.clear();
+		};
+	}
+
 	#notifyListeners(): void {
 		this.#keyVersion.value++;
 		const keys = this.keys();

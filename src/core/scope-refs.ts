@@ -119,13 +119,14 @@ function wrapRefForDerivation(
 		};
 	}
 
-	// ScopeMap: `.use()` tracks the key-list version signal and hands back
-	// the map. Consumers then call `.size`, `.keys()`, `.get(key)`, etc.
+	// ScopeMap: `.use()` deep-tracks the map (membership plus every member's
+	// fields) and hands back the map. Consumers then call `.size`, `.keys()`,
+	// `.get(key)`, etc. Coarse by design, matching the instance-ref `_trackAll`.
 	if (resolved instanceof ScopeMap) {
 		const map = resolved;
 		return {
 			use: () => {
-				map._trackKeys();
+				map._trackAll();
 				return map;
 			},
 			get: () => map,

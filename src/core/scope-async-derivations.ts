@@ -360,14 +360,12 @@ function wrapRefForAsyncDerivation(
 		);
 	}
 
-	// ScopeMap: subscribe fires on key-list changes only, matching `_trackKeys`.
+	// ScopeMap: deep subscription fires on membership changes and on any member
+	// field change, matching the sync `_trackAll` ref-wrapper behavior.
 	if (resolved instanceof ScopeMap) {
 		const map = resolved;
 		return buildWrapper(
-			(cb) =>
-				map.subscribe(() => {
-					cb();
-				}),
+			(cb) => map._subscribeDeep(cb),
 			() => map,
 		);
 	}
