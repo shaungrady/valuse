@@ -47,10 +47,12 @@ export class InstanceStore {
 	 * Coarse "any plain field changed" signal. Tracked by the snapshot
 	 * invalidator in `attachDollarMethods` so `$getSnapshot()` returns
 	 * fresh data after a plain write, while leaving every other reactive
-	 * consumer (`$subscribe`, derivations) untouched.
+	 * consumer (`$subscribe`, derivations) untouched. Allocated lazily — `null`
+	 * unless the scope has at least one plain slot (only plain writes bump it,
+	 * and only then does the snapshot need to track it).
 	 * @internal
 	 */
-	readonly _plainVersion: Signal<number> = signal(0);
+	_plainVersion: Signal<number> | null = null;
 
 	/**
 	 * Async state signals, keyed by slot index. Allocated lazily — `null`
@@ -195,6 +197,9 @@ export class InstanceStore {
 			if (meta.kind === 'plain') {
 				this.#plainValues ??= new Map();
 				this.#plainValues.set(slot, processed);
+				// Only plain writes bump the plain-version signal; allocate it
+				// alongside the first plain slot so plain-free scopes skip it.
+				this._plainVersion ??= signal(0);
 			}
 
 			// Initialize validation state for schema slots
@@ -348,6 +353,7 @@ export class InstanceStore {
 		if (meta.kind === 'plain') {
 			this.#plainValues ??= new Map();
 			this.#plainValues.set(slot, value);
+			this._plainVersion ??= signal(0);
 			this._plainVersion.value++;
 			return;
 		}

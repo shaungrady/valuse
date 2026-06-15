@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import { computed } from './signal.js';
+import { computed, type ReadonlySignal } from './signal.js';
 import { getReactHooks, versionedAdapter } from './react-bridge.js';
 import { subscribeFireOnly } from './utils/effect-helpers.js';
 import {
@@ -125,23 +125,21 @@ export function attachDollarMethods(
 	// Memoized snapshot: a lazy computed rebuilt only when read after a tracked
 	// signal changed. `$use` returns this same reference across renders when
 	// nothing has changed, so React downstream can rely on Object.is equality.
-	// We also track `store._plainVersion` so plain writes invalidate the cache
-	// (keeping `$getSnapshot()` fresh) without dirtying the per-slot signal
+	// We also track `store._plainVersion` (when the scope has plain fields) so
+	// plain writes invalidate the cache without dirtying the per-slot signal
 	// graph that `$subscribe`/derivations observe.
 	//
-	// Using a `computed` (peeked, not subscribed) instead of an eager `effect`
-	// means write-only workloads pay nothing here: the snapshot rebuilds on the
-	// next read after a change, not on every write. An unobserved computed is
-	// version-cached, so repeated reads without an intervening change return the
-	// prior object reference. The tracked build reads each reactive slot once to
-	// both produce the value and register the dependency (the old eager effect
-	// read every slot twice: once to track, once to build).
-	const snapshotComputed = computed(() => {
-		void store._plainVersion.value;
-		return buildSnapshot(definition, store, true);
-	});
+	// The `computed` itself is built on first read, not at create() time: a
+	// scope that's only written (never snapshotted via `$getSnapshot`/`$use`)
+	// pays nothing for it. An unobserved computed is version-cached, so repeated
+	// reads without an intervening change return the prior object reference.
+	let snapshotComputed: ReadonlySignal<Record<string, unknown>> | null = null;
 
 	function getMemoizedSnapshot(): Record<string, unknown> {
+		snapshotComputed ??= computed(() => {
+			if (store._plainVersion) void store._plainVersion.value;
+			return buildSnapshot(definition, store, true);
+		});
 		return snapshotComputed.peek();
 	}
 
