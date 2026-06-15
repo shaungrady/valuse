@@ -36,9 +36,12 @@ export class InstanceStore {
 	 * by {@link _writeToSignal} so plain writes do not fire any Preact
 	 * effect — they're "inert" by docs contract. Read by {@link read} /
 	 * {@link readTracked} when the slot is plain.
+	 *
+	 * Allocated lazily (`null` until the first plain slot is seeded in the
+	 * constructor) so scopes with no plain fields don't pay for an empty Map.
 	 * @internal
 	 */
-	readonly #plainValues = new Map<number, unknown>();
+	#plainValues: Map<number, unknown> | null = null;
 
 	/**
 	 * Coarse "any plain field changed" signal. Tracked by the snapshot
@@ -49,17 +52,26 @@ export class InstanceStore {
 	 */
 	readonly _plainVersion: Signal<number> = signal(0);
 
-	/** Async state signals, keyed by slot index. Only populated for async derivations. */
-	readonly asyncStates: Map<number, Signal<AsyncState<unknown>>>;
+	/**
+	 * Async state signals, keyed by slot index. Allocated lazily — `null`
+	 * unless the scope has at least one async derivation.
+	 */
+	asyncStates: Map<number, Signal<AsyncState<unknown>>> | null = null;
 
-	/** Validation state signals, keyed by slot index. Only populated for schema slots. */
-	readonly validationStates: Map<
+	/**
+	 * Validation state signals, keyed by slot index. Allocated lazily — `null`
+	 * unless the scope has at least one schema slot.
+	 */
+	validationStates: Map<
 		number,
 		Signal<ValidationState<unknown, unknown>>
-	>;
+	> | null = null;
 
-	/** Active factory-pipe chains, keyed by slot index. */
-	readonly #pipeChains: Map<number, PipeChain>;
+	/**
+	 * Active factory-pipe chains, keyed by slot index. Allocated lazily — `null`
+	 * unless the scope has at least one factory-piped slot.
+	 */
+	#pipeChains: Map<number, PipeChain> | null = null;
 
 	/** The shared definition metadata. */
 	readonly definition: ScopeDefinitionMeta;
@@ -68,10 +80,10 @@ export class InstanceStore {
 	destroyed = false;
 
 	/**
-	 * Slot indices of currently-executing async derivations.
-	 * Used for cycle detection.
+	 * Slot indices of currently-executing async derivations. Used for cycle
+	 * detection. `null` unless the scope has at least one async derivation.
 	 */
-	readonly runningAsync: Set<number> = new Set();
+	readonly runningAsync: Set<number> | null;
 
 	/**
 	 * The instance tree (set after construction). Needed for changesByScope
@@ -79,7 +91,13 @@ export class InstanceStore {
 	 */
 	#scopeNodesBySlot: Map<number, ScopeNode> = new Map();
 	#scopeNodesByGroup: Map<number, ScopeNode> = new Map();
-	#slotByNode: Map<ScopeNode, number> = new Map();
+	/**
+	 * Reverse map (node → slot) for change-context bubbling. Built lazily on
+	 * the first {@link #buildChangeContext} call — which only happens once an
+	 * `onChange`/`beforeChange` hook fires — so hook-less scopes never pay for
+	 * it.
+	 */
+	#slotByNode: Map<ScopeNode, number> | null = null;
 	#instanceRoot: ScopeNode | null = null;
 
 	// --- Change batching ---
@@ -125,9 +143,10 @@ export class InstanceStore {
 		initialValues: Map<number, unknown>,
 	) {
 		this.definition = definition;
-		this.asyncStates = new Map();
-		this.validationStates = new Map();
-		this.#pipeChains = new Map();
+		// Only async derivations ever add to `runningAsync`; allocate it only
+		// when the scope has any, so value-only scopes don't carry an empty Set.
+		this.runningAsync =
+			definition.asyncDerivedSlots.length > 0 ? new Set() : null;
 
 		// Allocate signals
 		this.signals = Array.from<Signal<unknown>>({
@@ -140,6 +159,7 @@ export class InstanceStore {
 				hasUserInitial ? initialValues.get(slot) : meta.defaultValue;
 
 			if (meta.kind === 'asyncDerived') {
+				this.asyncStates ??= new Map();
 				this.asyncStates.set(
 					slot,
 					signal(
@@ -167,13 +187,17 @@ export class InstanceStore {
 			this.signals[slot] = signal(processed);
 
 			// Plain slots also seed `#plainValues` — that's what
-			// `read`/`readTracked` actually return for plain.
+			// `read`/`readTracked` actually return for plain. Seeding here (for
+			// every plain slot) is what makes the lazy map safe to read before
+			// any write: a plain slot always has an entry by end of construction.
 			if (meta.kind === 'plain') {
+				this.#plainValues ??= new Map();
 				this.#plainValues.set(slot, processed);
 			}
 
 			// Initialize validation state for schema slots
 			if (meta.kind === 'schema' && meta.schema) {
+				this.validationStates ??= new Map();
 				this.validationStates.set(
 					slot,
 					signal(runValidation(meta.schema, processed)),
@@ -204,7 +228,7 @@ export class InstanceStore {
 				continue;
 			}
 			this.activateFactoryPipes(slot);
-			const chain = this.#pipeChains.get(slot);
+			const chain = this.#pipeChains?.get(slot);
 			if (!chain) continue;
 			const hasUserInitial = initialValues.has(slot);
 			const seed =
@@ -227,11 +251,8 @@ export class InstanceStore {
 		this.#instanceRoot = instanceRoot;
 		this.#scopeNodesBySlot = nodesBySlot;
 		this.#scopeNodesByGroup = nodesByGroup;
-		// Build reverse map for O(1) lookup in change context
-		this.#slotByNode = new Map();
-		for (const [slot, node] of nodesBySlot) {
-			this.#slotByNode.set(node, slot);
-		}
+		// `#slotByNode` (the node → slot reverse map) is built lazily on the
+		// first change-context, so scopes without change hooks never build it.
 	}
 
 	/**
@@ -240,7 +261,7 @@ export class InstanceStore {
 	 */
 	read(slot: number): unknown {
 		if (this.definition.slots[slot]!.kind === 'plain') {
-			return this.#plainValues.get(slot);
+			return this.#plainValues?.get(slot);
 		}
 		return this.signals[slot]!.peek();
 	}
@@ -260,7 +281,7 @@ export class InstanceStore {
 	 */
 	readTracked(slot: number): unknown {
 		if (this.definition.slots[slot]!.kind === 'plain') {
-			return this.#plainValues.get(slot);
+			return this.#plainValues?.get(slot);
 		}
 		return this.signals[slot]!.value;
 	}
@@ -275,7 +296,7 @@ export class InstanceStore {
 
 		// Factory-pipe chain (actors own their scheduling and apply leading
 		// sync steps internally).
-		const chain = this.#pipeChains.get(slot);
+		const chain = this.#pipeChains?.get(slot);
 		if (chain && chain.hasActors) {
 			chain.write(value);
 			return;
@@ -323,6 +344,7 @@ export class InstanceStore {
 		// invalidator tracks `_plainVersion`, which keeps `$getSnapshot()`
 		// fresh without re-rendering the rest of the reactive graph.
 		if (meta.kind === 'plain') {
+			this.#plainValues ??= new Map();
 			this.#plainValues.set(slot, value);
 			this._plainVersion.value++;
 			return;
@@ -382,7 +404,7 @@ export class InstanceStore {
 
 		// Update validation state for schema slots
 		if (meta.kind === 'schema' && meta.schema) {
-			const validationSignal = this.validationStates.get(slot);
+			const validationSignal = this.validationStates?.get(slot);
 			if (validationSignal) {
 				validationSignal.value = runValidation(meta.schema, value);
 			}
@@ -468,15 +490,40 @@ export class InstanceStore {
 	 * @internal
 	 */
 	recompute(slot: number): void {
-		const recomputeFn = this._recomputeFns.get(slot);
+		const recomputeFn = this.#recomputeFns?.get(slot);
 		if (recomputeFn) recomputeFn();
 	}
 
-	/** @internal — registered by scope instance creation */
-	readonly _recomputeFns: Map<number, () => void> = new Map();
+	/**
+	 * Recompute functions, registered by scope creation for derived/async
+	 * slots. Allocated lazily on first registration so value-only scopes
+	 * carry no Map.
+	 */
+	#recomputeFns: Map<number, () => void> | null = null;
 
-	/** @internal — async-derivation flush functions, registered at creation */
-	readonly _flushFns: Map<number, () => Promise<void>> = new Map();
+	/**
+	 * Async-derivation flush functions, registered at creation. Allocated
+	 * lazily on first registration so non-async scopes carry no Map.
+	 */
+	#flushFns: Map<number, () => Promise<void>> | null = null;
+
+	/**
+	 * Register a recompute function for a slot. @internal — called by scope
+	 * creation for each derived/async slot.
+	 */
+	registerRecompute(slot: number, fn: () => void): void {
+		this.#recomputeFns ??= new Map();
+		this.#recomputeFns.set(slot, fn);
+	}
+
+	/**
+	 * Register an async-derivation flush function for a slot. @internal —
+	 * called by scope creation for each async slot.
+	 */
+	registerFlush(slot: number, fn: () => Promise<void>): void {
+		this.#flushFns ??= new Map();
+		this.#flushFns.set(slot, fn);
+	}
 
 	/**
 	 * Expedite and await any pending deferred work for a slot: a value
@@ -484,9 +531,9 @@ export class InstanceStore {
 	 * Resolves immediately when there is nothing to flush.
 	 */
 	flushSlot(slot: number): Promise<void> {
-		const chain = this.#pipeChains.get(slot);
+		const chain = this.#pipeChains?.get(slot);
 		if (chain) return chain.flush();
-		const flushFn = this._flushFns.get(slot);
+		const flushFn = this.#flushFns?.get(slot);
 		if (flushFn) return flushFn();
 		return Promise.resolve();
 	}
@@ -496,7 +543,7 @@ export class InstanceStore {
 	 */
 	readValidation(slot: number): ValidationState<unknown, unknown> {
 		return (
-			this.validationStates.get(slot)?.peek() ?? {
+			this.validationStates?.get(slot)?.peek() ?? {
 				isValid: true,
 				value: this.read(slot),
 				issues: [],
@@ -508,7 +555,7 @@ export class InstanceStore {
 	 * Subscribe to validation state changes for a schema slot.
 	 */
 	subscribeValidation(slot: number, fn: () => void): Unsubscribe {
-		const validationSignal = this.validationStates.get(slot);
+		const validationSignal = this.validationStates?.get(slot);
 		if (!validationSignal) return () => {};
 		return subscribeFireOnly(() => {
 			void validationSignal.value;
@@ -519,7 +566,7 @@ export class InstanceStore {
 	 * Read async state for a slot.
 	 */
 	readAsync(slot: number): AsyncState<unknown> {
-		return this.asyncStates.get(slot)?.peek() ?? initialAsyncState();
+		return this.asyncStates?.get(slot)?.peek() ?? initialAsyncState();
 	}
 
 	/**
@@ -527,7 +574,7 @@ export class InstanceStore {
 	 * Fires when the async state transitions (setting, set, error).
 	 */
 	subscribeAsyncState(slot: number, fn: () => void): Unsubscribe {
-		const asyncSignal = this.asyncStates.get(slot);
+		const asyncSignal = this.asyncStates?.get(slot);
 		if (!asyncSignal) return () => {};
 		return subscribeFireOnly(() => {
 			void asyncSignal.value;
@@ -545,6 +592,7 @@ export class InstanceStore {
 		const chain = buildPipeChain(meta.pipeline, (value) => {
 			this._writeToSignal(slot, value);
 		});
+		this.#pipeChains ??= new Map();
 		this.#pipeChains.set(slot, chain);
 	}
 
@@ -555,8 +603,10 @@ export class InstanceStore {
 		this.destroyed = true;
 
 		// Clean up factory-pipe chains (aborts host signals, runs cleanups)
-		for (const [, chain] of this.#pipeChains) chain.destroy();
-		this.#pipeChains.clear();
+		if (this.#pipeChains) {
+			for (const [, chain] of this.#pipeChains) chain.destroy();
+			this.#pipeChains = null;
+		}
 	}
 
 	// --- Private helpers ---
@@ -583,6 +633,18 @@ export class InstanceStore {
 		const changeSet = new Set(changes);
 		const changesByScope = new Map<ScopeNode, Change[]>();
 
+		// Build the node → slot reverse map on first use. Reaching here means a
+		// change hook fired, so the cost lands only on hook-bearing scopes, and
+		// only after `registerTree` has populated `#scopeNodesBySlot`.
+		let slotByNode = this.#slotByNode;
+		if (!slotByNode) {
+			slotByNode = new Map();
+			for (const [slot, node] of this.#scopeNodesBySlot) {
+				slotByNode.set(node, slot);
+			}
+			this.#slotByNode = slotByNode;
+		}
+
 		for (const change of changes) {
 			// Add to the field's own scope node
 			const existing = changesByScope.get(change.scope);
@@ -593,7 +655,7 @@ export class InstanceStore {
 			}
 
 			// Bubble up to ancestor groups via O(1) reverse lookup
-			const slotIndex = this.#slotByNode.get(change.scope);
+			const slotIndex = slotByNode.get(change.scope);
 			if (slotIndex !== undefined) {
 				const meta = this.definition.slots[slotIndex]!;
 				for (const ancestorIdx of meta.ancestorGroupIndices) {

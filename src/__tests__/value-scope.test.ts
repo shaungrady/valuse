@@ -1894,3 +1894,30 @@ describe('factory refs to non-scope reactive primitives', () => {
 		expect(subscriber).not.toHaveBeenCalled();
 	});
 });
+
+describe('value-only scope: lazy-collection safety (Map diet)', () => {
+	it('$flush resolves without throwing when there are no async derivations', async () => {
+		const s = valueScope({ a: value(0), b: value('x') }).create();
+		await expect(s.$flush()).resolves.toBeUndefined();
+	});
+
+	it('$recompute is a safe no-op when there are no derivations', () => {
+		const s = valueScope({ a: value(0) }).create();
+		expect(() => s.$recompute()).not.toThrow();
+		expect(s.a.get()).toBe(0);
+	});
+
+	it('$getSnapshot / $subscribe / writes work on a value-only scope', () => {
+		const s = valueScope({ a: value(1), b: value(2) }).create();
+		const seen: unknown[] = [];
+		const unsub = s.$subscribe(() => seen.push(s.$getSnapshot()));
+		s.a.set(10);
+		unsub();
+		expect(s.$getSnapshot()).toEqual({ a: 10, b: 2 });
+	});
+
+	it('plain field read before write returns its default', () => {
+		const s = valueScope({ id: valuePlain('seed') }).create();
+		expect(s.id.get()).toBe('seed');
+	});
+});

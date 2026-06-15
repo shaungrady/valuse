@@ -118,10 +118,10 @@ export function setupAsyncDerivations(
 				};
 
 				// Mark as running for cycle detection
-				store.runningAsync.add(slot);
+				store.runningAsync?.add(slot);
 
 				// Transition to 'setting' state (skip on first run with seed)
-				const asyncSignal = store.asyncStates.get(slot);
+				const asyncSignal = store.asyncStates?.get(slot);
 				if (asyncSignal && !(isFirstRun && hasSeed)) {
 					const prev = asyncSignal.peek();
 					asyncSignal.value = settingAsyncState(prev);
@@ -182,10 +182,10 @@ export function setupAsyncDerivations(
 					// keeping the marker through the async phase would falsely
 					// flag a *downstream* async derivation that legitimately
 					// reads this still-pending one (e.g. preview → results).
-					store.runningAsync.delete(slot);
+					store.runningAsync?.delete(slot);
 					promise
 						.then((result: unknown) => {
-							store.runningAsync.delete(slot);
+							store.runningAsync?.delete(slot);
 							if (controller.signal.aborted) return;
 							if (result !== undefined) {
 								if (result === lastValue) {
@@ -203,7 +203,7 @@ export function setupAsyncDerivations(
 							}
 						})
 						.catch((error: unknown) => {
-							store.runningAsync.delete(slot);
+							store.runningAsync?.delete(slot);
 							if (controller.signal.aborted) return;
 							if (asyncSignal) {
 								asyncSignal.value = errorAsyncState(asyncSignal.peek(), error);
@@ -215,7 +215,7 @@ export function setupAsyncDerivations(
 							resolveCompletion();
 						});
 				} catch (error) {
-					store.runningAsync.delete(slot);
+					store.runningAsync?.delete(slot);
 					if (asyncSignal) {
 						asyncSignal.value = errorAsyncState(asyncSignal.peek(), error);
 					}
@@ -236,7 +236,7 @@ export function setupAsyncDerivations(
 			);
 
 			// Register recompute function
-			store._recomputeFns.set(slot, runDerivation);
+			store.registerRecompute(slot, runDerivation);
 
 			// Register flush: expedite the active deferral and chase the run —
 			// re-expediting each freshly-armed deferral — until it emits (set),
@@ -246,7 +246,7 @@ export function setupAsyncDerivations(
 			// `deferral.flush()` is load-bearing: flush schedules the run's
 			// continuation as a microtask, so the waiter must already be in
 			// place to catch the emit / arm / completion it produces.
-			store._flushFns.set(slot, async () => {
+			store.registerFlush(slot, async () => {
 				const run = runRef.current;
 				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
 				if (!run) return;
@@ -274,7 +274,7 @@ export function setupAsyncDerivations(
 				teardownAsyncRun(run);
 				run.cleanups.length = 0;
 				run.subscriptions.clear();
-				store.runningAsync.delete(slot);
+				store.runningAsync?.delete(slot);
 			});
 
 			// Run initial derivation
@@ -409,7 +409,7 @@ function buildAsyncGroupNode(
 		node[fieldName] = {
 			use: () => {
 				// Cycle detection
-				if (store.runningAsync.has(slotIndex)) {
+				if (store.runningAsync?.has(slotIndex)) {
 					throw new Error(
 						`Cycle detected: async derivation at "${meta.path}" tried to use() itself or a currently-running async derivation`,
 					);

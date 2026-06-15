@@ -508,7 +508,7 @@ describe('InstanceStore', () => {
 			store.subscribeValidation(0, () => calls.push('changed'));
 
 			// Trigger a validation state change by writing to the validation signal
-			const validationSignal = store.validationStates.get(0);
+			const validationSignal = store.validationStates?.get(0);
 			expect(validationSignal).toBeDefined();
 			validationSignal!.value = {
 				isValid: false,
@@ -539,7 +539,7 @@ describe('InstanceStore', () => {
 			const calls: unknown[] = [];
 			store.subscribeAsyncState(0, () => calls.push('changed'));
 
-			const asyncSignal = store.asyncStates.get(0);
+			const asyncSignal = store.asyncStates?.get(0);
 			if (asyncSignal) {
 				asyncSignal.value = {
 					status: 'set',
@@ -636,6 +636,61 @@ describe('InstanceStore', () => {
 			store.destroy();
 			store.write(0, 'Bob');
 			expect(store.read(0)).toBe('Alice');
+		});
+	});
+
+	// The "Map diet" allocates async/validation/recompute/flush/pipe-chain
+	// collections lazily, so a value-only store leaves them null. Every read
+	// path that runs regardless of slot kind must tolerate that.
+	describe('lazy collections (value-only store)', () => {
+		const valueOnly = () => {
+			const definition = makeDefinition([makeSlotMeta({ path: 'name' })]);
+			return new InstanceStore(definition, new Map([[0, 'Alice']]));
+		};
+
+		it('leaves async/validation/runningAsync collections unallocated', () => {
+			const store = valueOnly();
+			expect(store.asyncStates).toBeNull();
+			expect(store.validationStates).toBeNull();
+			expect(store.runningAsync).toBeNull();
+		});
+
+		it('readValidation returns the valid default without throwing', () => {
+			const store = valueOnly();
+			expect(() => store.readValidation(0)).not.toThrow();
+			expect(store.readValidation(0)).toEqual({
+				isValid: true,
+				value: 'Alice',
+				issues: [],
+			});
+		});
+
+		it('readAsync returns the initial async state without throwing', () => {
+			const store = valueOnly();
+			expect(() => store.readAsync(0)).not.toThrow();
+			expect(store.readAsync(0).status).toBe('unset');
+		});
+
+		it('subscribeValidation / subscribeAsyncState return noop unsubscribes', () => {
+			const store = valueOnly();
+			expect(() => store.subscribeValidation(0, () => {})()).not.toThrow();
+			expect(() => store.subscribeAsyncState(0, () => {})()).not.toThrow();
+		});
+
+		it('recompute and flushSlot are safe no-ops', async () => {
+			const store = valueOnly();
+			expect(() => store.recompute(0)).not.toThrow();
+			await expect(store.flushSlot(0)).resolves.toBeUndefined();
+		});
+
+		it('plain slot read before any write returns its seeded default', () => {
+			const definition = makeDefinition([
+				makeSlotMeta({ path: 'handle', kind: 'plain', defaultValue: 'h0' }),
+			]);
+			const store = new InstanceStore(definition, new Map());
+			// #plainValues is lazy, but seeded for every plain slot in the
+			// constructor — so a read-before-write returns the default, not undefined.
+			expect(store.read(0)).toBe('h0');
 		});
 	});
 });
