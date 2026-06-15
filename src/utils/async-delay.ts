@@ -15,13 +15,20 @@ export const asyncDelay = ({ ms, signal }: AsyncDelayOptions): Promise<void> =>
 			reject(reason());
 			return;
 		}
-		const timeout = setTimeout(resolve, ms);
-		signal.addEventListener(
-			'abort',
-			() => {
-				clearTimeout(timeout);
-				reject(reason());
-			},
-			{ once: true },
-		);
+		// Resolve via the timer on the happy path, but detach the abort
+		// listener first. The listener is `{ once: true }`, so it self-removes
+		// only when the signal actually fires — on the timeout path it never
+		// does. Callers that reuse one long-lived signal across many delays
+		// (notably `asyncPoll`, which loops `asyncDelay` with the same signal)
+		// would otherwise pile up one listener per call for the signal's
+		// lifetime, an unbounded leak.
+		const onAbort = (): void => {
+			clearTimeout(timeout);
+			reject(reason());
+		};
+		const timeout = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		signal.addEventListener('abort', onAbort, { once: true });
 	});
