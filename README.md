@@ -15,25 +15,25 @@ npm install valuse
 import { value, valueScope } from 'valuse';
 
 const inboxScope = valueScope(
+  // 1. Fields: the writable state each instance owns.
   {
     userId: value<string>(),
     lastReadAt: value<number>(0),
   },
+  // 2. Async derivation: fetches whenever a tracked field changes.
   {
-    // Async derivation. Polls for notifications; aborts and restarts when userId changes.
-    notifications: async ({ scope, set, signal, deferBy }) => {
-      while (!signal.aborted) {
-        const res = await fetch(`/api/notifications/${scope.userId.use()}`, {
-          signal,
-        });
-        set(await res.json());
-        await deferBy(30_000);
-      }
+    notifications: async ({ scope, signal }) => {
+      // `.use()` tracks userId; changing it aborts this fetch and reruns it.
+      const res = await fetch(`/api/notifications/${scope.userId.use()}`, {
+        signal,
+      });
+      return res.json();
     },
   },
+  // 3. Sync derivation: reads the async one like any other field, no await.
   {
-    // Sync derivation. Reads the async one like any other field.
     unreadCount: ({ scope }) => {
+      // notifications is undefined until the first fetch resolves.
       const notifs = scope.notifications.use() ?? [];
       const readAt = scope.lastReadAt.use();
       return notifs.filter((n) => n.ts > readAt).length;
@@ -47,10 +47,10 @@ Create an instance, interact with it:
 ```ts
 const inbox = inboxScope.create({ userId: 'alice' });
 
-inbox.unreadCount.get(); // 3. Recomputes as notifications poll in.
-inbox.lastReadAt.set(Date.now()); // unreadCount drops; polling undisturbed.
-inbox.userId.set('bob'); // Old poll aborts, new one starts.
-inbox.notifications.recompute(); // Skip the wait, poll now.
+inbox.unreadCount.get(); // 0 until the fetch resolves, then e.g. 3
+inbox.lastReadAt.set(Date.now()); // unreadCount drops; no refetch
+inbox.userId.set('bob'); // stale fetch aborts, a new one starts
+inbox.notifications.recompute(); // refetch on demand
 ```
 
 **Let's compare:** [Overview](examples/comparison.md) |
@@ -283,7 +283,8 @@ This means comparison runs on the _post-pipe_ value, not the raw input.
 
 ### Batching
 
-Group multiple writes so subscribers fire once:
+Group multiple writes so anything downstream — subscribers, derivations, React
+re-renders — settles once instead of reacting to each `.set()` in turn:
 
 ```ts
 import { batchSets } from 'valuse';
@@ -292,7 +293,7 @@ batchSets(() => {
   userId.set('bob');
   pollInterval.set(60_000);
 });
-// Subscribers notified once, not twice
+// A derivation or effect that reads both recomputes once, not twice
 ```
 
 ---
@@ -565,11 +566,8 @@ Sync derivations can depend on async ones without knowing they're async.
 const profileScope = valueScope(
   { userId: value<string>() },
   {
-    profile: async ({ scope, set, signal }) => {
-      const id = scope.userId.use();
-      const cached = sessionStorage.getItem(`profile:${id}`);
-      if (cached) set(JSON.parse(cached));
-      const res = await fetch(`/api/users/${id}`, { signal });
+    profile: async ({ scope, signal }) => {
+      const res = await fetch(`/api/users/${scope.userId.use()}`, { signal });
       return res.json();
     },
   },
@@ -874,8 +872,9 @@ Reactivity flows through refs. A derivation that reads a ref's fields via
 Lifecycle is [transitive](docs/refs.md#transitive-lifecycle) too. When a scope
 gets its first subscriber (triggering [`onUsed`](#lifecycle-hooks-and-signals)),
 all scopes it references via `valueRef()` also become "used," activating their
-`onUsed` hooks and async derivations. When the last subscriber detaches,
-referenced scopes are notified as well.
+`onUsed` hooks. When the last subscriber detaches, referenced scopes are
+notified as well. (Derivations themselves don't wait for `onUsed`; they run
+eagerly from `create()`, and only the hooks are gated on usage.)
 
 ### Extending scopes
 
@@ -1018,6 +1017,44 @@ const inboxScope = valueScope(
 
 When `userId` changes, the previous loop is aborted and a new one starts. When
 the instance is destroyed, it's aborted automatically.
+
+> **Eager start:** the loop begins the moment the instance is created; it
+> doesn't wait for a subscriber. Derivations run eagerly; only the
+> [`onUsed` / `onUnused` hooks](#lifecycle-hooks-and-signals) are gated on
+> usage. So a created-but-never-rendered instance (or every entry in a large
+> `ScopeMap`) keeps polling regardless.
+
+To poll only while something is observing, gate the loop on a flag field that
+`onUsed` / `onUnused` toggle:
+
+```ts
+const inboxScope = valueScope(
+  {
+    userId: value<string>(),
+    shouldPoll: value<boolean>(false),
+  },
+  {
+    notifications: async ({ scope, set, signal, deferBy }) => {
+      if (!scope.shouldPoll.use()) return; // tracked: reruns when the flag flips
+      const id = scope.userId.use(); // tracked: restarts when userId changes
+      while (!signal.aborted) {
+        const res = await fetch(`/api/notifications/${id}`, { signal });
+        if (!signal.aborted) set(await res.json());
+        await deferBy(30_000);
+      }
+    },
+  },
+  {
+    onUsed: ({ scope }) => scope.shouldPoll.set(true),
+    onUnused: ({ scope }) => scope.shouldPoll.set(false),
+  },
+);
+```
+
+The derivation still runs on create, but it sees `shouldPoll === false` and
+returns right away. The first subscriber flips the flag via `onUsed`, so the
+derivation reruns and the loop starts; when the last subscriber detaches,
+`onUnused` flips it back and the loop aborts.
 
 ### Lifecycle hooks and signals
 
@@ -1298,8 +1335,9 @@ element for invalid input).
 
 ### Type-changing pipes
 
-Pipes can change the type. `set()` accepts the input type, `get()` returns the
-output type:
+Type changes compose down the chain: each `.pipe()` can transform the type
+again, so a value's stored output can sit several hops from its `set()` input
+(the basics are in [Transforms](#transforms)):
 
 ```ts
 const flag = value<string>('')

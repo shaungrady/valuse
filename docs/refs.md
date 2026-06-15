@@ -169,8 +169,11 @@ types without coupling their definitions.
 
 Lifecycle hooks flow through ref boundaries. When a scope instance transitions
 to "used" (its first subscriber attaches), all scopes it references via
-`valueRef()` also become "used." This activates their `onUsed` hooks and async
-derivations.
+`valueRef()` also become "used." This activates their `onUsed` hooks.
+
+Only the `onUsed`/`onUnused` hooks are gated on usage. A referenced scope's sync
+and async derivations already run from its own `create()`, so transitive
+lifecycle propagates the hooks, not derivation activation.
 
 When the last subscriber detaches, referenced scopes receive `onUnused` as well.
 
