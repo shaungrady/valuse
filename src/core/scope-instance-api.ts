@@ -248,7 +248,9 @@ export function attachDollarMethods(
 				// (reading this layer's resolved value), not a stale run.
 				await Promise.resolve();
 			}
-			if (store.runningAsync.size === 0) return;
+			// `runningAsync` is null when the scope has no async derivations —
+			// nothing can be running, so one flush pass is enough.
+			if (!store.runningAsync || store.runningAsync.size === 0) return;
 		}
 	};
 

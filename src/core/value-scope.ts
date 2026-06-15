@@ -1396,7 +1396,7 @@ function setupSyncDerivations(
 		});
 
 		// Register a recompute function that bumps the version
-		store._recomputeFns.set(slot, () => {
+		store.registerRecompute(slot, () => {
 			version.value++;
 		});
 

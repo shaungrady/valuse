@@ -207,7 +207,7 @@ export function setupValidation(
 		if (visited.has(instance)) return;
 		visited.add(instance);
 		for (const slot of schemaSlots) {
-			const sig = store.validationStates.get(slot);
+			const sig = store.validationStates?.get(slot);
 			if (sig) void sig.value;
 		}
 		if (validateIssuesSignal) {
