@@ -10,6 +10,41 @@ import type { ScopeDefinitionMeta } from './slot-meta.js';
 import type { ScopeValidationResult } from './scope-types.js';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 
+function requireSources(method: string): never {
+	throw new Error(
+		`${method} requires at least one valueSchema field or an validate hook.`,
+	);
+}
+
+/**
+ * Shared, instance-free validation methods for scopes with no own validation
+ * sources (no `valueSchema` field, no `validate` hook) and no refs to recurse
+ * into — the common case. They close over nothing, so a single set of function
+ * references is reused across every such instance instead of building ~14
+ * per-instance closures (the 7 attached methods plus their internal helpers).
+ * The deep variants report "always valid" because there is nothing to validate.
+ * @internal
+ */
+const sharedNoValidationMethods = {
+	_deepCheckValid: (): boolean => true,
+	_trackDeepValid: (): void => {},
+	_deepCollectIssues: (): StandardSchemaV1.Issue[] => [],
+	$getIsValid: (options?: { deep?: boolean }): boolean =>
+		options?.deep ? true : requireSources('$getIsValid()'),
+	$useIsValid: (options?: { deep?: boolean }): boolean =>
+		// Nothing reactive to subscribe to, so no `useSyncExternalStore` call —
+		// a given instance always takes this branch, keeping hook order stable.
+		options?.deep ? true : requireSources('$useIsValid()'),
+	$getValidation: (options?: { deep?: boolean }): ScopeValidationResult =>
+		options?.deep ?
+			{ isValid: true, issues: [] }
+		:	requireSources('$getValidation()'),
+	$useValidation: (options?: { deep?: boolean }): ScopeValidationResult =>
+		options?.deep ?
+			{ isValid: true, issues: [] }
+		:	requireSources('$useValidation()'),
+};
+
 /** Set up validation: the `validate` config derivation and `$getIsValid`/`$useIsValid`. @internal */
 export function setupValidation(
 	instance: Record<string, unknown>,
@@ -26,6 +61,15 @@ export function setupValidation(
 	const validateFn = config?.validate;
 	const hasValidateHook = !!validateFn;
 	const hasValidationSources = schemaSlots.length > 0 || hasValidateHook;
+
+	// Fast path: no own validation sources and no refs to recurse into. Attach
+	// the shared, instance-free stub methods instead of building the per-instance
+	// validation closures below. With refs present, deep validation must still
+	// walk them, so those scopes fall through to the full setup.
+	if (!hasValidationSources && resolvedRefs.size === 0) {
+		Object.assign(instance, sharedNoValidationMethods);
+		return;
+	}
 
 	// Set up the validate derivation as a computed signal
 	let validateIssuesSignal: ReturnType<typeof createSignal> | null = null;
