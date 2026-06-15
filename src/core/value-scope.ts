@@ -1193,9 +1193,12 @@ function createScopeInstance(
 		transitiveLifecycleRefs,
 	} = resolveRefs(definition, derivationScope);
 
-	// Build the instance object tree
-	const nodesBySlot = new Map<number, ScopeNode>();
-	const nodesByGroup = new Map<number, ScopeNode>();
+	// Build the instance object tree. Dense arrays indexed by slot / group
+	// index (every slot and group is populated by `buildInstanceTree`).
+	const nodesBySlot: ScopeNode[] = Array.from({ length: definition.slotCount });
+	const nodesByGroup: ScopeNode[] = Array.from({
+		length: definition.groups.length,
+	});
 	const instance = buildInstanceTree(
 		definition,
 		store,

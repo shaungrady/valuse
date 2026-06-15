@@ -89,8 +89,10 @@ export class InstanceStore {
 	 * The instance tree (set after construction). Needed for changesByScope
 	 * keys and the scope argument in hooks.
 	 */
-	#scopeNodesBySlot: Map<number, ScopeNode> = new Map();
-	#scopeNodesByGroup: Map<number, ScopeNode> = new Map();
+	// Dense arrays indexed by slot / group index (every slot and group is
+	// always populated), so they're leaner than `Map<number, ScopeNode>`.
+	#scopeNodesBySlot: ScopeNode[] = [];
+	#scopeNodesByGroup: ScopeNode[] = [];
 	/**
 	 * Reverse map (node → slot) for change-context bubbling. Built lazily on
 	 * the first {@link #buildChangeContext} call — which only happens once an
@@ -245,8 +247,8 @@ export class InstanceStore {
 	 */
 	registerTree(
 		instanceRoot: ScopeNode,
-		nodesBySlot: Map<number, ScopeNode>,
-		nodesByGroup: Map<number, ScopeNode>,
+		nodesBySlot: ScopeNode[],
+		nodesByGroup: ScopeNode[],
 	): void {
 		this.#instanceRoot = instanceRoot;
 		this.#scopeNodesBySlot = nodesBySlot;
@@ -356,7 +358,7 @@ export class InstanceStore {
 		}
 
 		// Build change record
-		const scopeNode = this.#scopeNodesBySlot.get(slot);
+		const scopeNode = this.#scopeNodesBySlot[slot];
 		const change: Change = {
 			scope: scopeNode ?? {},
 			path: meta.path,
@@ -390,7 +392,7 @@ export class InstanceStore {
 					}
 					// Check if target is an ancestor group
 					for (const ancestorIdx of meta.ancestorGroupIndices) {
-						if (target === this.#scopeNodesByGroup.get(ancestorIdx)) {
+						if (target === this.#scopeNodesByGroup[ancestorIdx]) {
 							preventedRef.value = true;
 						}
 					}
@@ -639,8 +641,9 @@ export class InstanceStore {
 		let slotByNode = this.#slotByNode;
 		if (!slotByNode) {
 			slotByNode = new Map();
-			for (const [slot, node] of this.#scopeNodesBySlot) {
-				slotByNode.set(node, slot);
+			for (let slot = 0; slot < this.#scopeNodesBySlot.length; slot++) {
+				const node = this.#scopeNodesBySlot[slot];
+				if (node !== undefined) slotByNode.set(node, slot);
 			}
 			this.#slotByNode = slotByNode;
 		}
@@ -659,7 +662,7 @@ export class InstanceStore {
 			if (slotIndex !== undefined) {
 				const meta = this.definition.slots[slotIndex]!;
 				for (const ancestorIdx of meta.ancestorGroupIndices) {
-					const groupNode = this.#scopeNodesByGroup.get(ancestorIdx);
+					const groupNode = this.#scopeNodesByGroup[ancestorIdx];
 					if (groupNode) {
 						const groupChanges = changesByScope.get(groupNode);
 						if (groupChanges) {
