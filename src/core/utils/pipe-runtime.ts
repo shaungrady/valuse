@@ -48,23 +48,38 @@ interface WiredActor {
  *
  * @internal
  */
+/**
+ * Shared chain for the factory-less case. It holds no per-instance state
+ * (every method is a no-op and `hasActors` is false), so a single frozen
+ * instance is safe to return to every caller — avoiding an object plus four
+ * closures per factory-less `Value` (the overwhelmingly common case).
+ */
+const NO_OP_CHAIN: PipeChain = Object.freeze({
+	write() {},
+	prime() {},
+	flush: () => Promise.resolve(),
+	destroy() {},
+	hasActors: false,
+});
+
 export function buildPipeChain(
 	steps: readonly RuntimePipeStep[],
 	commit: (value: unknown) => void,
 ): PipeChain {
+	// Fast path: with no factory step the chain is inert. Scan without
+	// allocating the positions array, then hand back the shared no-op chain.
+	let hasFactory = false;
+	for (const step of steps) {
+		if (step.kind === 'factory') {
+			hasFactory = true;
+			break;
+		}
+	}
+	if (!hasFactory) return NO_OP_CHAIN;
+
 	const factoryPositions = steps
 		.map((step, index) => (step.kind === 'factory' ? index : -1))
 		.filter((index) => index >= 0);
-
-	if (factoryPositions.length === 0) {
-		return {
-			write() {},
-			prime() {},
-			flush: () => Promise.resolve(),
-			destroy() {},
-			hasActors: false,
-		};
-	}
 
 	const applySync = (from: number, to: number, value: unknown): unknown => {
 		let current = value;
