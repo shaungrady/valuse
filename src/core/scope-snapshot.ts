@@ -27,6 +27,53 @@ export function setNestedValue(
 	current[parts.at(-1)!] = value;
 }
 
+/**
+ * One precomputed assignment for {@link buildSnapshot}. `flatKey` is set for
+ * top-level paths (the common case) so the rebuild can assign directly;
+ * otherwise `parts` holds the path split once at plan time. `slot >= 0` reads
+ * the live value from the store; `slot === -1` is a static entry whose value
+ * is captured in `staticValue`.
+ */
+interface SnapshotStep {
+	readonly slot: number;
+	readonly staticValue: unknown;
+	readonly flatKey: string | null;
+	readonly parts: readonly string[] | null;
+}
+
+/**
+ * Snapshot plans are derived purely from the (static) definition and reused
+ * across every instance and every rebuild, so the path parsing happens once.
+ */
+const snapshotPlanCache = new WeakMap<ScopeDefinitionMeta, SnapshotStep[]>();
+
+function makeStep(
+	path: string,
+	slot: number,
+	staticValue: unknown,
+): SnapshotStep {
+	if (!path.includes('.')) {
+		return { slot, staticValue, flatKey: path, parts: null };
+	}
+	return { slot, staticValue, flatKey: null, parts: path.split('.') };
+}
+
+function getSnapshotPlan(definition: ScopeDefinitionMeta): SnapshotStep[] {
+	const cached = snapshotPlanCache.get(definition);
+	if (cached) return cached;
+
+	const plan: SnapshotStep[] = [];
+	for (let slot = 0; slot < definition.slotCount; slot++) {
+		plan.push(makeStep(definition.slots[slot]!.path, slot, undefined));
+	}
+	for (const [path, value] of definition.staticEntries) {
+		plan.push(makeStep(path, -1, value));
+	}
+
+	snapshotPlanCache.set(definition, plan);
+	return plan;
+}
+
 /** Build a plain snapshot of all values. @internal */
 export function buildSnapshot(
 	definition: ScopeDefinitionMeta,
@@ -34,15 +81,27 @@ export function buildSnapshot(
 ): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
 
-	// Add reactive slot values
-	for (let slot = 0; slot < definition.slotCount; slot++) {
-		const meta = definition.slots[slot]!;
-		setNestedValue(result, meta.path, store.read(slot));
-	}
-
-	// Add static entries
-	for (const [path, value] of definition.staticEntries) {
-		setNestedValue(result, path, value);
+	for (const step of getSnapshotPlan(definition)) {
+		const value = step.slot === -1 ? step.staticValue : store.read(step.slot);
+		if (step.flatKey !== null) {
+			result[step.flatKey] = value;
+			continue;
+		}
+		const parts = step.parts!;
+		const last = parts.length - 1;
+		let current = result;
+		for (let i = 0; i < last; i++) {
+			const part = parts[i]!;
+			const existing = current[part];
+			if (typeof existing === 'object' && existing !== null) {
+				current = existing as Record<string, unknown>;
+			} else {
+				const next: Record<string, unknown> = {};
+				current[part] = next;
+				current = next;
+			}
+		}
+		current[parts[last]!] = value;
 	}
 
 	return result;
