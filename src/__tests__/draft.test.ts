@@ -209,6 +209,28 @@ describe('draftMap', () => {
 		});
 	});
 
+	it('keeps size accurate after set-then-delete of a new key', () => {
+		const source = new Map([['a', 1]]);
+		draftMap(source, (draft) => {
+			draft.set('b', 2);
+			draft.delete('b');
+			expect(draft.size).toBe(1);
+			expect([...draft.keys()]).toEqual(['a']);
+			expect(draft.has('b')).toBe(false);
+		});
+	});
+
+	it('delete returns false for an already-deleted source key', () => {
+		const source = new Map([['a', 1]]);
+		const results: boolean[] = [];
+		draftMap(source, (draft) => {
+			const first = draft.delete('a');
+			const second = draft.delete('a');
+			results.push(first, second);
+		});
+		expect(results).toEqual([true, false]);
+	});
+
 	it('has() reflects puts and deletes', () => {
 		const source = new Map([['a', 1]]);
 		draftMap(source, (draft) => {

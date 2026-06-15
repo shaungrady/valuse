@@ -126,12 +126,15 @@ export function draftMap<K, V>(
 			return draft;
 		},
 		delete(key: K) {
-			if (source.has(key) || pendingPuts.has(key)) {
-				pendingDeletes.add(key);
-				pendingPuts.delete(key);
-				return true;
-			}
-			return false;
+			const existed =
+				(pendingPuts.has(key) || source.has(key)) && !pendingDeletes.has(key);
+			pendingPuts.delete(key);
+			// Only record a tombstone for keys that exist in `source`. Recording
+			// pending-put-only keys here would leave `pendingDeletes` holding keys
+			// absent from `source`, corrupting the `size` getter (which subtracts
+			// `pendingDeletes.size` from `source.size`) and overstating deletions.
+			if (source.has(key)) pendingDeletes.add(key);
+			return existed;
 		},
 		clear() {
 			pendingPuts.clear();
