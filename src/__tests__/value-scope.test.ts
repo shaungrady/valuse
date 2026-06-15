@@ -1921,3 +1921,32 @@ describe('value-only scope: lazy-collection safety (Map diet)', () => {
 		expect(s.id.get()).toBe('seed');
 	});
 });
+
+describe('value-only scope: validation fast path (Lever 3)', () => {
+	it('$getIsValid throws without validation sources, but deep reports valid', () => {
+		const s = valueScope({ a: value(1) }).create();
+		expect(() => s.$getIsValid()).toThrow(/requires at least one valueSchema/);
+		expect(s.$getIsValid({ deep: true })).toBe(true);
+	});
+
+	it('$getValidation deep reports valid with no issues', () => {
+		const s = valueScope({ a: value(1) }).create();
+		expect(() => s.$getValidation()).toThrow(
+			/requires at least one valueSchema/,
+		);
+		expect(s.$getValidation({ deep: true })).toEqual({
+			isValid: true,
+			issues: [],
+		});
+	});
+
+	it('reuses the same method references across instances (no per-instance closures)', () => {
+		const t = valueScope({ a: value(1) });
+		const s1 = t.create() as unknown as Record<string, unknown>;
+		const s2 = t.create() as unknown as Record<string, unknown>;
+		// Shared module-level functions: identical references on every instance.
+		expect(s1.$getIsValid).toBe(s2.$getIsValid);
+		expect(s1.$getValidation).toBe(s2.$getValidation);
+		expect(s1.$useIsValid).toBe(s2.$useIsValid);
+	});
+});
