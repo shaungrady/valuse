@@ -66,8 +66,8 @@ export function freezeDerivationGroups(
 export function buildInstanceTree(
 	definition: ScopeDefinitionMeta,
 	store: InstanceStore,
-	nodesBySlot: Map<number, ScopeNode>,
-	nodesByGroup: Map<number, ScopeNode>,
+	nodesBySlot: ScopeNode[],
+	nodesByGroup: ScopeNode[],
 ): Record<string, unknown> {
 	const rootGroup = definition.groups[0]!;
 	const instance = buildGroupNode(
@@ -77,7 +77,7 @@ export function buildInstanceTree(
 		nodesBySlot,
 		nodesByGroup,
 	);
-	nodesByGroup.set(0, instance);
+	nodesByGroup[0] = instance;
 	return instance;
 }
 
@@ -85,8 +85,8 @@ function buildGroupNode(
 	definition: ScopeDefinitionMeta,
 	store: InstanceStore,
 	group: GroupMeta,
-	nodesBySlot: Map<number, ScopeNode>,
-	nodesByGroup: Map<number, ScopeNode>,
+	nodesBySlot: ScopeNode[],
+	nodesByGroup: ScopeNode[],
 ): Record<string, unknown> {
 	const node: Record<string, unknown> = {};
 
@@ -115,7 +115,7 @@ function buildGroupNode(
 		}
 
 		node[fieldName] = wrapper;
-		nodesBySlot.set(slotIndex, wrapper);
+		nodesBySlot[slotIndex] = wrapper;
 	}
 
 	// Add child groups recursively.
@@ -132,7 +132,7 @@ function buildGroupNode(
 			nodesByGroup,
 		);
 		node[fieldName] = childNode;
-		nodesByGroup.set(childGroupIndex, childNode);
+		nodesByGroup[childGroupIndex] = childNode;
 	}
 
 	return node;
@@ -145,14 +145,14 @@ function buildGroupNode(
  */
 export function freezeChildGroups(
 	definition: ScopeDefinitionMeta,
-	nodesByGroup: Map<number, ScopeNode>,
+	nodesByGroup: ScopeNode[],
 ): void {
 	for (
 		let groupIndex = 1;
 		groupIndex < definition.groups.length;
 		groupIndex++
 	) {
-		const node = nodesByGroup.get(groupIndex);
+		const node = nodesByGroup[groupIndex];
 		if (node) Object.freeze(node);
 	}
 }

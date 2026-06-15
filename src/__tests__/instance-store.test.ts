@@ -206,14 +206,7 @@ describe('InstanceStore', () => {
 			const root = {};
 			const firstNameNode = {};
 			const lastNameNode = {};
-			store.registerTree(
-				root,
-				new Map([
-					[0, firstNameNode],
-					[1, lastNameNode],
-				]),
-				new Map(),
-			);
+			store.registerTree(root, [firstNameNode, lastNameNode], []);
 
 			const onChangeCalls: { paths: string[] }[] = [];
 			store.onChangeHook = ({ changes }) => {
@@ -243,7 +236,7 @@ describe('InstanceStore', () => {
 
 			const root = {};
 			const nameNode = {};
-			store.registerTree(root, new Map([[0, nameNode]]), new Map());
+			store.registerTree(root, [nameNode], []);
 
 			store.beforeChangeHook = ({ prevent }) => {
 				prevent(nameNode);
@@ -259,7 +252,7 @@ describe('InstanceStore', () => {
 
 			const root = {};
 			const nameNode = {};
-			store.registerTree(root, new Map([[0, nameNode]]), new Map());
+			store.registerTree(root, [nameNode], []);
 
 			store.beforeChangeHook = ({ changes, prevent }) => {
 				for (const change of changes) {
@@ -310,14 +303,9 @@ describe('InstanceStore', () => {
 			const titleNode = {};
 			const companyNode = {};
 			const jobNode = {};
-			store.registerTree(
-				root,
-				new Map([
-					[0, titleNode],
-					[1, companyNode],
-				]),
-				new Map([[1, jobNode]]),
-			);
+			// nodesByGroup is indexed by group index; group 0 is the root, group
+			// 1 is `job`. (The root slot also reaches root via `#instanceRoot`.)
+			store.registerTree(root, [titleNode, companyNode], [root, jobNode]);
 
 			let capturedChangesByScope: Map<object, unknown[]> | null = null;
 			store.onChangeHook = ({ changesByScope }) => {
@@ -354,14 +342,7 @@ describe('InstanceStore', () => {
 			const root = {};
 			const firstNode = {};
 			const lastNode = {};
-			store.registerTree(
-				root,
-				new Map([
-					[0, firstNode],
-					[1, lastNode],
-				]),
-				new Map(),
-			);
+			store.registerTree(root, [firstNode, lastNode], []);
 
 			store.beforeChangeHook = ({ prevent }) => {
 				prevent();
@@ -394,11 +375,7 @@ describe('InstanceStore', () => {
 			const root = {};
 			const titleNode = {};
 			const jobNode = {};
-			store.registerTree(
-				root,
-				new Map([[0, titleNode]]),
-				new Map([[1, jobNode]]),
-			);
+			store.registerTree(root, [titleNode], [root, jobNode]);
 
 			store.beforeChangeHook = ({ prevent }) => {
 				prevent(jobNode);
