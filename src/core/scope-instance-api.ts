@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import { effect } from './signal.js';
+import { computed } from './signal.js';
 import { getReactHooks, versionedAdapter } from './react-bridge.js';
 import { subscribeFireOnly } from './utils/effect-helpers.js';
 import {
@@ -122,27 +122,27 @@ export function attachDollarMethods(
 		store.destroy();
 	};
 
-	// Memoized snapshot: rebuilt lazily, invalidated whenever any tracked
-	// signal changes. `$use` returns this same reference across renders when
+	// Memoized snapshot: a lazy computed rebuilt only when read after a tracked
+	// signal changed. `$use` returns this same reference across renders when
 	// nothing has changed, so React downstream can rely on Object.is equality.
-	// We also track `store._plainVersion` so plain writes invalidate the
-	// cache (keeping `$getSnapshot()` fresh) without dirtying the per-slot
-	// signal graph that `$subscribe`/derivations observe.
-	let cachedSnapshot: Record<string, unknown> | null = null;
-	let snapshotDirty = true;
-	const invalidateSnapshot = effect(() => {
-		trackAllSlots();
+	// We also track `store._plainVersion` so plain writes invalidate the cache
+	// (keeping `$getSnapshot()` fresh) without dirtying the per-slot signal
+	// graph that `$subscribe`/derivations observe.
+	//
+	// Using a `computed` (peeked, not subscribed) instead of an eager `effect`
+	// means write-only workloads pay nothing here: the snapshot rebuilds on the
+	// next read after a change, not on every write. An unobserved computed is
+	// version-cached, so repeated reads without an intervening change return the
+	// prior object reference. The tracked build reads each reactive slot once to
+	// both produce the value and register the dependency (the old eager effect
+	// read every slot twice: once to track, once to build).
+	const snapshotComputed = computed(() => {
 		void store._plainVersion.value;
-		snapshotDirty = true;
+		return buildSnapshot(definition, store, true);
 	});
-	instanceCleanups.push(invalidateSnapshot);
 
 	function getMemoizedSnapshot(): Record<string, unknown> {
-		if (snapshotDirty || cachedSnapshot === null) {
-			cachedSnapshot = buildSnapshot(definition, store);
-			snapshotDirty = false;
-		}
-		return cachedSnapshot;
+		return snapshotComputed.peek();
 	}
 
 	instance.$getSnapshot = () => {

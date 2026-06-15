@@ -74,15 +74,29 @@ function getSnapshotPlan(definition: ScopeDefinitionMeta): SnapshotStep[] {
 	return plan;
 }
 
-/** Build a plain snapshot of all values. @internal */
+/**
+ * Build a plain snapshot of all values.
+ *
+ * When `tracked` is true the reactive slots are read with Preact tracking, so
+ * a caller running inside a `computed`/`effect` establishes a dependency on
+ * every slot in one pass (the snapshot memo relies on this to invalidate
+ * lazily). Defaults to untracked `peek` reads for non-reactive callers.
+ * @internal
+ */
 export function buildSnapshot(
 	definition: ScopeDefinitionMeta,
 	store: InstanceStore,
+	tracked = false,
 ): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
 
 	for (const step of getSnapshotPlan(definition)) {
-		const value = step.slot === -1 ? step.staticValue : store.read(step.slot);
+		let value: unknown;
+		if (step.slot === -1) {
+			value = step.staticValue;
+		} else {
+			value = tracked ? store.readTracked(step.slot) : store.read(step.slot);
+		}
 		if (step.flatKey !== null) {
 			result[step.flatKey] = value;
 			continue;
