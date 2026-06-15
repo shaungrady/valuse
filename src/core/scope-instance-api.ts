@@ -14,6 +14,44 @@ import type { ScopeDefinitionMeta } from './slot-meta.js';
 import type { GenericScopeInstance } from './scope-types.js';
 import type { Unsubscribe } from './types.js';
 
+/**
+ * Cache of the per-template `$flush()` layer grouping, keyed by the shared
+ * definition. A definition is built fresh per template and always paired with
+ * the same `layers`, so the grouping is stable across all instances.
+ */
+const layerSlotsCache = new WeakMap<ScopeDefinitionMeta, number[][]>();
+
+/**
+ * Group slot indices by the declared layer they flush in. Each top-level key
+ * maps to the last layer it appears in; slots inherit their top-level path
+ * segment's layer (defaulting to the field layer). With no layer info,
+ * everything flushes as one group. Memoized per definition. @internal
+ */
+function getLayerSlots(
+	definition: ScopeDefinitionMeta,
+	layers: ReadonlyArray<Record<string, unknown>>,
+): number[][] {
+	const cached = layerSlotsCache.get(definition);
+	if (cached) return cached;
+
+	const segmentLayer = new Map<string, number>();
+	for (const [index, layer] of layers.entries()) {
+		for (const [key, entry] of Object.entries(layer)) {
+			if (entry !== undefined) segmentLayer.set(key, index);
+		}
+	}
+	const layerSlots: number[][] =
+		layers.length > 0 ? layers.map(() => []) : [[]];
+	for (let slot = 0; slot < definition.slotCount; slot++) {
+		const segment = definition.slots[slot]!.path.split('.')[0]!;
+		const layerIndex = segmentLayer.get(segment) ?? 0;
+		layerSlots[layerIndex]!.push(slot);
+	}
+
+	layerSlotsCache.set(definition, layerSlots);
+	return layerSlots;
+}
+
 /** Attach $-prefixed instance methods. @internal */
 export function attachDollarMethods(
 	instance: Record<string, unknown>,
@@ -36,23 +74,12 @@ export function attachDollarMethods(
 		}
 	};
 
-	// Group slots by declared layer for the `$flush()` cascade. Each
-	// top-level key maps to the last layer it appears in; slots inherit
-	// their top-level path segment's layer (defaulting to the field
-	// layer). With no layer info, everything flushes as one group.
-	const segmentLayer = new Map<string, number>();
-	for (const [index, layer] of layers.entries()) {
-		for (const [key, entry] of Object.entries(layer)) {
-			if (entry !== undefined) segmentLayer.set(key, index);
-		}
-	}
-	const layerSlots: number[][] =
-		layers.length > 0 ? layers.map(() => []) : [[]];
-	for (let slot = 0; slot < definition.slotCount; slot++) {
-		const segment = definition.slots[slot]!.path.split('.')[0]!;
-		const layerIndex = segmentLayer.get(segment) ?? 0;
-		layerSlots[layerIndex]!.push(slot);
-	}
+	// Group slots by declared layer for the `$flush()` cascade. The grouping
+	// depends only on the (static) definition and layers, both fixed per
+	// template, so it is identical for every instance — memoize it per
+	// definition instead of recomputing (and re-splitting every slot path)
+	// on each `create()`.
+	const layerSlots = getLayerSlots(definition, layers);
 
 	instance.$destroy = () => {
 		// Idempotency: a second call must be a no-op so onDestroy fires once
