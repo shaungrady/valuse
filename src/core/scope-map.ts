@@ -244,6 +244,12 @@ export class ScopeMap<
 
 	#notifyListeners(): void {
 		this.#keyVersion.value++;
+		// `keys` is only consumed by direct `#listeners`; the React bridge tracks
+		// `#keyVersion` above. Skip building the key array (and the listener
+		// snapshot) when nothing is directly subscribed — without this, bulk
+		// population via `createMap` (one `set` per item) rebuilds a growing key
+		// array on every insert, making construction O(n^2) in allocation.
+		if (this.#listeners.size === 0) return;
 		const keys = this.keys();
 		// Snapshot listeners before iterating: a listener may subscribe again
 		// while running (e.g. an async derivation re-subscribing during its
