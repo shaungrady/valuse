@@ -1,5 +1,49 @@
 # valuse
 
+## 0.3.2
+
+### Patch Changes
+
+- 082bca7: perf: precompute factory-pipe slot indices on the definition. The
+  `InstanceStore` constructor previously `.some()`-scanned every slot's pipeline
+  on each `create()` to find factory steps; it now iterates a precomputed
+  `factorySlots` list (built once per definition, like `derivedSlots` /
+  `asyncDerivedSlots`), so a factory-free scope skips the scan entirely.
+  Internal only — no API or behavior change.
+- e9858cc: perf: skip building the derivation `scope` tree for scopes that have
+  no consumer for it. Every `create()` previously built a second parallel tree
+  of `DerivationWrap` leaves (the restricted read-only `scope` passed to
+  derivations, async derivations, validate hooks, and ref resolution), even for
+  plain value-only scopes that never use it. Construction is now gated on the
+  scope actually having a sync/async derivation, a schema slot, a `validate`
+  hook, or a ref; otherwise a shared frozen placeholder is used. Cuts per-create
+  allocation (~5% faster `create()` for value-only scopes, and less GC pressure
+  when creating many — e.g. a large `ScopeMap`). No API or behavior change.
+- 6d3233c: perf: stop allocating a placeholder signal for `valuePlain` slots.
+  Plain fields are inert — read and written exclusively through a non-reactive
+  backing map — yet each one still reserved an unused `Signal` purely to keep
+  the per-slot array length-aligned. Plain slots now hold no signal (their array
+  position is a hole), saving roughly one signal (~88 bytes) of retained memory
+  per plain field per instance. Coarse trackers (`$subscribe`, the snapshot
+  invalidator, `_trackAll`) iterate a precomputed `trackableSlots` list so they
+  skip inert plain fields entirely. No API or behavior change.
+- a000297: perf: skip the key-array allocation in `ScopeMap` notifications when
+  nothing is directly subscribed. Every `set`/`delete`/`clear` rebuilt the full
+  key array to pass to listeners; with no direct subscribers (the React bridge
+  tracks a version signal instead) that array was discarded. Building a keyed
+  map via `createMap` performs one `set` per item, so this made bulk
+  construction O(n^2) in allocation. Guarding on subscriber count makes it O(n)
+  — building a 4k-entry map is ~2x faster. No API or behavior change.
+- aa757e7: perf: share one recompute epoch across an instance's sync derivations
+  instead of allocating a version signal per derived slot. Each scope instance
+  now retains a single epoch signal (allocated only when it has at least one
+  sync derivation) rather than one per derivation, trimming retained signals on
+  derivation-heavy scopes. Forcing a recompute on a single derived field
+  (`field.recompute()`) now also re-runs sibling sync derivations — a no-op
+  write for any whose tracked inputs are unchanged, per the pure-derivation
+  contract. `$recompute()` and per-field recompute semantics are otherwise
+  unchanged.
+
 ## 0.3.1
 
 ### Patch Changes
