@@ -139,6 +139,14 @@ export interface ScopeDefinitionMeta {
 	readonly factorySlots: readonly number[];
 
 	/**
+	 * Slot indices that participate in the reactive graph (every kind except
+	 * `plain`). Plain slots are inert and have no signal, so coarse trackers
+	 * (`_trackAll` / `$subscribe` / snapshot) iterate this list to avoid
+	 * dereferencing a non-existent signal and to skip tracking inert fields.
+	 */
+	readonly trackableSlots: readonly number[];
+
+	/**
 	 * ValueRef entries found in the definition tree.
 	 * Map of path → ValueRef instance. Resolved per-instance in createScopeInstance.
 	 */

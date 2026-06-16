@@ -99,6 +99,12 @@ export function buildScopeDefinition(
 	const factorySlots = slots.flatMap((s, i) =>
 		s.pipeline?.some((step) => step.kind === 'factory') ? [i] : [],
 	);
+	// Every kind except `plain` has a live signal and participates in coarse
+	// reactive tracking. Plain slots are inert and signal-less, so trackers
+	// iterate this list instead of all slots.
+	const trackableSlots = slots.flatMap((s, i) =>
+		s.kind === 'plain' ? [] : [i],
+	);
 
 	return {
 		slotCount: slots.length,
@@ -111,6 +117,7 @@ export function buildScopeDefinition(
 		asyncDerivedSlots,
 		schemaSlots,
 		factorySlots,
+		trackableSlots,
 		refEntries,
 	};
 }

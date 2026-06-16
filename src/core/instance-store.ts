@@ -195,18 +195,21 @@ export class InstanceStore {
 					this.#applySyncPipeline(initial, meta.pipeline)
 				:	initial;
 
-			this.signals[slot] = signal(processed);
-
-			// Plain slots also seed `#plainValues` — that's what
-			// `read`/`readTracked` actually return for plain. Seeding here (for
-			// every plain slot) is what makes the lazy map safe to read before
-			// any write: a plain slot always has an entry by end of construction.
+			// Plain slots are inert (invisible to the reactive graph) and read
+			// exclusively through `#plainValues`, so they get no signal at all —
+			// their position in `signals` stays a hole. Every other kind needs a
+			// live signal as its public read path.
 			if (meta.kind === 'plain') {
+				// Seeding here (for every plain slot) is what makes the lazy map
+				// safe to read before any write: a plain slot always has an entry
+				// by end of construction.
 				this.#plainValues ??= new Map();
 				this.#plainValues.set(slot, processed);
 				// Only plain writes bump the plain-version signal; allocate it
 				// alongside the first plain slot so plain-free scopes skip it.
 				this._plainVersion ??= signal(0);
+			} else {
+				this.signals[slot] = signal(processed);
 			}
 
 			// Initialize validation state for schema slots
@@ -346,14 +349,13 @@ export class InstanceStore {
 	): void {
 		if (this.destroyed) return;
 		const meta = this.definition.slots[slot]!;
-		const previous = this.signals[slot]!.peek();
 
 		// Plain slots: write to the non-reactive backing map and bump the
-		// coarse plain-version signal. The signal in `signals[slot]` is
-		// intentionally NOT updated, so plain writes are invisible to
-		// `$subscribe`, derivations, and `_trackAll`. Only the snapshot
-		// invalidator tracks `_plainVersion`, which keeps `$getSnapshot()`
-		// fresh without re-rendering the rest of the reactive graph.
+		// coarse plain-version signal. Plain slots have no entry in `signals`,
+		// so this must run before any `signals[slot]` access. Plain writes are
+		// invisible to `$subscribe`, derivations, and `_trackAll`; only the
+		// snapshot invalidator tracks `_plainVersion`, which keeps
+		// `$getSnapshot()` fresh without re-rendering the rest of the graph.
 		if (meta.kind === 'plain') {
 			this.#plainValues ??= new Map();
 			this.#plainValues.set(slot, value);
@@ -361,6 +363,8 @@ export class InstanceStore {
 			this._plainVersion.value++;
 			return;
 		}
+
+		const previous = this.signals[slot]!.peek();
 
 		// Comparator check
 		if (meta.comparator && meta.comparator(previous, value)) {
