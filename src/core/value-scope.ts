@@ -1165,6 +1165,14 @@ export function valueScope(...args: unknown[]): ScopeTemplate {
 
 // --- Instance creation ---
 
+/**
+ * Shared, frozen placeholder handed to ref/derivation/validation setup when a
+ * scope has no consumer for the derivation `scope` view. Frozen so any
+ * unexpected write surfaces immediately instead of silently mutating shared
+ * state.
+ */
+const EMPTY_DERIVATION_SCOPE: Record<string, unknown> = Object.freeze({});
+
 function createScopeInstance(
 	definition: ScopeDefinitionMeta,
 	_rawDefinition: Record<string, unknown>,
@@ -1181,8 +1189,22 @@ function createScopeInstance(
 	// Create the InstanceStore
 	const store = new InstanceStore(definition, initialValues);
 
-	// Build derivation scope tree (per-instance for now)
-	const derivationScope = buildDerivationScopeTree(definition, store);
+	// The derivation scope is the restricted read-only `scope` view handed to
+	// derivations, async derivations, validate hooks, and ref resolution. A
+	// plain value-only scope (no derivations / schema / validate / refs) has no
+	// consumer for it, so skip building the entire parallel DerivationWrap tree
+	// and hand those consumers a shared frozen placeholder instead — none of
+	// them touch it when the corresponding source list is empty.
+	const needsDerivationScope =
+		definition.derivedSlots.length > 0 ||
+		definition.asyncDerivedSlots.length > 0 ||
+		definition.schemaSlots.length > 0 ||
+		definition.refEntries.size > 0 ||
+		config?.validate != null;
+	const derivationScope =
+		needsDerivationScope ?
+			buildDerivationScopeTree(definition, store)
+		:	EMPTY_DERIVATION_SCOPE;
 
 	// Resolve ValueRef entries: factory refs create per-instance sources,
 	// shared refs just attach the existing source. Must happen before
@@ -1222,7 +1244,11 @@ function createScopeInstance(
 	// derivations are eagerly evaluated by `setupSyncDerivations` via the
 	// `effect()` that mirrors the computed into the store, so any static
 	// fields read through `scope.<name>` must be in place first.
-	attachStaticEntries(definition, instance, derivationScope);
+	attachStaticEntries(
+		definition,
+		instance,
+		needsDerivationScope ? derivationScope : undefined,
+	);
 
 	// Set up sync derivations
 	setupSyncDerivations(definition, store, derivationScope, instanceCleanups);
@@ -1252,7 +1278,9 @@ function createScopeInstance(
 
 	// Freeze child groups now that all their content (wrappers + static) is present.
 	freezeChildGroups(definition, nodesByGroup);
-	freezeDerivationGroups(definition, derivationScope, definition.groups[0]!);
+	if (needsDerivationScope) {
+		freezeDerivationGroups(definition, derivationScope, definition.groups[0]!);
+	}
 
 	// Attach $ methods
 	attachDollarMethods(

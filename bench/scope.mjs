@@ -1,18 +1,22 @@
 // Throughput benchmark for the scope hot paths. Run against the built dist:
 //
-//   pnpm build && node bench/scope.mjs
+//   pnpm bench                       # builds, then runs with --expose-gc
+//   node --expose-gc bench/scope.mjs # run directly against an existing dist
 //
-// Reports ns/op and ops/sec for create / write / snapshot across a few scope
-// shapes. Dependency-free: warmup, then a timed budget per case, median of
-// several rounds to damp GC/JIT noise. Numbers are only comparable on the same
-// machine — use it to judge a change (run before, stash, run after), not as an
-// absolute.
+// Reports the best (minimum) ns/op across several rounds for create / write /
+// snapshot across a few scope shapes. Allocation-heavy ops (create) are
+// dominated by GC jitter, so the *minimum* round — the one least interrupted by
+// a collection — is the most stable estimator for comparing two builds. We also
+// force a GC between rounds when run with --expose-gc to keep rounds
+// independent. Numbers are only comparable on the same machine: run before,
+// stash the change, run after.
 
 import { valueScope, value } from '../dist/index.mjs';
 
-const ROUNDS = 7;
-const BUDGET_MS = 250;
-const WARMUP_MS = 100;
+const ROUNDS = 12;
+const BUDGET_MS = 200;
+const WARMUP_MS = 150;
+const gc = globalThis.gc ?? (() => {});
 
 /** Run `fn` for `ms`, return ops completed. `fn` returns a value we keep so V8
  * can't dead-code-eliminate the work. */
@@ -29,19 +33,18 @@ function run(fn, ms) {
 
 function bench(name, fn) {
 	run(fn, WARMUP_MS); // warm JIT
-	const rates = [];
+	let bestRate = 0;
 	for (let r = 0; r < ROUNDS; r++) {
+		gc();
 		const t0 = performance.now();
 		const { ops } = run(fn, BUDGET_MS);
 		const elapsed = performance.now() - t0;
-		rates.push(ops / (elapsed / 1000));
+		bestRate = Math.max(bestRate, ops / (elapsed / 1000));
 	}
-	rates.sort((a, b) => a - b);
-	const opsSec = rates[rates.length >> 1];
-	const nsOp = 1e9 / opsSec;
+	const nsOp = 1e9 / bestRate;
 	console.log(
 		`${name.padEnd(34)} ${nsOp.toFixed(0).padStart(8)} ns/op  ` +
-			`${Math.round(opsSec).toLocaleString().padStart(13)} ops/s`,
+			`${Math.round(bestRate).toLocaleString().padStart(13)} ops/s`,
 	);
 }
 
