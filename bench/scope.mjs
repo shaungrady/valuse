@@ -61,6 +61,16 @@ const derived = valueScope(
 	{ full: ({ scope }) => `${scope.first.use()} ${scope.last.use()}` },
 );
 
+const derived5 = valueScope(
+	{ n: value(1) },
+	Object.fromEntries(
+		Array.from({ length: 5 }, (_, i) => [
+			`d${i}`,
+			({ scope }) => scope.n.use() * (i + 1),
+		]),
+	),
+);
+
 // --- Cases ---
 
 console.log(`node ${process.version}\n`);
@@ -68,6 +78,7 @@ console.log(`node ${process.version}\n`);
 bench('create plain (2 fields)', () => plain2.create());
 bench('create wide (10 fields)', () => wide10.create());
 bench('create derived (1 deriv)', () => derived.create());
+bench('create derived (5 derivs)', () => derived5.create());
 
 const inst = plain2.create();
 let n = 0;
