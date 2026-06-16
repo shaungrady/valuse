@@ -65,11 +65,13 @@ export function attachDollarMethods(
 	factoryRefDestroyables?: { destroy: () => void }[],
 	layers: ReadonlyArray<Record<string, unknown>> = [],
 ): void {
-	// Register a Preact dependency on every slot signal. Used by the snapshot
-	// invalidator, `$subscribe`, and `instance._trackAll` (the derivation-scope
-	// ref hook). Coarse-grained by design.
+	// Register a Preact dependency on every reactive slot signal. Used by the
+	// snapshot invalidator, `$subscribe`, and `instance._trackAll` (the
+	// derivation-scope ref hook). Coarse-grained by design. Plain slots are
+	// inert and signal-less, so they are excluded (`trackableSlots`); plain
+	// writes reach the snapshot via `_plainVersion` instead.
 	const trackAllSlots = (): void => {
-		for (let slot = 0; slot < definition.slotCount; slot++) {
+		for (const slot of definition.trackableSlots) {
 			void store.signals[slot]!.value;
 		}
 	};

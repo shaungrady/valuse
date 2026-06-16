@@ -416,8 +416,11 @@ function buildAsyncGroupNode(
 				}
 
 				const run = runRef.current;
-				// Eager subscribe if not already subscribed for this run
-				if (!run.subscriptions.has(slotIndex)) {
+				// Eager subscribe if not already subscribed for this run. Plain
+				// slots are inert — they have no signal and never fire — so skip
+				// the subscription entirely (subscribing would also dereference a
+				// non-existent signal). Their value is still read below.
+				if (meta.kind !== 'plain' && !run.subscriptions.has(slotIndex)) {
 					const unsub = store.subscribe(slotIndex, () => {
 						if (!run.controller.signal.aborted) {
 							runRef.scheduleRerun();

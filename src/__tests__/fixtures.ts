@@ -60,6 +60,7 @@ export function makeDefinition(
 		factorySlots: slots.flatMap((s, i) =>
 			s.pipeline?.some((step) => step.kind === 'factory') ? [i] : [],
 		),
+		trackableSlots: slots.flatMap((s, i) => (s.kind === 'plain' ? [] : [i])),
 		refEntries: new Map(),
 	};
 }
