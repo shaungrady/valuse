@@ -1,62 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { InstanceStore } from '../core/instance-store.js';
-import type {
-	ScopeDefinitionMeta,
-	SlotMeta,
-	GroupMeta,
-} from '../core/slot-meta.js';
+import type { GroupMeta } from '../core/slot-meta.js';
+import { makeSlotMeta, makeRootGroup, makeDefinition } from './fixtures.js';
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-function makeSlotMeta(overrides: Partial<SlotMeta> = {}): SlotMeta {
-	return {
-		path: 'field',
-		fieldName: 'field',
-		kind: 'value',
-		pipeline: null,
-		comparator: null,
-		defaultValue: undefined,
-		ancestorGroupIndices: [],
-		derivationFn: null,
-		schema: null,
-		readonly: false,
-		...overrides,
-	};
-}
-
-function makeRootGroup(childSlots: number[]): GroupMeta {
-	return {
-		path: '',
-		fieldName: '',
-		index: 0,
-		ancestorGroupIndices: [],
-		childSlots,
-		childGroups: [],
-	};
-}
-
-function makeDefinition(
-	slots: SlotMeta[],
-	groups?: GroupMeta[],
-): ScopeDefinitionMeta {
-	return {
-		slotCount: slots.length,
-		slots,
-		groups: groups ?? [makeRootGroup(slots.map((_, i) => i))],
-		staticEntries: new Map(),
-		pathToSlot: new Map(slots.map((s, i) => [s.path, i])),
-		pathToGroup: new Map(),
-		derivedSlots: slots.flatMap((s, i) => (s.kind === 'derived' ? [i] : [])),
-		asyncDerivedSlots: slots.flatMap((s, i) =>
-			s.kind === 'asyncDerived' ? [i] : [],
-		),
-		schemaSlots: slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : [])),
-		factorySlots: slots.flatMap((s, i) =>
-			s.pipeline?.some((step) => step.kind === 'factory') ? [i] : [],
-		),
-		refEntries: new Map(),
-	};
-}
 
 describe('InstanceStore', () => {
 	describe('read / write', () => {
