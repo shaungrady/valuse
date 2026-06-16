@@ -69,7 +69,7 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:types": "vitest --typecheck.only --run",
-		"bench": "pnpm build && node bench/scope.mjs",
+		"bench": "pnpm build && node --expose-gc bench/scope.mjs",
 		"typecheck:examples": "tsc -p tsconfig.examples.json --noEmit",
 		"analyze": "pnpm build && knip && madge --circular --extensions mjs dist && publint",
 		"analyze:deadcode": "knip",
