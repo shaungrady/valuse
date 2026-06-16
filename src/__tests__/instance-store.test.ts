@@ -51,6 +51,9 @@ function makeDefinition(
 			s.kind === 'asyncDerived' ? [i] : [],
 		),
 		schemaSlots: slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : [])),
+		factorySlots: slots.flatMap((s, i) =>
+			s.pipeline?.some((step) => step.kind === 'factory') ? [i] : [],
+		),
 		refEntries: new Map(),
 	};
 }

@@ -132,6 +132,13 @@ export interface ScopeDefinitionMeta {
 	readonly schemaSlots: readonly number[];
 
 	/**
+	 * Slot indices whose pipeline contains a factory step. Precomputed so the
+	 * per-instance constructor activates factory pipes by iterating this list
+	 * instead of `.some()`-scanning every slot's pipeline on each `.create()`.
+	 */
+	readonly factorySlots: readonly number[];
+
+	/**
 	 * ValueRef entries found in the definition tree.
 	 * Map of path → ValueRef instance. Resolved per-instance in createScopeInstance.
 	 */
