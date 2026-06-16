@@ -94,6 +94,13 @@ export function buildScopeDefinition(
 		s.kind === 'asyncDerived' ? [i] : [],
 	);
 	const schemaSlots = slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : []));
+	// Slots whose pipeline contains a factory step (pipeDebounce, pipeThrottle,
+	// …). Precomputed so `InstanceStore` can activate factory pipes by iterating
+	// these directly instead of `.some()`-scanning every slot's pipeline on each
+	// `.create()` — the common factory-free scope then skips the scan entirely.
+	const factorySlots = slots.flatMap((s, i) =>
+		s.pipeline?.some((step) => step.kind === 'factory') ? [i] : [],
+	);
 
 	return {
 		slotCount: slots.length,
@@ -105,6 +112,7 @@ export function buildScopeDefinition(
 		derivedSlots,
 		asyncDerivedSlots,
 		schemaSlots,
+		factorySlots,
 		refEntries,
 	};
 }

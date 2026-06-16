@@ -229,17 +229,14 @@ export class InstanceStore {
 		// signal with the post-actor commit, which for same-type actors
 		// equals the seeded `defaultValue` (no-op) and for accumulating
 		// actors leaves the actor state matching standalone.
-		for (let slot = 0; slot < definition.slotCount; slot++) {
+		for (const slot of definition.factorySlots) {
 			const meta = definition.slots[slot]!;
-			if (!meta.pipeline?.some((step) => step.kind === 'factory')) {
-				continue;
-			}
 			this.activateFactoryPipes(slot);
 			const chain = this.#pipeChains?.get(slot);
 			if (!chain) continue;
 			const hasUserInitial = initialValues.has(slot);
 			const seed =
-				hasUserInitial ?
+				hasUserInitial && meta.pipeline ?
 					this.#applySyncPipeline(initialValues.get(slot), meta.pipeline)
 				:	meta.factorySeed;
 			chain.prime(seed);
