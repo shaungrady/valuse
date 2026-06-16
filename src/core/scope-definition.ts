@@ -87,13 +87,11 @@ export function buildScopeDefinition(
 	// Group slot indices by kind so per-instance setup can iterate only the
 	// relevant slots. Built in ascending index order, matching the previous
 	// full-scan-and-filter behavior of the setup functions.
-	const derivedSlots = slots.flatMap((s, i) =>
-		s.kind === 'derived' ? [i] : [],
-	);
-	const asyncDerivedSlots = slots.flatMap((s, i) =>
-		s.kind === 'asyncDerived' ? [i] : [],
-	);
-	const schemaSlots = slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : []));
+	const slotsOfKind = (kind: SlotMeta['kind']): number[] =>
+		slots.flatMap((s, i) => (s.kind === kind ? [i] : []));
+	const derivedSlots = slotsOfKind('derived');
+	const asyncDerivedSlots = slotsOfKind('asyncDerived');
+	const schemaSlots = slotsOfKind('schema');
 	// Slots whose pipeline contains a factory step (pipeDebounce, pipeThrottle,
 	// …). Precomputed so `InstanceStore` can activate factory pipes by iterating
 	// these directly instead of `.some()`-scanning every slot's pipeline on each

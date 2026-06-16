@@ -11,6 +11,13 @@ import type { Change, ScopeNode, Unsubscribe } from './types.js';
 import type { ScopeDefinitionMeta, DefinitionPipeStep } from './slot-meta.js';
 import { buildPipeChain, type PipeChain } from './utils/pipe-runtime.js';
 
+/** Append `value` to the array bucket at `key`, creating it on first use. */
+function pushIntoBucket<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+	const existing = map.get(key);
+	if (existing) existing.push(value);
+	else map.set(key, [value]);
+}
+
 /**
  * Per-instance data store. Holds signals and manages the write pipeline,
  * change tracking, and subscriptions. All field wrappers delegate to this.
@@ -653,12 +660,7 @@ export class InstanceStore {
 
 		for (const change of changes) {
 			// Add to the field's own scope node
-			const existing = changesByScope.get(change.scope);
-			if (existing) {
-				existing.push(change);
-			} else {
-				changesByScope.set(change.scope, [change]);
-			}
+			pushIntoBucket(changesByScope, change.scope, change);
 
 			// Bubble up to ancestor groups via O(1) reverse lookup
 			const slotIndex = slotByNode.get(change.scope);
@@ -667,24 +669,14 @@ export class InstanceStore {
 				for (const ancestorIdx of meta.ancestorGroupIndices) {
 					const groupNode = this.#scopeNodesByGroup[ancestorIdx];
 					if (groupNode) {
-						const groupChanges = changesByScope.get(groupNode);
-						if (groupChanges) {
-							groupChanges.push(change);
-						} else {
-							changesByScope.set(groupNode, [change]);
-						}
+						pushIntoBucket(changesByScope, groupNode, change);
 					}
 				}
 			}
 
 			// Also add to root
 			if (this.#instanceRoot) {
-				const rootChanges = changesByScope.get(this.#instanceRoot);
-				if (rootChanges) {
-					rootChanges.push(change);
-				} else {
-					changesByScope.set(this.#instanceRoot, [change]);
-				}
+				pushIntoBucket(changesByScope, this.#instanceRoot, change);
 			}
 		}
 
