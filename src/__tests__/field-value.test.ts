@@ -14,55 +14,14 @@ import {
 	isScope,
 	brandAsScope,
 } from '../core/field-value.js';
-import type { ScopeDefinitionMeta, SlotMeta } from '../core/slot-meta.js';
-
-function makeSlotMeta(overrides: Partial<SlotMeta> = {}): SlotMeta {
-	return {
-		path: 'field',
-		fieldName: 'field',
-		kind: 'value',
-		pipeline: null,
-		comparator: null,
-		defaultValue: undefined,
-		ancestorGroupIndices: [],
-		derivationFn: null,
-		schema: null,
-		readonly: false,
-		...overrides,
-	};
-}
+import type { SlotMeta } from '../core/slot-meta.js';
+import { makeSlotMeta, makeDefinition } from './fixtures.js';
 
 function makeStore(
 	slots: SlotMeta[],
 	initialValues: Map<number, unknown> = new Map(),
 ): InstanceStore {
-	const definition: ScopeDefinitionMeta = {
-		slotCount: slots.length,
-		slots,
-		groups: [
-			{
-				path: '',
-				fieldName: '',
-				index: 0,
-				ancestorGroupIndices: [],
-				childSlots: slots.map((_, i) => i),
-				childGroups: [],
-			},
-		],
-		staticEntries: new Map(),
-		pathToSlot: new Map(slots.map((s, i) => [s.path, i])),
-		pathToGroup: new Map(),
-		derivedSlots: slots.flatMap((s, i) => (s.kind === 'derived' ? [i] : [])),
-		asyncDerivedSlots: slots.flatMap((s, i) =>
-			s.kind === 'asyncDerived' ? [i] : [],
-		),
-		schemaSlots: slots.flatMap((s, i) => (s.kind === 'schema' ? [i] : [])),
-		factorySlots: slots.flatMap((s, i) =>
-			s.pipeline?.some((step) => step.kind === 'factory') ? [i] : [],
-		),
-		refEntries: new Map(),
-	};
-	return new InstanceStore(definition, initialValues);
+	return new InstanceStore(makeDefinition(slots), initialValues);
 }
 
 describe('FieldValue', () => {
