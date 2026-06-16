@@ -171,6 +171,14 @@ export default tseslint.config(
 		// the variadic-scope refactor (#54); linting them now would gate
 		// on cleanup that's about to be thrown away. Typecheck still
 		// runs via `pnpm typecheck:examples`.
-		ignores: ['dist/', 'node_modules/', 'coverage/', '*.config.*', 'examples/'],
+		ignores: [
+			'dist/',
+			'node_modules/',
+			'coverage/',
+			'*.config.*',
+			'examples/',
+			// Dev-only throughput harness, run manually against built dist.
+			'bench/',
+		],
 	},
 );

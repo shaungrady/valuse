@@ -4,6 +4,7 @@ import {
 	computed,
 	effect,
 	type ReadonlySignal,
+	type Signal,
 } from './signal.js';
 import { buildScopeDefinition } from './scope-definition.js';
 import { InstanceStore } from './instance-store.js';
@@ -1373,16 +1374,28 @@ function setupSyncDerivations(
 	derivationScope: Record<string, unknown>,
 	cleanups: (() => void)[],
 ): void {
+	// One shared "recompute epoch" signal for the whole instance, rather than a
+	// version signal per derived slot. Every derived computed reads it, so
+	// bumping it forces all sync derivations to re-run — which is exactly what
+	// `$recompute()` wants, and what a single `field.recompute()` falls back to
+	// (a no-op write for any derivation whose tracked inputs are unchanged, per
+	// the pure-derivation contract). It must be allocated up front: a Preact
+	// computed only establishes a dependency on a signal it reads during its
+	// first evaluation, so a lazily-created epoch could never dirty an
+	// already-idle computed. Allocated only when the scope has ≥1 sync
+	// derivation (we're inside that branch), so value-only scopes pay nothing.
+	let epoch: Signal<number> | null = null;
+
 	for (const slot of definition.derivedSlots) {
 		const meta = definition.slots[slot]!;
 		const derivationFn = meta.derivationFn;
 		if (!derivationFn) continue;
 
-		// Version signal: bump to force recomputation even when deps haven't changed
-		const version = createSignal(0);
+		epoch ??= createSignal(0);
+		const recomputeEpoch = epoch;
 		const slotIndex = slot;
 		const derivedSignal: ReadonlySignal<unknown> = computed(() => {
-			void version.value; // track version for forced recompute
+			void recomputeEpoch.value; // track epoch for forced recompute
 			try {
 				// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 				return derivationFn({ scope: derivationScope });
@@ -1398,9 +1411,9 @@ function setupSyncDerivations(
 			}
 		});
 
-		// Register a recompute function that bumps the version
+		// Register a recompute function that bumps the shared epoch.
 		store.registerRecompute(slot, () => {
-			version.value++;
+			recomputeEpoch.value++;
 		});
 
 		// Set up an effect to sync the computed signal to the store's signal.

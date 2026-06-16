@@ -531,6 +531,49 @@ describe('valueScope', () => {
 			instance.$recompute();
 			expect(callCount).toBeGreaterThan(initialCount);
 		});
+
+		it('forces a single derivation to re-read external state via field.recompute()', () => {
+			let external = 1;
+			const scope = valueScope(
+				{ base: value(10) },
+				{ scaled: ({ scope: s }: { scope: any }) => s.base.use() * external },
+			);
+			const instance = scope.create();
+			expect(instance.scaled.get()).toBe(10);
+			// Dependency (base) is unchanged, but the derivation reads `external`;
+			// recompute() forces it to re-run and pick up the new multiplier.
+			external = 3;
+			instance.scaled.recompute();
+			expect(instance.scaled.get()).toBe(30);
+		});
+
+		it('field.recompute() re-runs sibling sync derivations (shared epoch)', () => {
+			// Derived slots share one recompute epoch, so forcing one re-runs all.
+			// For pure derivations this is a harmless no-op; this test pins the
+			// intended behavior so it is not mistaken for a regression.
+			const calls = { a: 0, b: 0 };
+			const scope = valueScope(
+				{ n: value(1) },
+				{
+					a: ({ scope: s }: { scope: any }) => {
+						calls.a++;
+						return s.n.use();
+					},
+					b: ({ scope: s }: { scope: any }) => {
+						calls.b++;
+						return s.n.use() + 1;
+					},
+				},
+			);
+			const instance = scope.create();
+			const before = { ...calls };
+			instance.a.recompute();
+			expect(calls.a).toBeGreaterThan(before.a);
+			expect(calls.b).toBeGreaterThan(before.b);
+			// Values stay correct regardless.
+			expect(instance.a.get()).toBe(1);
+			expect(instance.b.get()).toBe(2);
+		});
 	});
 });
 
