@@ -1,6 +1,6 @@
 {
 	"name": "valuse",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"description": "Reactive state that mirrors how you already think about data.",
 	"type": "module",
 	"license": "MIT",
