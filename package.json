@@ -26,6 +26,9 @@
 		"observable",
 		"typescript",
 		"react",
+		"svelte",
+		"vue",
+		"angular",
 		"preact-signals"
 	],
 	"sideEffects": [
@@ -39,6 +42,18 @@
 		"./react": {
 			"types": "./dist/react.d.mts",
 			"import": "./dist/react.mjs"
+		},
+		"./svelte": {
+			"types": "./dist/svelte.d.mts",
+			"import": "./dist/svelte.mjs"
+		},
+		"./vue": {
+			"types": "./dist/vue.d.mts",
+			"import": "./dist/vue.mjs"
+		},
+		"./angular": {
+			"types": "./dist/angular.d.mts",
+			"import": "./dist/angular.mjs"
 		},
 		"./utils": {
 			"types": "./dist/utils.d.mts",
@@ -84,18 +99,31 @@
 		"@preact/signals-core": "^1.14.2"
 	},
 	"peerDependencies": {
+		"@angular/core": ">=17",
 		"@standard-schema/spec": ">=1",
-		"react": ">=18"
+		"react": ">=18",
+		"svelte": ">=4",
+		"vue": ">=3.5"
 	},
 	"peerDependenciesMeta": {
+		"@angular/core": {
+			"optional": true
+		},
 		"@standard-schema/spec": {
 			"optional": true
 		},
 		"react": {
 			"optional": true
+		},
+		"svelte": {
+			"optional": true
+		},
+		"vue": {
+			"optional": true
 		}
 	},
 	"devDependencies": {
+		"@angular/core": "^22.0.2",
 		"@changesets/cli": "^2.29.8",
 		"@eslint/js": "^9.39.4",
 		"@standard-schema/spec": "^1.1.0",
@@ -124,12 +152,16 @@
 		"publint": "^0.3.21",
 		"react": "^19.2.6",
 		"react-dom": "^19.2.6",
+		"rxjs": "^7.8.2",
+		"svelte": "^5.56.3",
 		"tsdown": "^0.21.10",
 		"type-fest": "^5.6.0",
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.59.4",
 		"valtio": "^2.3.2",
 		"vitest": "^4.1.6",
+		"vue": "^3.5.38",
+		"zone.js": "^0.16.2",
 		"zustand": "^5.0.14"
 	},
 	"packageManager": "pnpm@10.33.0",

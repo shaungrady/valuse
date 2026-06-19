@@ -1,0 +1,4 @@
+{
+	"comment": "madge resolves the bare `vue` peer-dependency import inside dist/vue.mjs to the sibling dist/vue.mjs file, yielding a false self-cycle. The framework-bridge entry files are leaf modules that nothing else imports, so they cannot participate in a real cycle; exclude the colliding one from analysis.",
+	"excludeRegExp": ["^vue\\.mjs$"]
+}

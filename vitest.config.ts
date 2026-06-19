@@ -18,6 +18,9 @@ export default defineConfig({
 		// code. Longest-match order matters for Vite's resolver — subpaths first.
 		alias: {
 			'valuse/react': resolve(import.meta.dirname, 'src/react.ts'),
+			'valuse/svelte': resolve(import.meta.dirname, 'src/svelte.ts'),
+			'valuse/vue': resolve(import.meta.dirname, 'src/vue.ts'),
+			'valuse/angular': resolve(import.meta.dirname, 'src/angular.ts'),
 			'valuse/utils': resolve(import.meta.dirname, 'src/utils.ts'),
 			'valuse/middleware': resolve(import.meta.dirname, 'src/middleware.ts'),
 			valuse: resolve(import.meta.dirname, 'src/index.ts'),
