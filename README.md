@@ -144,6 +144,38 @@ function UnreadBadge({ inbox }) {
 }
 ```
 
+### Other frameworks
+
+The same reactive values bridge into Svelte, Vue, and Angular. Each adapter
+wraps any reactive source — a `value`, a collection, or a whole scope instance —
+in that framework's native reactivity primitive, and cleans up automatically.
+
+> **Deep dive:** [docs/frameworks.md](docs/frameworks.md)
+
+```svelte
+<!-- Svelte: toStore (read) / toWritableStore (two-way) -->
+<script>
+  import { toStore } from 'valuse/svelte';
+  const unread = toStore(inbox.unreadCount);
+</script>
+{#if $unread > 0}<span class="badge">{$unread}</span>{/if}
+```
+
+```ts
+// Vue: useValuse (ref) / useValuseModel (v-model)
+import { useValuse } from 'valuse/vue';
+const unread = useValuse(inbox.unreadCount); // Readonly<Ref<number>>
+```
+
+```ts
+// Angular: valuseSignal (read-only Signal, cleaned up via DestroyRef)
+import { valuseSignal } from 'valuse/angular';
+
+class InboxBadge {
+  readonly unread = valuseSignal(inbox.unreadCount);
+}
+```
+
 ---
 
 ## Reactive Values
@@ -1569,5 +1601,8 @@ of the factory name. Function-form derivations don't have a factory, so they use
 | ------------------- | ------------------------------------------------------------------------ |
 | `valuse`            | Core: `value`, `valueScope`, `valueSet`, `valueMap`, `valueArray`, types |
 | `valuse/react`      | React bridge: `import 'valuse/react'` to enable `.use()` hooks           |
+| `valuse/svelte`     | Svelte bridge: `toStore` / `toWritableStore` for `$store` syntax         |
+| `valuse/vue`        | Vue bridge: `useValuse` (ref) and `useValuseModel` (`v-model`)           |
+| `valuse/angular`    | Angular bridge: `valuseSignal` for a read-only `Signal`                  |
 | `valuse/utils`      | Pipe factories, async derivation helpers, and signal primitives          |
 | `valuse/middleware` | Shipped middleware: `withDevtools`, `withPersistence`, `withHistory`     |

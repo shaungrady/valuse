@@ -9,6 +9,9 @@
 		"paths": {
 			"valuse": ["./src/index.ts"],
 			"valuse/react": ["./src/react.ts"],
+			"valuse/svelte": ["./src/svelte.ts"],
+			"valuse/vue": ["./src/vue.ts"],
+			"valuse/angular": ["./src/angular.ts"],
 			"valuse/utils": ["./src/utils.ts"],
 			"valuse/middleware": ["./src/middleware.ts"]
 		}
