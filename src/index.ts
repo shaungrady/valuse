@@ -15,6 +15,7 @@ export {
 	asUnknownValueScope,
 } from './core/value-scope.js';
 export type { UnknownValueScope, ValueScope } from './core/value-scope.js';
+export type { AugmentedScopeTemplate } from './core/augmented-template.js';
 export type { ScopeConfig } from './core/scope-config.js';
 export { valueArray, ValueArray } from './core/value-array.js';
 export { valueRef, ValueRef } from './core/value-ref.js';

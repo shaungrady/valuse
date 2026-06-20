@@ -1,10 +1,6 @@
 import { signal, type Signal } from '@preact/signals-core';
-import {
-	asUnknownValueScope,
-	type ScopeTemplate,
-} from '../core/value-scope.js';
-import type { ScopeMap } from '../core/scope-map.js';
-import type { ScopeInstance, ValueInputOf } from '../core/scope-types.js';
+import { asUnknownValueScope } from '../core/value-scope.js';
+import type { AugmentedScopeTemplate } from '../core/augmented-template.js';
 import type { Unsubscribe } from '../core/types.js';
 import { pickFields } from '../core/utils/pick-fields.js';
 
@@ -52,34 +48,13 @@ export interface HistoryInstance {
  * A template returned by `withHistory`. Produces instances that include the
  * standard `ScopeInstance<Def>` API plus {@link HistoryInstance} methods.
  *
- * Extends `ScopeTemplate<Def>` so the template stays composable with
- * downstream middleware (`withPersistence`, `withDevtools`, etc.) that
- * accept a `ScopeTemplate<Def>` parameter.
+ * An alias over {@link AugmentedScopeTemplate}, so it stays assignable to
+ * `ScopeTemplate<Def>` (composes with downstream `withPersistence`,
+ * `withDevtools`, etc.) and `withHistory` can thread an incoming
+ * augmentation through it.
  */
-export interface HistoryTemplate<
-	Def extends Record<string, unknown>,
-> extends ScopeTemplate<Def> {
-	create(
-		input?: Partial<ValueInputOf<Def>>,
-	): ScopeInstance<Def> & HistoryInstance;
-
-	createMap<K extends string | number = string | number>(): ScopeMap<
-		K,
-		Def,
-		ScopeInstance<Def> & HistoryInstance
-	>;
-	createMap<K extends string | number>(
-		data: Partial<ValueInputOf<Def>>[],
-		keyFieldOrFn:
-			| (keyof ValueInputOf<Def> & string)
-			| ((item: Partial<ValueInputOf<Def>>) => K),
-	): ScopeMap<K, Def, ScopeInstance<Def> & HistoryInstance>;
-	createMap<K extends string | number>(
-		data:
-			| Map<K, Partial<ValueInputOf<Def>>>
-			| [K, Partial<ValueInputOf<Def>>][],
-	): ScopeMap<K, Def, ScopeInstance<Def> & HistoryInstance>;
-}
+export type HistoryTemplate<Def extends Record<string, unknown>> =
+	AugmentedScopeTemplate<Def, HistoryInstance>;
 
 interface HistoryState {
 	stack: Signal<Record<string, unknown>[]>;
@@ -120,10 +95,13 @@ function snapshotsEqual(
  * @param options - history options.
  * @returns a template whose instances include {@link HistoryInstance}.
  */
-export function withHistory<Def extends Record<string, unknown>>(
-	template: ScopeTemplate<Def>,
+export function withHistory<
+	Def extends Record<string, unknown>,
+	InExt = unknown,
+>(
+	template: AugmentedScopeTemplate<Def, InExt>,
 	options: HistoryOptions = {},
-): HistoryTemplate<Def> {
+): AugmentedScopeTemplate<Def, InExt & HistoryInstance> {
 	const { maxDepth = 50, fields, batchMs = 0 } = options;
 
 	const extended = asUnknownValueScope(template).extendConfig({
@@ -294,5 +272,8 @@ export function withHistory<Def extends Record<string, unknown>>(
 		},
 	});
 
-	return extended as unknown as HistoryTemplate<Def>;
+	return extended as unknown as AugmentedScopeTemplate<
+		Def,
+		InExt & HistoryInstance
+	>;
 }
