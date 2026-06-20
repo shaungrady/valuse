@@ -24,3 +24,10 @@ export type {
 	HistoryInstance,
 	HistoryTemplate,
 } from './middleware/history.js';
+
+export { withActions } from './middleware/actions.js';
+export type {
+	ActionContext,
+	ActionLayer,
+	ActionMembers,
+} from './middleware/actions.js';
