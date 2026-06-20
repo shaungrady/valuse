@@ -1251,13 +1251,14 @@ derivation if you need to check something like username availability.
 
 ### Shipped middleware
 
-ValUse ships three batteries-included middleware wrappers for the most common
+ValUse ships four batteries-included middleware wrappers for the most common
 scope patterns, plus storage adapters for `withPersistence` and standalone
 `connectDevtools` / `connectMapDevtools` helpers. Everything lives at
 `valuse/middleware`:
 
 | Middleware        | Purpose                                           | Deep dive                                  |
 | ----------------- | ------------------------------------------------- | ------------------------------------------ |
+| `withActions`     | Typed imperative actions (methods) on instances   | [docs/actions.md](docs/actions.md)         |
 | `withDevtools`    | Redux DevTools integration, timeline, time travel | [docs/devtools.md](docs/devtools.md)       |
 | `withPersistence` | Sync state to localStorage, IndexedDB, or custom  | [docs/persistence.md](docs/persistence.md) |
 | `withHistory`     | Undo/redo with bounded depth and batched typing   | [docs/history.md](docs/history.md)         |
@@ -1565,9 +1566,9 @@ of the factory name. Function-form derivations don't have a factory, so they use
 
 ### Import paths
 
-| Path                | Contents                                                                 |
-| ------------------- | ------------------------------------------------------------------------ |
-| `valuse`            | Core: `value`, `valueScope`, `valueSet`, `valueMap`, `valueArray`, types |
-| `valuse/react`      | React bridge: `import 'valuse/react'` to enable `.use()` hooks           |
-| `valuse/utils`      | Pipe factories, async derivation helpers, and signal primitives          |
-| `valuse/middleware` | Shipped middleware: `withDevtools`, `withPersistence`, `withHistory`     |
+| Path                | Contents                                                                            |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| `valuse`            | Core: `value`, `valueScope`, `valueSet`, `valueMap`, `valueArray`, types            |
+| `valuse/react`      | React bridge: `import 'valuse/react'` to enable `.use()` hooks                      |
+| `valuse/utils`      | Pipe factories, async derivation helpers, and signal primitives                     |
+| `valuse/middleware` | Shipped middleware: `withActions`, `withDevtools`, `withPersistence`, `withHistory` |
